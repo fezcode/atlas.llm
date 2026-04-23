@@ -311,6 +311,7 @@ func runInference(prompt string, maxTokens int) (string, error) {
 	// the TUI — otherwise bubbletea's alt-screen gets torn down mid-inference
 	// on Windows and the whole app looks like it quit back to the shell.
 	cmd.Stdin = bytes.NewReader(nil)
+	applyEngineSysProcAttr(cmd)
 
 	log.Printf("inference: %s (prompt=%d bytes, max_tokens=%d)", eng, len(prompt), maxTokens)
 	start := time.Now()
