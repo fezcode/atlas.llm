@@ -1,4 +1,4 @@
 (name) atlas.llm
-(version) 0.4.1
+(version) 0.4.2
 (description) Local AI chat with project context tooling. Interactive TUI with slash commands, plus one-shot --summarize, --grep, and --dump modes.
 (license) MIT

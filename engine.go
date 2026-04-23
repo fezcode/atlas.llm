@@ -307,6 +307,10 @@ func runInference(prompt string, maxTokens int) (string, error) {
 	var out, stderr bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
+	// Detach from parent stdin so llama-cli can't steal keyboard input from
+	// the TUI — otherwise bubbletea's alt-screen gets torn down mid-inference
+	// on Windows and the whole app looks like it quit back to the shell.
+	cmd.Stdin = bytes.NewReader(nil)
 
 	log.Printf("inference: %s (prompt=%d bytes, max_tokens=%d)", eng, len(prompt), maxTokens)
 	start := time.Now()
