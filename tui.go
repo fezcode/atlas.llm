@@ -184,28 +184,58 @@ func truncateLeft(s string, max int) string {
 
 func welcomeText() string {
 	title := brandStyle.Render("◆ atlas.llm") + sysStyle.Render("  local AI chat · on-device inference")
-	kb := func(k, desc string) string {
-		return "  " + footerKeyStyle.Render(fmt.Sprintf("%-16s", k)) + sysStyle.Render(desc)
+
+	groups := []struct {
+		heading string
+		rows    [][2]string
+	}{
+		{"Models & downloads", [][2]string{
+			{"/list", "available models + download status"},
+			{"/model [name]", "show or switch current model"},
+			{"/download", "engine + current model"},
+			{"/download engine", "engine only"},
+			{"/download <name>", "engine + that model"},
+			{"/download all", "engine + every registered model"},
+		}},
+		{"Project tools", [][2]string{
+			{"/summarize", "write SUMMARY.md for the current directory"},
+			{"/grep <query>", "semantic grep across the current directory"},
+		}},
+		{"Chat", [][2]string{
+			{"/help", "show this help"},
+			{"/clear", "clear on-screen chat history"},
+			{"/quit  /exit", "leave chat (or press ctrl+c)"},
+		}},
 	}
-	lines := []string{
-		title,
-		"",
-		sysStyle.Render("Slash commands"),
-		kb("/help", "show this help"),
-		kb("/list", "available models + download status"),
-		kb("/model [name]", "show or switch current model"),
-		kb("/download", "engine + current model"),
-		kb("/download engine", "engine only"),
-		kb("/download <name>", "engine + that model"),
-		kb("/download all", "engine + every registered model"),
-		kb("/summarize", "write SUMMARY.md for the current directory"),
-		kb("/grep <query>", "semantic grep across the current directory"),
-		kb("/clear", "clear on-screen chat history"),
-		kb("/quit  /exit", "leave chat (or press ctrl+c)"),
-		"",
-		sysStyle.Render("Dependencies aren't downloaded automatically — start with ") +
-			footerKeyStyle.Render("/download") + sysStyle.Render("."),
+
+	// Pad all command strings to a common width so the description column
+	// lines up across every group, regardless of the longest command.
+	cmdWidth := 0
+	for _, g := range groups {
+		for _, r := range g.rows {
+			if w := lipgloss.Width(r[0]); w > cmdWidth {
+				cmdWidth = w
+			}
+		}
 	}
+	cmdColStyle := lipgloss.NewStyle().Foreground(colAccent).Bold(true).Width(cmdWidth + 4)
+	descStyle := lipgloss.NewStyle().Foreground(colMuted)
+	headingStyle := lipgloss.NewStyle().Foreground(colDim).Bold(true)
+
+	var lines []string
+	lines = append(lines, title, "")
+	for i, g := range groups {
+		if i > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, "  "+headingStyle.Render(g.heading))
+		for _, r := range g.rows {
+			lines = append(lines, "    "+cmdColStyle.Render(r[0])+descStyle.Render(r[1]))
+		}
+	}
+	lines = append(lines, "",
+		sysStyle.Render("  Dependencies aren't downloaded automatically — start with ")+
+			footerKeyStyle.Render("/download")+sysStyle.Render("."))
 	return strings.Join(lines, "\n")
 }
 
