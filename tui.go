@@ -574,11 +574,24 @@ func runDownloadAllCmd(t downloadTargets) tea.Cmd {
 	}
 }
 
-func startChat() error {
+func startChat() (err error) {
+	logFile, closeLog, logErr := setupLogging()
+	defer closeLog()
+	defer func() {
+		if r := recover(); r != nil {
+			logPanicln(r)
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+
 	m := newChatModel()
+	if logErr == nil {
+		m.rendered = append(m.rendered, sysStyle.Render(fmt.Sprintf("Log file: %s", logFile)))
+	}
+
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	program = p
 	defer func() { program = nil }()
-	_, err := p.Run()
+	_, err = p.Run()
 	return err
 }

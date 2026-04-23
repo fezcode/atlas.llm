@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // ProgressFn is called as bytes stream in. total may be -1 if unknown.
@@ -305,9 +307,16 @@ func runInference(prompt string, maxTokens int) (string, error) {
 	var out, stderr bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+
+	log.Printf("inference: %s (prompt=%d bytes, max_tokens=%d)", eng, len(prompt), maxTokens)
+	start := time.Now()
+	err = cmd.Run()
+	elapsed := time.Since(start)
+	if err != nil {
+		log.Printf("inference FAILED in %s: %v\nstderr:\n%s", elapsed, err, stderr.String())
 		return "", fmt.Errorf("inference failed: %v (stderr: %s)", err, stderr.String())
 	}
+	log.Printf("inference ok in %s (stdout=%d bytes, stderr=%d bytes)", elapsed, out.Len(), stderr.Len())
 	return strings.TrimSpace(out.String()), nil
 }
 
