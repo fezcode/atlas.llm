@@ -18,20 +18,50 @@ import (
 // program is set in startChat so download goroutines can Send progress messages.
 var program *tea.Program
 
+// Palette. Hex values degrade gracefully to the nearest 256-color on
+// terminals without truecolor support.
 var (
-	userStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
-	assistantStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-	sysStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
-	errStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	headerStyle    = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("15")).
-			Background(lipgloss.Color("57")).
+	colAccent    = lipgloss.Color("#A78BFA") // violet — brand accent
+	colUser      = lipgloss.Color("#38BDF8") // sky — user messages
+	colAssistant = lipgloss.Color("#34D399") // emerald — assistant messages
+	colMuted     = lipgloss.Color("#9CA3AF") // gray — system/footer
+	colDim       = lipgloss.Color("#4B5563") // slate — rules, separators
+	colErr       = lipgloss.Color("#F87171") // red
+	colBusy      = lipgloss.Color("#FBBF24") // amber
+)
+
+var (
+	// Pill-style role badges — colored-on-dark backgrounds with one-char padding.
+	userPillStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#0B1220")).
+			Background(colUser).
 			Bold(true).
 			Padding(0, 1)
-	footerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	borderStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("63"))
+	assistantPillStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#0B1220")).
+				Background(colAssistant).
+				Bold(true).
+				Padding(0, 1)
+	errPillStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#0B1220")).
+			Background(colErr).
+			Bold(true).
+			Padding(0, 1)
+
+	sysStyle     = lipgloss.NewStyle().Foreground(colMuted).Italic(true)
+	errTextStyle = lipgloss.NewStyle().Foreground(colErr)
+
+	// Top bar: accent-colored brand + muted meta, with a thin underline rule.
+	brandStyle     = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	metaLabelStyle = lipgloss.NewStyle().Foreground(colDim)
+	metaValueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5E7EB"))
+	sepStyle       = lipgloss.NewStyle().Foreground(colDim)
+	busyStyle      = lipgloss.NewStyle().Foreground(colBusy).Bold(true)
+
+	footerStyle    = lipgloss.NewStyle().Foreground(colMuted)
+	footerKeyStyle = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+
+	ruleStyle = lipgloss.NewStyle().Foreground(colDim)
 )
 
 type (
@@ -80,12 +110,16 @@ type chatModel struct {
 
 func newChatModel() chatModel {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message or /help ..."
+	ta.Placeholder = "Ask anything, or type /help ..."
 	ta.Focus()
-	ta.Prompt = "│ "
+	ta.Prompt = ""
 	ta.CharLimit = 4000
-	ta.SetHeight(3)
+	ta.SetHeight(2)
 	ta.ShowLineNumbers = false
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(colDim).Italic(true)
+	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(colDim).Italic(true)
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 
 	vp := viewport.New(80, 20)
 	vp.SetContent(welcomeText())
@@ -138,25 +172,30 @@ func truncateLeft(s string, max int) string {
 }
 
 func welcomeText() string {
-	return sysStyle.Render(strings.Join([]string{
-		"Welcome to atlas.llm chat.",
+	title := brandStyle.Render("◆ atlas.llm") + sysStyle.Render("  local AI chat · on-device inference")
+	kb := func(k, desc string) string {
+		return "  " + footerKeyStyle.Render(fmt.Sprintf("%-16s", k)) + sysStyle.Render(desc)
+	}
+	lines := []string{
+		title,
 		"",
-		"Slash commands:",
-		"  /help          Show this help",
-		"  /list          List available models (downloaded status shown)",
-		"  /model [name]  Show or switch current model (does NOT download)",
-		"  /download      Download engine + current model",
-		"                 /download engine        – engine only",
-		"                 /download <model-name>  – engine + that model",
-		"                 /download all           – engine + every registered model",
-		"  /summarize     Summarize current directory to SUMMARY.md",
-		"  /grep <query>  Semantic grep across current directory",
-		"  /clear         Clear chat history",
-		"  /quit, /exit   Leave chat",
+		sysStyle.Render("Slash commands"),
+		kb("/help", "show this help"),
+		kb("/list", "available models + download status"),
+		kb("/model [name]", "show or switch current model"),
+		kb("/download", "engine + current model"),
+		kb("/download engine", "engine only"),
+		kb("/download <name>", "engine + that model"),
+		kb("/download all", "engine + every registered model"),
+		kb("/summarize", "write SUMMARY.md for the current directory"),
+		kb("/grep <query>", "semantic grep across the current directory"),
+		kb("/clear", "clear on-screen chat history"),
+		kb("/quit  /exit", "leave chat (or press ctrl+c)"),
 		"",
-		"Press Ctrl+C to quit. Enter to send; Shift+Enter for newline.",
-		"Dependencies are never downloaded automatically — use /download.",
-	}, "\n"))
+		sysStyle.Render("Dependencies aren't downloaded automatically — start with ") +
+			footerKeyStyle.Render("/download") + sysStyle.Render("."),
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m chatModel) Init() tea.Cmd {
@@ -168,23 +207,41 @@ func (m *chatModel) refresh() {
 	m.viewport.GotoBottom()
 }
 
+// lastRenderedIsBlank reports whether the most recent entry is an empty
+// separator line, so pushers can avoid stacking blank lines.
+func (m *chatModel) lastRenderedIsBlank() bool {
+	if len(m.rendered) == 0 {
+		return true
+	}
+	return strings.TrimSpace(m.rendered[len(m.rendered)-1]) == ""
+}
+
+func (m *chatModel) pushBlank() {
+	if !m.lastRenderedIsBlank() {
+		m.rendered = append(m.rendered, "")
+	}
+}
+
 func (m *chatModel) pushSystem(s string) {
-	m.rendered = append(m.rendered, sysStyle.Render(s))
+	m.rendered = append(m.rendered, sysStyle.Render("· "+s))
 	m.refresh()
 }
 
 func (m *chatModel) pushUser(s string) {
-	m.rendered = append(m.rendered, userStyle.Render("you ")+"› "+s)
+	m.pushBlank()
+	m.rendered = append(m.rendered, userPillStyle.Render("YOU")+"  "+s)
 	m.refresh()
 }
 
 func (m *chatModel) pushAssistant(s string) {
-	m.rendered = append(m.rendered, assistantStyle.Render("atlas ")+"› "+s)
+	m.pushBlank()
+	m.rendered = append(m.rendered, assistantPillStyle.Render("ATLAS")+"  "+s)
 	m.refresh()
 }
 
 func (m *chatModel) pushError(s string) {
-	m.rendered = append(m.rendered, errStyle.Render("error: "+s))
+	m.pushBlank()
+	m.rendered = append(m.rendered, errPillStyle.Render("ERROR")+"  "+errTextStyle.Render(s))
 	m.refresh()
 }
 
@@ -195,14 +252,16 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Layout: header(1) + rule(1) + viewport(...) + rule(1) + input(3) + footer(1)
 		headerH := 1
+		ruleH := 2
+		taH := 2
 		footerH := 1
-		taH := 5
-		vpH := msg.Height - headerH - footerH - taH - 2
+		vpH := msg.Height - headerH - ruleH - taH - footerH
 		if vpH < 3 {
 			vpH = 3
 		}
-		m.viewport.Width = msg.Width - 2
+		m.viewport.Width = msg.Width
 		m.viewport.Height = vpH
 		m.textarea.SetWidth(msg.Width - 2)
 		barW := msg.Width - 20
@@ -328,7 +387,8 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 
 	switch cmd {
 	case "/help":
-		m.pushSystem(strings.TrimPrefix(welcomeText(), sysStyle.Render("")))
+		m.rendered = append(m.rendered, welcomeText())
+		m.refresh()
 		return nil
 
 	case "/quit", "/exit":
@@ -443,45 +503,82 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 }
 
 func (m chatModel) View() string {
-	dirMax := m.width - len(m.modelName) - 30
-	if dirMax < 10 {
-		dirMax = 10
+	width := m.width
+	if width < 1 {
+		width = 80
 	}
-	header := headerStyle.Render(fmt.Sprintf(
-		" atlas.llm  ·  model: %s  ·  dir: %s ",
-		m.modelName, truncateLeft(m.cwd, dirMax),
-	))
 
-	body := borderStyle.Render(m.viewport.View())
-	input := borderStyle.Render(m.textarea.View())
+	header := m.renderHeader(width)
+	topRule := ruleStyle.Render(strings.Repeat("─", width))
+	body := m.viewport.View()
+	midRule := ruleStyle.Render(strings.Repeat("─", width))
+	input := m.renderInput(width)
+	footer := m.renderFooter(width)
 
-	var footer string
+	return lipgloss.JoinVertical(lipgloss.Left, header, topRule, body, midRule, input, footer)
+}
+
+func (m chatModel) renderHeader(width int) string {
+	dot := sepStyle.Render(" • ")
+	brand := brandStyle.Render("◆ atlas.llm")
+	model := metaLabelStyle.Render("model ") + metaValueStyle.Render(m.modelName)
+
+	dirMax := width - lipgloss.Width(brand) - lipgloss.Width(model) - 30
+	if dirMax < 12 {
+		dirMax = 12
+	}
+	dir := metaLabelStyle.Render("cwd ") + metaValueStyle.Render(truncateLeft(m.cwd, dirMax))
+
+	left := brand + dot + model + dot + dir
+
+	var right string
 	switch {
 	case m.busy && m.busyReason == "downloading":
-		var bar string
-		if m.dlTotal > 0 {
-			bar = m.progress.View()
-			footer = footerStyle.Render(fmt.Sprintf(
-				"%s  %s  %s / %s",
-				m.dlName, bar, formatBytes(m.dlWritten), formatBytes(m.dlTotal),
-			))
-		} else {
-			footer = footerStyle.Render(fmt.Sprintf(
-				"%s %s  %s",
-				m.spinner.View(), m.dlName, formatBytes(m.dlWritten),
-			))
-		}
+		right = busyStyle.Render(m.spinner.View() + " downloading")
 	case m.busy:
 		elapsed := ""
 		if !m.busyStart.IsZero() {
-			elapsed = fmt.Sprintf(" (%ds)", int(time.Since(m.busyStart).Seconds()))
+			elapsed = fmt.Sprintf(" %ds", int(time.Since(m.busyStart).Seconds()))
 		}
-		footer = footerStyle.Render(fmt.Sprintf("%s %s ...%s", m.spinner.View(), m.busyReason, elapsed))
+		right = busyStyle.Render(m.spinner.View() + " " + m.busyReason + elapsed)
 	default:
-		footer = footerStyle.Render("enter: send  ·  /help  ·  ctrl+c: quit")
+		right = sysStyle.Render("● ready")
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, input, footer)
+	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 2
+	if gap < 1 {
+		gap = 1
+	}
+	return " " + left + strings.Repeat(" ", gap) + right + " "
+}
+
+func (m chatModel) renderInput(width int) string {
+	prompt := brandStyle.Render("❯ ")
+	ta := m.textarea.View()
+	_ = width
+	return prompt + ta
+}
+
+func (m chatModel) renderFooter(width int) string {
+	_ = width
+	if m.busy && m.busyReason == "downloading" {
+		if m.dlTotal > 0 {
+			return footerStyle.Render(fmt.Sprintf(
+				"  %s  %s  %s / %s",
+				m.dlName, m.progress.View(), formatBytes(m.dlWritten), formatBytes(m.dlTotal),
+			))
+		}
+		return footerStyle.Render(fmt.Sprintf("  %s  %s", m.dlName, formatBytes(m.dlWritten)))
+	}
+
+	hints := []string{
+		footerKeyStyle.Render("↵") + footerStyle.Render(" send"),
+		footerKeyStyle.Render("⇧↵") + footerStyle.Render(" newline"),
+		footerKeyStyle.Render("/help") + footerStyle.Render(" commands"),
+		footerKeyStyle.Render("^C") + footerStyle.Render(" quit"),
+	}
+	sep := sepStyle.Render("  ·  ")
+	return "  " + strings.Join(hints, sep)
 }
 
 func runChatCmd(history []ChatMessage, input string) tea.Cmd {
