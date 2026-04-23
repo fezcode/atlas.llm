@@ -93,28 +93,12 @@ func grepDirectory(targetDir, query string, maxSize int64, progress func(string)
 
 func grepFile(relPath, content, query string) ([]GrepHit, error) {
 	numbered := numberLines(content)
-	prompt := fmt.Sprintf(`You are a semantic code search tool. The user is looking for:
+	system := `You are a strict semantic code-search tool. Identify file lines that MATCH the user's query — exact matches, close paraphrases, or clearly related code. Skip tangentially related lines.
 
-%q
+Output format: one match per line, exactly "LINE:<number>". If nothing matches, output exactly "NONE". No explanations, no other text.`
+	user := fmt.Sprintf("Query: %q\n\nFILE: %s\n----\n%s\n----", query, relPath, numbered)
 
-Below is a file with line numbers. Identify lines that MATCH the query — exact
-matches, close paraphrases, or clearly related code. Be strict: skip lines that
-are only tangentially related.
-
-Respond with ONE match per line in the format:
-LINE:<number>
-
-If nothing matches, respond with exactly:
-NONE
-
-Do not include explanations or any other text.
-
-FILE: %s
-----
-%s
-----`, query, relPath, numbered)
-
-	raw, err := runInference(prompt, 256)
+	raw, err := runSingleUser(system, user, 256)
 	if err != nil {
 		return nil, err
 	}

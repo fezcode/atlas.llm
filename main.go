@@ -82,7 +82,7 @@ EXAMPLES
 // prewarm starts llama-server up-front for one-shot CLI commands so the
 // user sees a single "loading model..." message instead of the first
 // file's summary/search appearing to hang. Without this the warmup cost
-// is paid inside the first runInference call, with no surrounding context.
+// is paid inside the first chat-completion call, with no surrounding context.
 func prewarm() error {
 	fmt.Fprintln(os.Stderr, "Loading model...")
 	start := time.Now()

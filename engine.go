@@ -278,11 +278,17 @@ func requireModel(m Model) (string, error) {
 	return p, nil
 }
 
-// runInference drives a /completion call against the persistent
+// runChat drives a /v1/chat/completions call against the persistent
 // llama-server. The server is lazy-started on the first call per process
 // (or whenever the active model changes) so the GGUF mmap + warmup cost is
 // paid once per session, not once per turn.
-func runInference(prompt string, maxTokens int) (string, error) {
+//
+// Using chat completions (instead of raw /completion) means llama-server
+// applies the model's native chat template — Gemma 3's
+// <start_of_turn>/<end_of_turn> sentinels, ChatML, etc. — and stops at the
+// turn boundary. Raw completion with "User:/Assistant:" markers was causing
+// the model to hallucinate additional fake turns after its real answer.
+func runChat(msgs []ChatMsg, maxTokens int) (string, error) {
 	if _, err := requireEngine(); err != nil {
 		return "", err
 	}
@@ -296,16 +302,30 @@ func runInference(prompt string, maxTokens int) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("server: %w", err)
 	}
-	out, err := s.Complete(prompt, maxTokens)
+	out, err := s.ChatComplete(msgs, maxTokens)
 	if err != nil {
 		return "", fmt.Errorf("inference failed: %w", err)
 	}
 	return strings.TrimSpace(out), nil
 }
 
+// runSingleUser is a convenience wrapper for one-shot tasks (summarize,
+// grep) that have no conversational history — just a single user prompt.
+func runSingleUser(system, user string, maxTokens int) (string, error) {
+	msgs := []ChatMsg{}
+	if system != "" {
+		msgs = append(msgs, ChatMsg{Role: "system", Content: system})
+	}
+	msgs = append(msgs, ChatMsg{Role: "user", Content: user})
+	return runChat(msgs, maxTokens)
+}
+
 func summarizeContent(content string) (string, error) {
-	prompt := "Summarize the following code file concisely in 1-3 sentences:\n\n" + content
-	return runInference(prompt, 150)
+	return runSingleUser(
+		"You are a concise code summarizer. Respond with only 1-3 plain sentences describing the file's purpose. Do not use markdown, code blocks, or lists.",
+		"Summarize this file:\n\n"+content,
+		150,
+	)
 }
 
 type ChatMessage struct {
@@ -313,27 +333,15 @@ type ChatMessage struct {
 	Content string
 }
 
-func buildChatPrompt(history []ChatMessage, userInput string) string {
-	var b strings.Builder
-	b.WriteString("You are a concise, helpful coding assistant.\n\n")
-	for _, m := range history {
-		switch m.Role {
-		case "user":
-			b.WriteString("User: ")
-		case "assistant":
-			b.WriteString("Assistant: ")
-		}
-		b.WriteString(m.Content)
-		b.WriteString("\n")
-	}
-	b.WriteString("User: ")
-	b.WriteString(userInput)
-	b.WriteString("\nAssistant:")
-	return b.String()
-}
-
 func chat(history []ChatMessage, userInput string) (string, error) {
-	return runInference(buildChatPrompt(history, userInput), 192)
+	msgs := []ChatMsg{
+		{Role: "system", Content: "You are a concise, helpful coding assistant. Keep replies under three short paragraphs unless more detail is explicitly requested."},
+	}
+	for _, m := range history {
+		msgs = append(msgs, ChatMsg{Role: m.Role, Content: m.Content})
+	}
+	msgs = append(msgs, ChatMsg{Role: "user", Content: userInput})
+	return runChat(msgs, 192)
 }
 
 func formatBytes(n int64) string {

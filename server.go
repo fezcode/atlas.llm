@@ -188,46 +188,67 @@ func (s *llamaServer) stopLocked() {
 	}
 }
 
-type completionRequest struct {
-	Prompt    string  `json:"prompt"`
-	NPredict  int     `json:"n_predict"`
-	Temp      float64 `json:"temperature"`
-	Stream    bool    `json:"stream"`
-	CachePrompt bool  `json:"cache_prompt"`
-}
-
-type completionResponse struct {
+// ChatMsg is a single turn passed to /v1/chat/completions. The "role" is
+// one of "system", "user", or "assistant".
+type ChatMsg struct {
+	Role    string `json:"role"`
 	Content string `json:"content"`
-	Stop    bool   `json:"stop"`
-	Error   string `json:"error"`
 }
 
-// Complete runs a /completion request against the running server.
-func (s *llamaServer) Complete(prompt string, maxTokens int) (string, error) {
-	body, _ := json.Marshal(completionRequest{
-		Prompt:      prompt,
-		NPredict:    maxTokens,
-		Temp:        0.2,
+type chatRequest struct {
+	Messages    []ChatMsg `json:"messages"`
+	MaxTokens   int       `json:"max_tokens"`
+	Temperature float64   `json:"temperature"`
+	Stream      bool      `json:"stream"`
+	CachePrompt bool      `json:"cache_prompt"`
+}
+
+type chatChoice struct {
+	Message      ChatMsg `json:"message"`
+	FinishReason string  `json:"finish_reason"`
+}
+
+type chatResponse struct {
+	Choices []chatChoice `json:"choices"`
+	Error   struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// ChatComplete sends a chat-style request to the running server. llama-server
+// applies the model's own chat template from the GGUF metadata (Gemma-3's
+// <start_of_turn>/<end_of_turn> sentinels, ChatML for other families, etc.)
+// and returns only the assistant's reply — so the model stops at the turn
+// boundary instead of spewing fake "User:/Assistant:" continuations.
+func (s *llamaServer) ChatComplete(msgs []ChatMsg, maxTokens int) (string, error) {
+	body, _ := json.Marshal(chatRequest{
+		Messages:    msgs,
+		MaxTokens:   maxTokens,
+		Temperature: 0.2,
 		Stream:      false,
 		CachePrompt: true,
 	})
-	url := fmt.Sprintf("http://127.0.0.1:%d/completion", s.port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", s.port)
 	start := time.Now()
 	resp, err := s.client.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("POST /completion: %w", err)
+		return "", fmt.Errorf("POST /v1/chat/completions: %w", err)
 	}
 	defer resp.Body.Close()
-	var cr completionResponse
+	var cr chatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
-		return "", fmt.Errorf("decode /completion: %w", err)
+		return "", fmt.Errorf("decode chat completion: %w", err)
 	}
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("llama-server HTTP %d: %s", resp.StatusCode, cr.Error)
+		return "", fmt.Errorf("llama-server HTTP %d: %s", resp.StatusCode, cr.Error.Message)
 	}
-	log.Printf("completion ok in %s (prompt=%d bytes, max=%d, reply=%d bytes)",
-		time.Since(start), len(prompt), maxTokens, len(cr.Content))
-	return cr.Content, nil
+	if len(cr.Choices) == 0 {
+		return "", fmt.Errorf("empty chat completion response")
+	}
+	content := cr.Choices[0].Message.Content
+	log.Printf("chat completion ok in %s (msgs=%d, max=%d, reply=%d bytes, finish=%s)",
+		time.Since(start), len(msgs), maxTokens, len(content), cr.Choices[0].FinishReason)
+	return content, nil
 }
 
 // logWriter forwards subprocess stdout/stderr into the atlas.llm log with a
