@@ -103,13 +103,23 @@ func engineDir() (string, error) {
 // archives nest the binary under paths like `build/bin/` depending on the
 // asset, so we walk to find it rather than hard-coding a location.
 func findEngineBinary() (string, error) {
+	return findEngineExecutable("llama-cli")
+}
+
+// findEngineServer locates llama-server[.exe] in the engine dir. Used for
+// the persistent server mode so we don't re-load the model on every turn.
+func findEngineServer() (string, error) {
+	return findEngineExecutable("llama-server")
+}
+
+func findEngineExecutable(base string) (string, error) {
 	dir, err := engineDir()
 	if err != nil {
 		return "", err
 	}
-	target := "llama-cli"
+	target := base
 	if runtime.GOOS == "windows" {
-		target = "llama-cli.exe"
+		target = base + ".exe"
 	}
 	var found string
 	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, werr error) error {

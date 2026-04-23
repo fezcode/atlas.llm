@@ -3,19 +3,15 @@ package main
 import (
 	"archive/tar"
 	"archive/zip"
-	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 )
 
 // ProgressFn is called as bytes stream in. total may be -1 if unknown.
@@ -282,52 +278,29 @@ func requireModel(m Model) (string, error) {
 	return p, nil
 }
 
+// runInference drives a /completion call against the persistent
+// llama-server. The server is lazy-started on the first call per process
+// (or whenever the active model changes) so the GGUF mmap + warmup cost is
+// paid once per session, not once per turn.
 func runInference(prompt string, maxTokens int) (string, error) {
-	eng, err := requireEngine()
-	if err != nil {
+	if _, err := requireEngine(); err != nil {
 		return "", err
 	}
-	m, err := currentModel()
-	if err != nil {
-		return "", err
-	}
-	mp, err := requireModel(m)
-	if err != nil {
-		return "", err
+	if m, err := currentModel(); err == nil {
+		if _, err := requireModel(m); err != nil {
+			return "", err
+		}
 	}
 
-	cmd := exec.Command(eng,
-		"-m", mp,
-		"-p", prompt,
-		"-n", fmt.Sprintf("%d", maxTokens),
-		"--temp", "0.2",
-		"-no-cnv",
-		"--no-display-prompt",
-	)
-	var out, stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-	// Detach from parent stdin so llama-cli can't steal keyboard input from
-	// the TUI — otherwise bubbletea's alt-screen gets torn down mid-inference
-	// on Windows and the whole app looks like it quit back to the shell.
-	cmd.Stdin = bytes.NewReader(nil)
-	applyEngineSysProcAttr(cmd)
-	// llama.cpp's Haswell CPU backend on Windows runs ops on OpenMP worker
-	// threads. libomp's default thread stack is ~1MB, which is too small for
-	// some matmul/attention kernels and causes STATUS_STACK_OVERFLOW
-	// (0xc00000fd) mid-inference. Give the workers plenty of headroom.
-	cmd.Env = append(os.Environ(), "OMP_STACKSIZE=64M")
-
-	log.Printf("inference: %s (prompt=%d bytes, max_tokens=%d)", eng, len(prompt), maxTokens)
-	start := time.Now()
-	err = cmd.Run()
-	elapsed := time.Since(start)
+	s, err := ensureServer()
 	if err != nil {
-		log.Printf("inference FAILED in %s: %v\nstderr:\n%s", elapsed, err, stderr.String())
-		return "", fmt.Errorf("inference failed: %v (stderr: %s)", err, stderr.String())
+		return "", fmt.Errorf("server: %w", err)
 	}
-	log.Printf("inference ok in %s (stdout=%d bytes, stderr=%d bytes)", elapsed, out.Len(), stderr.Len())
-	return strings.TrimSpace(out.String()), nil
+	out, err := s.Complete(prompt, maxTokens)
+	if err != nil {
+		return "", fmt.Errorf("inference failed: %w", err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func summarizeContent(content string) (string, error) {

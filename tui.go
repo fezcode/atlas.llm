@@ -72,6 +72,10 @@ type (
 		path string
 		err  error
 	}
+	serverReadyMsg struct {
+		model string
+		err   error
+	}
 	grepDoneMsg struct {
 		query string
 		hits  []GrepHit
@@ -133,7 +137,7 @@ func newChatModel() chatModel {
 
 	cfg, _ := loadConfig()
 
-	return chatModel{
+	cm := chatModel{
 		viewport:  vp,
 		textarea:  ta,
 		spinner:   sp,
@@ -141,6 +145,13 @@ func newChatModel() chatModel {
 		modelName: cfg.CurrentModel,
 		cwd:       displayCwd(),
 	}
+	if m, ok := findModel(cfg.CurrentModel); ok &&
+		isEngineDownloaded() && isModelDownloaded(m) {
+		cm.busy = true
+		cm.busyReason = "loading model"
+		cm.busyStart = time.Now()
+	}
+	return cm
 }
 
 // displayCwd returns the working directory in a compact, user-friendly form:
@@ -199,7 +210,29 @@ func welcomeText() string {
 }
 
 func (m chatModel) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.spinner.Tick)
+	return tea.Batch(textarea.Blink, m.spinner.Tick, warmupServerCmd())
+}
+
+// warmupServerCmd boots llama-server in a goroutine at chat startup so the
+// model is loaded before the user's first message lands.
+func warmupServerCmd() tea.Cmd {
+	return func() tea.Msg {
+		if !isEngineDownloaded() {
+			return serverReadyMsg{} // nothing to warm up yet
+		}
+		m, err := currentModel()
+		if err != nil {
+			return serverReadyMsg{err: err}
+		}
+		if !isModelDownloaded(m) {
+			return serverReadyMsg{} // let /download flow handle it
+		}
+		s, err := ensureServer()
+		if err != nil {
+			return serverReadyMsg{err: err}
+		}
+		return serverReadyMsg{model: s.model.Name}
+	}
 }
 
 func (m *chatModel) refresh() {
@@ -317,6 +350,20 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sysMsg:
 		m.pushSystem(msg.content)
+
+	case serverReadyMsg:
+		if msg.err != nil {
+			m.busy = false
+			m.busyReason = ""
+			m.pushError("model load failed: " + msg.err.Error())
+		} else if msg.model != "" {
+			m.busy = false
+			m.busyReason = ""
+			m.pushSystem(fmt.Sprintf("Model %s loaded and ready.", msg.model))
+		} else {
+			m.busy = false
+			m.busyReason = ""
+		}
 
 	case summarizeDoneMsg:
 		m.busy = false
@@ -683,6 +730,7 @@ func runDownloadAllCmd(t downloadTargets) tea.Cmd {
 func startChat() (err error) {
 	logFile, closeLog, logErr := setupLogging()
 	defer closeLog()
+	defer shutdownServer()
 	defer func() {
 		if r := recover(); r != nil {
 			logPanicln(r)

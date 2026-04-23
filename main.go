@@ -4,7 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 )
 
 var Version = "dev"
@@ -76,7 +78,21 @@ EXAMPLES
   atlas.llm --grep "where we load the gitignore" ./src
 `
 
+// installSignalCleanup kills the llama-server subprocess on Ctrl+C /
+// SIGTERM so it doesn't outlive the CLI. Covers the case where the TUI
+// defer doesn't run (e.g. shell-level kill, Task Manager).
+func installSignalCleanup() {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		shutdownServer()
+		os.Exit(130)
+	}()
+}
+
 func main() {
+	installSignalCleanup()
 	var (
 		versionFlag       bool
 		helpFlag          bool
