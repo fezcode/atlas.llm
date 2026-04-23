@@ -320,11 +320,21 @@ func runSingleUser(system, user string, maxTokens int) (string, error) {
 	return runChat(msgs, maxTokens)
 }
 
+// summarizeMaxChars caps the amount of file content we send to the model
+// per /summarize request. Roughly 10K chars ≈ 2.5K tokens, well inside the
+// server's 16K ctx even after the system prompt, chat-template overhead,
+// and the 512-token reply budget.
+const summarizeMaxChars = 10000
+
 func summarizeContent(content string) (string, error) {
+	truncated := content
+	if len(truncated) > summarizeMaxChars {
+		truncated = truncated[:summarizeMaxChars] + "\n\n... (file truncated for summary)"
+	}
 	return runSingleUser(
 		"You are a concise code summarizer. Respond with only 1-3 plain sentences describing the file's purpose. Do not use markdown, code blocks, or lists.",
-		"Summarize this file:\n\n"+content,
-		150,
+		"Summarize this file:\n\n"+truncated,
+		512,
 	)
 }
 

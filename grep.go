@@ -98,7 +98,7 @@ func grepFile(relPath, content, query string) ([]GrepHit, error) {
 Output format: one match per line, exactly "LINE:<number>". If nothing matches, output exactly "NONE". No explanations, no other text.`
 	user := fmt.Sprintf("Query: %q\n\nFILE: %s\n----\n%s\n----", query, relPath, numbered)
 
-	raw, err := runSingleUser(system, user, 256)
+	raw, err := runSingleUser(system, user, 512)
 	if err != nil {
 		return nil, err
 	}

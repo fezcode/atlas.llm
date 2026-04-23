@@ -49,3 +49,17 @@ func logPanicln(v any) {
 		fmt.Fprintf(os.Stderr, "full stack trace written to %s\n", p)
 	}
 }
+
+// clearLogs removes the persistent log file. Safe to call when the file
+// doesn't exist yet.
+func clearLogs() error {
+	p, err := logPath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	fmt.Printf("Removed %s\n", p)
+	return nil
+}

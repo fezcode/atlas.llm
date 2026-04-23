@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -97,7 +99,7 @@ func startLlamaServer(m Model) (*llamaServer, error) {
 		"-m", modelPath,
 		"--host", "127.0.0.1",
 		"--port", fmt.Sprintf("%d", port),
-		"-c", "4096",
+		"-c", "16384",
 		"-t", fmt.Sprintf("%d", threads),
 		"-ngl", "0",
 		"--log-disable",
@@ -118,7 +120,7 @@ func startLlamaServer(m Model) (*llamaServer, error) {
 		cmd:     cmd,
 		port:    port,
 		model:   m,
-		ctxN:    4096,
+		ctxN:    16384,
 		client:  &http.Client{Timeout: 10 * time.Minute},
 		waitErr: make(chan error, 1),
 	}
@@ -221,34 +223,58 @@ type chatResponse struct {
 // and returns only the assistant's reply — so the model stops at the turn
 // boundary instead of spewing fake "User:/Assistant:" continuations.
 func (s *llamaServer) ChatComplete(msgs []ChatMsg, maxTokens int) (string, error) {
-	body, _ := json.Marshal(chatRequest{
+	reqBody, _ := json.Marshal(chatRequest{
 		Messages:    msgs,
 		MaxTokens:   maxTokens,
 		Temperature: 0.2,
 		Stream:      false,
 		CachePrompt: true,
 	})
+	log.Printf("→ POST /v1/chat/completions port=%d max_tokens=%d msgs=%d", s.port, maxTokens, len(msgs))
+	for i, m := range msgs {
+		log.Printf("  msg[%d] %s (%d bytes): %s", i, m.Role, len(m.Content), truncateForLog(m.Content, 500))
+	}
+
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", s.port)
 	start := time.Now()
-	resp, err := s.client.Post(url, "application/json", bytes.NewReader(body))
+	resp, err := s.client.Post(url, "application/json", bytes.NewReader(reqBody))
 	if err != nil {
 		return "", fmt.Errorf("POST /v1/chat/completions: %w", err)
 	}
 	defer resp.Body.Close()
-	var cr chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
-		return "", fmt.Errorf("decode chat completion: %w", err)
+
+	raw, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return "", fmt.Errorf("read chat completion body: %w", readErr)
 	}
+	log.Printf("← HTTP %d in %s (body=%d bytes)", resp.StatusCode, time.Since(start), len(raw))
+	log.Printf("  body: %s", truncateForLog(string(raw), 2000))
+
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("llama-server HTTP %d: %s", resp.StatusCode, cr.Error.Message)
+		return "", fmt.Errorf("llama-server HTTP %d: %s", resp.StatusCode, truncateForLog(string(raw), 300))
+	}
+	var cr chatResponse
+	if err := json.Unmarshal(raw, &cr); err != nil {
+		return "", fmt.Errorf("decode chat completion: %w", err)
 	}
 	if len(cr.Choices) == 0 {
 		return "", fmt.Errorf("empty chat completion response")
 	}
 	content := cr.Choices[0].Message.Content
-	log.Printf("chat completion ok in %s (msgs=%d, max=%d, reply=%d bytes, finish=%s)",
-		time.Since(start), len(msgs), maxTokens, len(content), cr.Choices[0].FinishReason)
+	if content == "" && cr.Choices[0].FinishReason == "length" {
+		log.Printf("  WARNING: reply was empty and finish_reason=length — max_tokens=%d likely too small", maxTokens)
+	}
 	return content, nil
+}
+
+func truncateForLog(s string, n int) string {
+	// Collapse newlines so each log line stays one line.
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ⏎ ")
+	if len(s) > n {
+		return s[:n] + "…(+" + fmt.Sprintf("%d", len(s)-n) + " more)"
+	}
+	return s
 }
 
 // logWriter forwards subprocess stdout/stderr into the atlas.llm log with a

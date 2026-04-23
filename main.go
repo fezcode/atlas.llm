@@ -21,6 +21,7 @@ USAGE
 FLAGS
   -h, --help           Show this help and exit.
   -v, --version        Print version and exit.
+  --clear-logs         Delete the persistent TUI log file and exit.
 
   --summarize          Summarize every text file in DIR (default: .) and write
                        the result to SUMMARY.md in the target directory.
@@ -123,6 +124,7 @@ func main() {
 		excludeFlag       string
 		grepFlag          string
 		maxSizeFlag       int64
+		clearLogsFlag     bool
 	)
 
 	flag.BoolVar(&versionFlag, "v", false, "")
@@ -137,6 +139,7 @@ func main() {
 	flag.StringVar(&excludeFlag, "exclude", "", "")
 	flag.StringVar(&grepFlag, "grep", "", "")
 	flag.Int64Var(&maxSizeFlag, "max-size", DefaultGrepMaxSize, "")
+	flag.BoolVar(&clearLogsFlag, "clear-logs", false, "")
 
 	flag.Usage = func() { fmt.Print(helpText) }
 	flag.Parse()
@@ -147,6 +150,14 @@ func main() {
 	}
 	if versionFlag {
 		fmt.Printf("atlas.llm v%s\n", Version)
+		return
+	}
+
+	if clearLogsFlag {
+		if err := clearLogs(); err != nil {
+			fmt.Fprintf(os.Stderr, "clear-logs: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
