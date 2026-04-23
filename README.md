@@ -119,12 +119,18 @@ each file is summarized in isolation.
 
 ## Building from source
 
+The canonical build uses [gobake](https://github.com/fezcode/gobake) with the
+repo's `Recipe.go` + `recipe.piml`:
+
+```powershell
+gobake build
+```
+
+Plain `go build` also works if you'd rather not install gobake:
+
 ```powershell
 go build -o build/atlas.llm.exe .
 ```
-
-The repo also ships a [gobake](https://github.com/fezcode/gobake) recipe
-(`Recipe.go` + `recipe.piml`) for the canonical build.
 
 ## License
 
