@@ -1,0 +1,4 @@
+(name) atlas.ai.context
+(version) 0.2.0
+(description) Local AI chat + project context tooling. Interactive TUI with slash commands, plus one-shot --summarize and --dump modes.
+(license) MIT
