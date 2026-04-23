@@ -219,6 +219,7 @@ func welcomeText() string {
 			{"/help", "show this help"},
 			{"/clear", "clear the on-screen scrollback (keeps context)"},
 			{"/reset", "drop conversation context + server KV cache"},
+			{"/set [k [v]]", "show or change settings (max_tokens)"},
 			{"/quit  /exit", "leave chat (or press ctrl+c)"},
 		}},
 	}
@@ -356,6 +357,50 @@ func (m *chatModel) pushError(s string) {
 	m.pushBlank()
 	m.rendered = append(m.rendered, errPillStyle.Render("ERROR")+"  "+errTextStyle.Render(s))
 	m.refresh()
+}
+
+// handleSet implements `/set`, `/set <key>`, and `/set <key> <value>`. With
+// no args it lists current settings; with a key alone it prints that
+// setting; with key+value it validates and persists.
+func (m *chatModel) handleSet(args []string) {
+	cfg, err := loadConfig()
+	if err != nil {
+		m.pushError("load config: " + err.Error())
+		return
+	}
+	if len(args) == 0 {
+		m.pushSystem(fmt.Sprintf("Settings:\n  max_tokens = %d  (reply-length cap; default %d)",
+			cfg.MaxTokens, defaultMaxTokens))
+		return
+	}
+	key := strings.ToLower(args[0])
+	switch key {
+	case "max_tokens":
+		if len(args) < 2 {
+			m.pushSystem(fmt.Sprintf("max_tokens = %d", cfg.MaxTokens))
+			return
+		}
+		n, err := strconv.Atoi(args[1])
+		if err != nil || n <= 0 {
+			m.pushError(fmt.Sprintf("invalid max_tokens=%q (expected positive integer)", args[1]))
+			return
+		}
+		// llama-server's context is 16384; a reply that large would leave zero
+		// room for prompt + history. Cap at a value that still admits a
+		// non-trivial conversation.
+		if n > 12000 {
+			m.pushError(fmt.Sprintf("max_tokens=%d exceeds safe ceiling of 12000 (16K ctx - headroom for prompt/history)", n))
+			return
+		}
+		cfg.MaxTokens = n
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		m.pushSystem(fmt.Sprintf("max_tokens = %d", n))
+	default:
+		m.pushError(fmt.Sprintf("unknown setting: %s (supported: max_tokens)", key))
+	}
 }
 
 // lastAssistantContent returns the raw text of the most recent assistant
@@ -757,6 +802,10 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 		m.pushSystem(fmt.Sprintf("Summarizing %s → %s  (max-size=%d, exclude=%v)",
 			opts.TargetDir, opts.Output, opts.MaxSize, opts.Exclude))
 		return tea.Batch(runSummarizeCmd(opts), m.spinner.Tick)
+
+	case "/set":
+		m.handleSet(args)
+		return nil
 
 	case "/grep":
 		if len(args) == 0 {

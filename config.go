@@ -70,7 +70,13 @@ var llamacppAssetSuffix = map[string]string{
 
 type Config struct {
 	CurrentModel string `json:"current_model"`
+	MaxTokens    int    `json:"max_tokens,omitempty"`
 }
+
+// defaultMaxTokens is the reply-length cap applied when the config hasn't
+// set one. Sized to fit almost any chat response while leaving plenty of
+// the 16K ctx window for conversation history.
+const defaultMaxTokens = 4096
 
 func atlasDir() (string, error) {
 	home, err := os.UserHomeDir()
@@ -194,6 +200,9 @@ func loadConfig() (Config, error) {
 	}
 	if cfg.CurrentModel == "" {
 		cfg.CurrentModel = defaultModel
+	}
+	if cfg.MaxTokens <= 0 {
+		cfg.MaxTokens = defaultMaxTokens
 	}
 	return cfg, nil
 }
