@@ -18,9 +18,9 @@ type Model struct {
 var availableModels = []Model{
 	{
 		Name:     "gemma-4-e2b-it",
-		Filename: "gemma-4-e2b-it-Q4_K_M.gguf",
-		URL:      "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-e2b-it-Q4_K_M.gguf",
-		Size:     "~1.7GB",
+		Filename: "gemma-4-E2B-it-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
+		Size:     "~2.9GB",
 	},
 }
 

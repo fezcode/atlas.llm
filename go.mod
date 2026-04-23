@@ -1,4 +1,4 @@
-module atlas.ai.context
+module atlas.ai
 
 go 1.25.3
 

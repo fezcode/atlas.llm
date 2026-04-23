@@ -9,11 +9,11 @@ import (
 
 var Version = "dev"
 
-const helpText = `atlas.ai.context - local AI chat + project context tooling
+const helpText = `atlas.ai - local AI chat + project context tooling
 
 USAGE
-  atlas.ai.context                    Launch interactive chat (TUI)
-  atlas.ai.context [flags] [DIR]      Run a one-shot command
+  atlas.ai                    Launch interactive chat (TUI)
+  atlas.ai [flags] [DIR]      Run a one-shot command
 
 FLAGS
   -h, --help           Show this help and exit.
@@ -59,11 +59,11 @@ DATA DIRECTORY
     models/<name>.gguf     downloaded model weights
 
 EXAMPLES
-  atlas.ai.context
-  atlas.ai.context --summarize
-  atlas.ai.context --summarize ./src
-  atlas.ai.context --dump -o context.md ./src
-  atlas.ai.context --dump --exclude .mp4,.mp3 --with-summaries
+  atlas.ai
+  atlas.ai --summarize
+  atlas.ai --summarize ./src
+  atlas.ai --dump -o context.md ./src
+  atlas.ai --dump --exclude .mp4,.mp3 --with-summaries
 `
 
 func main() {
@@ -96,7 +96,7 @@ func main() {
 		return
 	}
 	if versionFlag {
-		fmt.Printf("atlas.ai.context v%s\n", Version)
+		fmt.Printf("atlas.ai v%s\n", Version)
 		return
 	}
 

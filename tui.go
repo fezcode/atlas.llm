@@ -101,7 +101,7 @@ func newChatModel() chatModel {
 
 func welcomeText() string {
 	return sysStyle.Render(strings.Join([]string{
-		"Welcome to atlas.ai.context chat.",
+		"Welcome to atlas.ai chat.",
 		"",
 		"Slash commands:",
 		"  /help          Show this help",
@@ -379,7 +379,7 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 }
 
 func (m chatModel) View() string {
-	header := headerStyle.Render(fmt.Sprintf(" atlas.ai.context  ·  model: %s ", m.modelName))
+	header := headerStyle.Render(fmt.Sprintf(" atlas.ai  ·  model: %s ", m.modelName))
 
 	body := borderStyle.Render(m.viewport.View())
 	input := borderStyle.Render(m.textarea.View())
