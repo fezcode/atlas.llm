@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -198,7 +199,7 @@ func welcomeText() string {
 			{"/download all", "engine + every registered model"},
 		}},
 		{"Project tools", [][2]string{
-			{"/summarize", "write SUMMARY.md for the current directory"},
+			{"/summarize [dir]", "write SUMMARY.md (flags: --max-size=N, --exclude=.ext,...)"},
 			{"/grep <query>", "semantic grep across the current directory"},
 		}},
 		{"Chat", [][2]string{
@@ -565,11 +566,17 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 		return tea.Batch(runDownloadAllCmd(targets), m.spinner.Tick)
 
 	case "/summarize":
+		opts, err := parseSummarizeArgs(args)
+		if err != nil {
+			m.pushError(err.Error())
+			return nil
+		}
 		m.busy = true
 		m.busyReason = "summarizing"
 		m.busyStart = time.Now()
-		m.pushSystem("Summarizing current directory → SUMMARY.md ...")
-		return tea.Batch(runSummarizeCmd("."), m.spinner.Tick)
+		m.pushSystem(fmt.Sprintf("Summarizing %s → %s  (max-size=%d, exclude=%v)",
+			opts.TargetDir, opts.Output, opts.MaxSize, opts.Exclude))
+		return tea.Batch(runSummarizeCmd(opts), m.spinner.Tick)
 
 	case "/grep":
 		if len(args) == 0 {
@@ -734,11 +741,46 @@ func progressToSysMsg() func(string) {
 	}
 }
 
-func runSummarizeCmd(dir string) tea.Cmd {
+// parseSummarizeArgs parses the token list that follows /summarize in the
+// TUI. Supports one optional positional DIR and --flag=value options:
+//
+//	/summarize
+//	/summarize ./src
+//	/summarize --max-size=131072
+//	/summarize ./src --exclude=.min.js,.lock
+func parseSummarizeArgs(args []string) (SummarizeOptions, error) {
+	opts := SummarizeOptions{
+		TargetDir: ".",
+		Output:    "SUMMARY.md",
+		MaxSize:   DefaultSummarizeMaxSize,
+	}
+	for _, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--max-size="):
+			v := strings.TrimPrefix(a, "--max-size=")
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil || n <= 0 {
+				return opts, fmt.Errorf("invalid --max-size=%q (expected positive integer bytes)", v)
+			}
+			opts.MaxSize = n
+		case strings.HasPrefix(a, "--exclude="):
+			v := strings.TrimPrefix(a, "--exclude=")
+			if v != "" {
+				opts.Exclude = strings.Split(v, ",")
+			}
+		case strings.HasPrefix(a, "--"):
+			return opts, fmt.Errorf("unknown option: %s (supported: --max-size=N, --exclude=.ext1,.ext2)", a)
+		default:
+			opts.TargetDir = a
+		}
+	}
+	return opts, nil
+}
+
+func runSummarizeCmd(opts SummarizeOptions) tea.Cmd {
 	return func() tea.Msg {
-		out := "SUMMARY.md"
-		err := summarizeDirectory(dir, out, progressToSysMsg())
-		return summarizeDoneMsg{path: out, err: err}
+		err := summarizeDirectory(opts, progressToSysMsg())
+		return summarizeDoneMsg{path: opts.Output, err: err}
 	}
 }
 

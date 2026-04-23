@@ -26,6 +26,10 @@ FLAGS
   --summarize          Summarize every text file in DIR (default: .) and write
                        the result to SUMMARY.md in the target directory.
                        Uses the currently selected local model (see /model).
+                       Skips .gitignored, binary, and oversized files.
+                       Honors --exclude (comma-separated extensions) and
+                       --max-size (bytes; default 262144 for summarize, which
+                       overrides the grep default when --summarize is set).
                        REQUIRES the engine and model to already be present in
                        ~/.atlas/atlas.llm.data/ — start chat and run /download
                        first. Dependencies are never fetched automatically.
@@ -199,12 +203,28 @@ func main() {
 			fmt.Fprintf(os.Stderr, "summarize: %v\n", err)
 			os.Exit(1)
 		}
-		out := "SUMMARY.md"
-		if err := summarizeDirectory(targetDir, out, nil); err != nil {
+		var excludes []string
+		if excludeFlag != "" {
+			excludes = strings.Split(excludeFlag, ",")
+		}
+		// --max-size on /summarize uses the summarize default if the user
+		// didn't explicitly override it (maxSizeFlag defaults to the grep
+		// constant, which is too strict for summaries).
+		summarizeMax := int64(maxSizeFlag)
+		if maxSizeFlag == DefaultGrepMaxSize {
+			summarizeMax = DefaultSummarizeMaxSize
+		}
+		opts := SummarizeOptions{
+			TargetDir: targetDir,
+			Output:    "SUMMARY.md",
+			MaxSize:   summarizeMax,
+			Exclude:   excludes,
+		}
+		if err := summarizeDirectory(opts, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "summarize: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("Summary written to %s\n", out)
+		fmt.Printf("Summary written to %s\n", opts.Output)
 
 	case dumpFlag:
 		if withSummariesFlag {
