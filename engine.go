@@ -351,7 +351,7 @@ func chat(history []ChatMessage, userInput string) (string, error) {
 		msgs = append(msgs, ChatMsg{Role: m.Role, Content: m.Content})
 	}
 	msgs = append(msgs, ChatMsg{Role: "user", Content: userInput})
-	return runChat(msgs, 192)
+	return runChat(msgs, 2048)
 }
 
 func formatBytes(n int64) string {

@@ -8,11 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -117,6 +119,11 @@ type chatModel struct {
 	picking     string // "" or "model"
 	pickerIdx   int
 	pickerItems []Model
+
+	// Markdown renderer for assistant replies. Rebuilt on resize so word
+	// wrap tracks the viewport width.
+	mdRenderer *glamour.TermRenderer
+	mdWidth    int
 }
 
 func newChatModel() chatModel {
@@ -306,14 +313,61 @@ func (m *chatModel) pushUser(s string) {
 
 func (m *chatModel) pushAssistant(s string) {
 	m.pushBlank()
-	m.rendered = append(m.rendered, assistantPillStyle.Render("ATLAS")+"  "+s)
+	m.rendered = append(m.rendered, assistantPillStyle.Render("ATLAS"))
+	m.rendered = append(m.rendered, m.renderMarkdown(s))
 	m.refresh()
+}
+
+// renderMarkdown runs the assistant's reply through glamour so headings,
+// lists, code fences, and inline styling render as ANSI. Falls back to the
+// raw text if the renderer fails or the content is empty. The renderer is
+// cached and rebuilt only when the viewport width changes.
+func (m *chatModel) renderMarkdown(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return s
+	}
+	width := m.viewport.Width
+	if width <= 0 {
+		width = 80
+	}
+	wrap := width - 4
+	if wrap < 20 {
+		wrap = 20
+	}
+	if m.mdRenderer == nil || m.mdWidth != wrap {
+		r, err := glamour.NewTermRenderer(
+			glamour.WithAutoStyle(),
+			glamour.WithWordWrap(wrap),
+		)
+		if err != nil {
+			return s
+		}
+		m.mdRenderer = r
+		m.mdWidth = wrap
+	}
+	out, err := m.mdRenderer.Render(s)
+	if err != nil {
+		return s
+	}
+	return strings.Trim(out, "\n")
 }
 
 func (m *chatModel) pushError(s string) {
 	m.pushBlank()
 	m.rendered = append(m.rendered, errPillStyle.Render("ERROR")+"  "+errTextStyle.Render(s))
 	m.refresh()
+}
+
+// lastAssistantContent returns the raw text of the most recent assistant
+// reply (pre-markdown-rendering) so Ctrl+Y copies something pasteable
+// rather than ANSI-decorated output.
+func (m *chatModel) lastAssistantContent() string {
+	for i := len(m.history) - 1; i >= 0; i-- {
+		if m.history[i].Role == "assistant" {
+			return m.history[i].Content
+		}
+	}
+	return ""
 }
 
 // openModelPicker populates the picker with the available registry and
@@ -470,6 +524,16 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			return m, tea.Quit
+		case tea.KeyCtrlY:
+			content := m.lastAssistantContent()
+			if content == "" {
+				m.pushSystem("Nothing to copy — no assistant reply yet.")
+			} else if err := clipboard.WriteAll(content); err != nil {
+				m.pushError("copy failed: " + err.Error())
+			} else {
+				m.pushSystem(fmt.Sprintf("Copied last reply (%d chars) to clipboard.", len(content)))
+			}
+			return m, tea.Batch(cmds...)
 		case tea.KeyEnter:
 			if m.busy {
 				break
@@ -828,6 +892,7 @@ func (m chatModel) renderFooter(width int) string {
 	hints := []string{
 		footerKeyStyle.Render("↵") + footerStyle.Render(" send"),
 		footerKeyStyle.Render("⇧↵") + footerStyle.Render(" newline"),
+		footerKeyStyle.Render("^Y") + footerStyle.Render(" copy reply"),
 		footerKeyStyle.Render("/help") + footerStyle.Render(" commands"),
 		footerKeyStyle.Render("^C") + footerStyle.Render(" quit"),
 	}
