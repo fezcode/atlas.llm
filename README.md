@@ -35,6 +35,7 @@ Dependencies (engine + model) are **not** downloaded automatically — run
 | `/download <name>`| Download engine + the named model (does not switch to it).          |
 | `/download all`   | Download engine + every model in the registry.                      |
 | `/summarize`      | Summarize the current directory into `SUMMARY.md`.                  |
+| `/grep <query>`   | Semantic grep: ask the local model to find lines matching `<query>`.|
 | `/clear`          | Clear on-screen chat history.                                       |
 | `/quit`, `/exit`  | Leave chat (Ctrl+C also works).                                     |
 
@@ -54,7 +55,22 @@ atlas.llm --summarize ./src
 This is the one-shot equivalent of running `/summarize` inside chat. It does
 **not** include raw file contents — only the AI-generated summaries.
 
-### 3. `--dump` — full project context to Markdown
+### 3. `--grep` — semantic code search
+
+Walks the target directory and asks the local model to identify lines
+matching a natural-language query. Prints `path:line: snippet` for each hit.
+Respects `.gitignore`.
+
+```powershell
+atlas.llm --grep "where we load the gitignore"
+atlas.llm --grep "download progress callback" ./src
+```
+
+Unlike regex grep, queries can describe intent (`"retry logic with
+backoff"`) rather than exact tokens. Accuracy depends on the selected
+local model.
+
+### 4. `--dump` — full project context to Markdown
 
 Compiles every text file under the target directory into a single Markdown
 document, with syntax-highlighted fenced code blocks. Intended for pasting
@@ -81,6 +97,7 @@ atlas.llm --dump --with-summaries        # inline AI summaries per file
 | `-h`, `--help`     | Show help.                       |
 | `-v`, `--version`  | Print version.                   |
 | `--summarize`      | Run summary-to-`SUMMARY.md` mode.|
+| `--grep QUERY`     | Run semantic grep mode.          |
 | `--dump`           | Run directory-to-Markdown mode.  |
 
 ## Data directory

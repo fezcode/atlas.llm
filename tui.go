@@ -42,6 +42,11 @@ type (
 		path string
 		err  error
 	}
+	grepDoneMsg struct {
+		query string
+		hits  []GrepHit
+		err   error
+	}
 	downloadDoneMsg struct {
 		what string
 		err  error
@@ -144,6 +149,7 @@ func welcomeText() string {
 		"                 /download <model-name>  – engine + that model",
 		"                 /download all           – engine + every registered model",
 		"  /summarize     Summarize current directory to SUMMARY.md",
+		"  /grep <query>  Semantic grep across current directory",
 		"  /clear         Clear chat history",
 		"  /quit, /exit   Leave chat",
 		"",
@@ -258,6 +264,16 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pushError(msg.err.Error())
 		} else {
 			m.pushSystem(fmt.Sprintf("Summary written to %s", msg.path))
+		}
+
+	case grepDoneMsg:
+		m.busy = false
+		m.busyReason = ""
+		if msg.err != nil {
+			m.pushError(msg.err.Error())
+		} else {
+			m.pushSystem(fmt.Sprintf("grep: %q", msg.query))
+			m.pushSystem(formatGrepHits(msg.hits))
 		}
 
 	case downloadProgressMsg:
@@ -404,6 +420,17 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 		m.pushSystem("Summarizing current directory → SUMMARY.md ...")
 		return tea.Batch(runSummarizeCmd("."), m.spinner.Tick)
 
+	case "/grep":
+		if len(args) == 0 {
+			m.pushError("usage: /grep <query>")
+			return nil
+		}
+		query := strings.TrimSpace(strings.TrimPrefix(input, parts[0]))
+		m.busy = true
+		m.busyReason = "grepping"
+		m.pushSystem(fmt.Sprintf("Searching current directory for: %s", query))
+		return tea.Batch(runGrepCmd(".", query), m.spinner.Tick)
+
 	default:
 		m.pushError(fmt.Sprintf("unknown command: %s", cmd))
 		return nil
@@ -463,6 +490,13 @@ func runSummarizeCmd(dir string) tea.Cmd {
 		out := "SUMMARY.md"
 		err := summarizeDirectory(dir, out, nil)
 		return summarizeDoneMsg{path: out, err: err}
+	}
+}
+
+func runGrepCmd(dir, query string) tea.Cmd {
+	return func() tea.Msg {
+		hits, err := grepDirectory(dir, query, nil)
+		return grepDoneMsg{query: query, hits: hits, err: err}
 	}
 }
 

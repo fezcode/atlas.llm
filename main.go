@@ -26,6 +26,11 @@ FLAGS
                        ~/.atlas/atlas.llm.data/ — start chat and run /download
                        first. Dependencies are never fetched automatically.
 
+  --grep QUERY         Semantic grep — ask the local model to find lines in
+                       DIR (default: .) that match QUERY (natural language or
+                       code). Prints "path:line: snippet" for each hit. Same
+                       dependency requirement as --summarize.
+
   --dump               Compile every text file in DIR (default: .) into a
                        single Markdown document. Respects .gitignore and
                        skips binary files. Good for pasting full project
@@ -48,6 +53,7 @@ INTERACTIVE MODE
                       <model-name>     engine + that model
                       all              engine + every registered model
     /summarize      Summarize current directory into SUMMARY.md.
+    /grep <query>   Semantic grep across current directory.
     /clear          Clear the on-screen chat history.
     /quit, /exit    Leave chat (Ctrl+C also works).
 
@@ -64,6 +70,7 @@ EXAMPLES
   atlas.llm --summarize ./src
   atlas.llm --dump -o context.md ./src
   atlas.llm --dump --exclude .mp4,.mp3 --with-summaries
+  atlas.llm --grep "where we load the gitignore" ./src
 `
 
 func main() {
@@ -75,6 +82,7 @@ func main() {
 		withSummariesFlag bool
 		outputFlag        string
 		excludeFlag       string
+		grepFlag          string
 	)
 
 	flag.BoolVar(&versionFlag, "v", false, "")
@@ -87,6 +95,7 @@ func main() {
 	flag.StringVar(&outputFlag, "o", "project_context.md", "")
 	flag.StringVar(&outputFlag, "output", "project_context.md", "")
 	flag.StringVar(&excludeFlag, "exclude", "", "")
+	flag.StringVar(&grepFlag, "grep", "", "")
 
 	flag.Usage = func() { fmt.Print(helpText) }
 	flag.Parse()
@@ -105,10 +114,29 @@ func main() {
 		targetDir = flag.Arg(0)
 	}
 
-	switch {
-	case summarizeFlag && dumpFlag:
-		fmt.Fprintln(os.Stderr, "--summarize and --dump cannot be combined; use --dump --with-summaries to embed summaries in a dump.")
+	modes := 0
+	if summarizeFlag {
+		modes++
+	}
+	if dumpFlag {
+		modes++
+	}
+	if grepFlag != "" {
+		modes++
+	}
+	if modes > 1 {
+		fmt.Fprintln(os.Stderr, "--summarize, --dump, and --grep are mutually exclusive.")
 		os.Exit(2)
+	}
+
+	switch {
+	case grepFlag != "":
+		hits, err := grepDirectory(targetDir, grepFlag, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "grep: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(formatGrepHits(hits))
 
 	case summarizeFlag:
 		out := "SUMMARY.md"
