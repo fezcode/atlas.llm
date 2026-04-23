@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 )
 
 var Version = "dev"
@@ -78,6 +79,21 @@ EXAMPLES
   atlas.llm --grep "where we load the gitignore" ./src
 `
 
+// prewarm starts llama-server up-front for one-shot CLI commands so the
+// user sees a single "loading model..." message instead of the first
+// file's summary/search appearing to hang. Without this the warmup cost
+// is paid inside the first runInference call, with no surrounding context.
+func prewarm() error {
+	fmt.Fprintln(os.Stderr, "Loading model...")
+	start := time.Now()
+	s, err := ensureServer()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "Model %s ready in %s.\n", s.model.Name, time.Since(start).Round(time.Millisecond))
+	return nil
+}
+
 // installSignalCleanup kills the llama-server subprocess on Ctrl+C /
 // SIGTERM so it doesn't outlive the CLI. Covers the case where the TUI
 // defer doesn't run (e.g. shell-level kill, Task Manager).
@@ -93,6 +109,10 @@ func installSignalCleanup() {
 
 func main() {
 	installSignalCleanup()
+	// One-shot commands (--summarize / --grep) lazily start llama-server on
+	// the first inference call. Make sure we kill it before process exit so
+	// a crashed or Ctrl+C'd CLI never orphans the backend.
+	defer shutdownServer()
 	var (
 		versionFlag       bool
 		helpFlag          bool
@@ -152,6 +172,10 @@ func main() {
 
 	switch {
 	case grepFlag != "":
+		if err := prewarm(); err != nil {
+			fmt.Fprintf(os.Stderr, "grep: %v\n", err)
+			os.Exit(1)
+		}
 		hits, err := grepDirectory(targetDir, grepFlag, maxSizeFlag, nil)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "grep: %v\n", err)
@@ -160,6 +184,10 @@ func main() {
 		fmt.Println(formatGrepHits(hits))
 
 	case summarizeFlag:
+		if err := prewarm(); err != nil {
+			fmt.Fprintf(os.Stderr, "summarize: %v\n", err)
+			os.Exit(1)
+		}
 		out := "SUMMARY.md"
 		if err := summarizeDirectory(targetDir, out, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "summarize: %v\n", err)
@@ -168,6 +196,12 @@ func main() {
 		fmt.Printf("Summary written to %s\n", out)
 
 	case dumpFlag:
+		if withSummariesFlag {
+			if err := prewarm(); err != nil {
+				fmt.Fprintf(os.Stderr, "dump: %v\n", err)
+				os.Exit(1)
+			}
+		}
 		var excludes []string
 		if excludeFlag != "" {
 			excludes = strings.Split(excludeFlag, ",")
