@@ -4,10 +4,11 @@
 ![Banner](banner-image.png)
 
 A local AI coding companion in a single Go binary. Opens an interactive chat
-TUI by default — or, in one shot, summarizes a directory or compiles it into
-a single Markdown context file for hosted LLMs. Inference runs fully on-device
-via [`llamafile`](https://github.com/Mozilla-Ocho/llamafile); model weights
-and the engine are fetched on demand via an explicit `/download` command.
+TUI by default — or, in one shot, summarizes a directory, runs semantic grep
+across it, or compiles it into a single Markdown context file for hosted
+LLMs. Inference runs fully on-device via
+[`llamafile`](https://github.com/Mozilla-Ocho/llamafile); model weights and
+the engine are fetched on demand via an explicit `/download` command.
 
 ## Modes
 
@@ -131,8 +132,8 @@ prompt — so multi-turn follow-ups work. Two caveats:
 - **No compaction.** The prompt grows linearly with the conversation. Once
   you cross the model's context window it will silently truncate.
 
-One-shot commands (`--summarize`, `--dump --with-summaries`) are stateless —
-each file is summarized in isolation.
+One-shot commands (`--summarize`, `--grep`, `--dump --with-summaries`) are
+stateless — each file is processed in isolation.
 
 ## Building from source
 
