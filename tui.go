@@ -668,17 +668,29 @@ func runChatCmd(history []ChatMessage, input string) tea.Cmd {
 	}
 }
 
+// progressToSysMsg returns a progress callback that forwards each status
+// line into the bubbletea event loop as a sysMsg — so per-file progress
+// renders as muted log lines in the viewport instead of leaking through
+// as raw stdout writes and corrupting the alt-screen.
+func progressToSysMsg() func(string) {
+	return func(s string) {
+		if program != nil {
+			program.Send(sysMsg{content: s})
+		}
+	}
+}
+
 func runSummarizeCmd(dir string) tea.Cmd {
 	return func() tea.Msg {
 		out := "SUMMARY.md"
-		err := summarizeDirectory(dir, out, nil)
+		err := summarizeDirectory(dir, out, progressToSysMsg())
 		return summarizeDoneMsg{path: out, err: err}
 	}
 }
 
 func runGrepCmd(dir, query string) tea.Cmd {
 	return func() tea.Msg {
-		hits, err := grepDirectory(dir, query, DefaultGrepMaxSize, nil)
+		hits, err := grepDirectory(dir, query, DefaultGrepMaxSize, progressToSysMsg())
 		return grepDoneMsg{query: query, hits: hits, err: err}
 	}
 }
