@@ -1,5 +1,5 @@
 
-# atlas.ai
+# atlas.llm
 
 ![Banner](banner-image.png)
 
@@ -14,7 +14,7 @@ and the engine are fetched on demand via an explicit `/download` command.
 ### 1. Interactive chat (default)
 
 ```powershell
-atlas.ai
+atlas.llm
 ```
 
 Launches a terminal UI (bubbletea) with the currently selected local model.
@@ -47,8 +47,8 @@ for every text file using the currently selected local model, and writes the
 result to `SUMMARY.md` in that directory. Respects `.gitignore`.
 
 ```powershell
-atlas.ai --summarize
-atlas.ai --summarize ./src
+atlas.llm --summarize
+atlas.llm --summarize ./src
 ```
 
 This is the one-shot equivalent of running `/summarize` inside chat. It does
@@ -62,10 +62,10 @@ into hosted LLMs (Claude, Gemini, ChatGPT). Respects `.gitignore` and skips
 binary files automatically.
 
 ```powershell
-atlas.ai --dump
-atlas.ai --dump -o context.md ./src
-atlas.ai --dump --exclude .mp4,.mp3
-atlas.ai --dump --with-summaries        # inline AI summaries per file
+atlas.llm --dump
+atlas.llm --dump -o context.md ./src
+atlas.llm --dump --exclude .mp4,.mp3
+atlas.llm --dump --with-summaries        # inline AI summaries per file
 ```
 
 | Flag              | Default               | Purpose                                              |
@@ -86,10 +86,10 @@ atlas.ai --dump --with-summaries        # inline AI summaries per file
 ## Data directory
 
 All downloaded artifacts and the config file live under
-`~/.atlas/atlas.ai.data/`:
+`~/.atlas/atlas.llm.data/`:
 
 ```
-~/.atlas/atlas.ai.data/
+~/.atlas/atlas.llm.data/
 ├── config.json           # { "current_model": "gemma-4-e2b-it" }
 ├── llamafile[.exe]       # inference engine (fetched by /download)
 └── models/
@@ -120,7 +120,7 @@ each file is summarized in isolation.
 ## Building from source
 
 ```powershell
-go build -o build/atlas.ai.exe .
+go build -o build/atlas.llm.exe .
 ```
 
 The repo also ships a [gobake](https://github.com/fezcode/gobake) recipe

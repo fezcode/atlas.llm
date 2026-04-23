@@ -38,7 +38,7 @@ func atlasDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".atlas", "atlas.ai.data")
+	dir := filepath.Join(home, ".atlas", "atlas.llm.data")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}

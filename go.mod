@@ -1,4 +1,4 @@
-module atlas.ai
+module atlas.llm
 
 go 1.25.3
 

@@ -11,8 +11,20 @@ func Run(bake *gobake.Engine) error {
 		return err
 	}
 
-	bake.Task("build", "Builds the binary", func(ctx *gobake.Context) error {
+	bake.Task("build", "Builds the binary for multiple platforms", func(ctx *gobake.Context) error {
 		ctx.Log("Building %s v%s...", bake.Info.Name, bake.Info.Version)
+
+		targets := []struct {
+			os   string
+			arch string
+		}{
+			{"linux", "amd64"},
+			{"linux", "arm64"},
+			{"windows", "amd64"},
+			{"windows", "arm64"},
+			{"darwin", "amd64"},
+			{"darwin", "arm64"},
+		}
 
 		err := ctx.Mkdir("build")
 		if err != nil {
@@ -20,16 +32,29 @@ func Run(bake *gobake.Engine) error {
 		}
 
 		ldflags := fmt.Sprintf("-X main.Version=%s", bake.Info.Version)
-        
-        output := "build/" + bake.Info.Name + ".exe"
 
-		err = ctx.Run("go", "build", "-ldflags", ldflags, "-o", output, ".")
-		if err != nil {
-            return err
-        }
-        
-        ctx.Log("Build successful: %s", output)
-        return nil
+		for _, t := range targets {
+			output := "build/" + bake.Info.Name + "-" + t.os + "-" + t.arch
+			if t.os == "windows" {
+				output += ".exe"
+			}
+
+			ctx.Env = []string{
+				"CGO_ENABLED=0",
+				"GOOS=" + t.os,
+				"GOARCH=" + t.arch,
+			}
+
+			err := ctx.Run("go", "build", "-ldflags", ldflags, "-o", output, ".")
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	bake.Task("clean", "Removes build artifacts", func(ctx *gobake.Context) error {
+		return ctx.Remove("build")
 	})
 
 	return nil

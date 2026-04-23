@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -62,6 +64,7 @@ type chatModel struct {
 	busy       bool
 	busyReason string
 	modelName  string
+	cwd        string
 
 	// Active download state (only set while busyReason == "downloading")
 	dlName    string
@@ -96,12 +99,41 @@ func newChatModel() chatModel {
 		spinner:   sp,
 		progress:  pr,
 		modelName: cfg.CurrentModel,
+		cwd:       displayCwd(),
 	}
+}
+
+// displayCwd returns the working directory in a compact, user-friendly form:
+// substitutes $HOME with ~ so the header stays short on deeply nested paths.
+func displayCwd() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "?"
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, wd); err == nil && !strings.HasPrefix(rel, "..") {
+			if rel == "." {
+				return "~"
+			}
+			return "~" + string(filepath.Separator) + rel
+		}
+	}
+	return wd
+}
+
+// truncateLeft shortens a path to max runes, keeping the tail (most relevant
+// for directory names) and prefixing with an ellipsis if truncated.
+func truncateLeft(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max || max < 4 {
+		return s
+	}
+	return "…" + string(r[len(r)-(max-1):])
 }
 
 func welcomeText() string {
 	return sysStyle.Render(strings.Join([]string{
-		"Welcome to atlas.ai chat.",
+		"Welcome to atlas.llm chat.",
 		"",
 		"Slash commands:",
 		"  /help          Show this help",
@@ -379,7 +411,14 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 }
 
 func (m chatModel) View() string {
-	header := headerStyle.Render(fmt.Sprintf(" atlas.ai  ·  model: %s ", m.modelName))
+	dirMax := m.width - len(m.modelName) - 30
+	if dirMax < 10 {
+		dirMax = 10
+	}
+	header := headerStyle.Render(fmt.Sprintf(
+		" atlas.llm  ·  model: %s  ·  dir: %s ",
+		m.modelName, truncateLeft(m.cwd, dirMax),
+	))
 
 	body := borderStyle.Render(m.viewport.View())
 	input := borderStyle.Render(m.textarea.View())

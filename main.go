@@ -9,11 +9,11 @@ import (
 
 var Version = "dev"
 
-const helpText = `atlas.ai - local AI chat + project context tooling
+const helpText = `atlas.llm - local AI chat + project context tooling
 
 USAGE
-  atlas.ai                    Launch interactive chat (TUI)
-  atlas.ai [flags] [DIR]      Run a one-shot command
+  atlas.llm                    Launch interactive chat (TUI)
+  atlas.llm [flags] [DIR]      Run a one-shot command
 
 FLAGS
   -h, --help           Show this help and exit.
@@ -23,7 +23,7 @@ FLAGS
                        the result to SUMMARY.md in the target directory.
                        Uses the currently selected local model (see /model).
                        REQUIRES the engine and model to already be present in
-                       ~/.atlas/atlas.ai.data/ — start chat and run /download
+                       ~/.atlas/atlas.llm.data/ — start chat and run /download
                        first. Dependencies are never fetched automatically.
 
   --dump               Compile every text file in DIR (default: .) into a
@@ -53,17 +53,17 @@ INTERACTIVE MODE
 
 DATA DIRECTORY
   All engine binaries, models, and the config file live under
-  ~/.atlas/atlas.ai.data/:
+  ~/.atlas/atlas.llm.data/:
     config.json            current model selection
     llamafile[.exe]        inference engine
     models/<name>.gguf     downloaded model weights
 
 EXAMPLES
-  atlas.ai
-  atlas.ai --summarize
-  atlas.ai --summarize ./src
-  atlas.ai --dump -o context.md ./src
-  atlas.ai --dump --exclude .mp4,.mp3 --with-summaries
+  atlas.llm
+  atlas.llm --summarize
+  atlas.llm --summarize ./src
+  atlas.llm --dump -o context.md ./src
+  atlas.llm --dump --exclude .mp4,.mp3 --with-summaries
 `
 
 func main() {
@@ -96,7 +96,7 @@ func main() {
 		return
 	}
 	if versionFlag {
-		fmt.Printf("atlas.ai v%s\n", Version)
+		fmt.Printf("atlas.llm v%s\n", Version)
 		return
 	}
 
