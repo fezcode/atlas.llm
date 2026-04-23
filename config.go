@@ -24,10 +24,28 @@ var availableModels = []Model{
 		Size:     "~700MB",
 	},
 	{
+		Name:     "gemma-3-4b-it",
+		Filename: "gemma-3-4b-it-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/unsloth/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf",
+		Size:     "~2.5GB",
+	},
+	{
 		Name:     "gemma-4-e2b-it",
 		Filename: "gemma-4-E2B-it-Q4_K_M.gguf",
 		URL:      "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
 		Size:     "~2.9GB",
+	},
+	{
+		Name:     "qwen3.5-9b",
+		Filename: "Qwen3.5-9B-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",
+		Size:     "~5.7GB",
+	},
+	{
+		Name:     "ministral-3-14b-instruct",
+		Filename: "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/unsloth/Ministral-3-14B-Instruct-2512-GGUF/resolve/main/Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
+		Size:     "~8.2GB",
 	},
 }
 

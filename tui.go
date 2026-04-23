@@ -111,6 +111,12 @@ type chatModel struct {
 	dlName    string
 	dlWritten int64
 	dlTotal   int64
+
+	// Model picker state. When picking != "", key events route to the
+	// picker instead of the textarea; ↑/↓ move, Enter selects, Esc cancels.
+	picking     string // "" or "model"
+	pickerIdx   int
+	pickerItems []Model
 }
 
 func newChatModel() chatModel {
@@ -192,7 +198,7 @@ func welcomeText() string {
 	}{
 		{"Models & downloads", [][2]string{
 			{"/list", "available models + download status"},
-			{"/model [name]", "show or switch current model"},
+			{"/model", "open picker (↑/↓ + enter) — or /model <name> for direct"},
 			{"/download", "engine + current model"},
 			{"/download engine", "engine only"},
 			{"/download <name>", "engine + that model"},
@@ -310,6 +316,103 @@ func (m *chatModel) pushError(s string) {
 	m.refresh()
 }
 
+// openModelPicker populates the picker with the available registry and
+// positions the cursor on the currently-selected model.
+func (m *chatModel) openModelPicker() {
+	m.pickerItems = append([]Model(nil), availableModels...)
+	m.pickerIdx = 0
+	for i, mm := range m.pickerItems {
+		if mm.Name == m.modelName {
+			m.pickerIdx = i
+			break
+		}
+	}
+	m.picking = "model"
+	m.renderPicker()
+}
+
+// pickerCancel closes the picker without applying any change.
+func (m *chatModel) pickerCancel() {
+	m.picking = ""
+	m.pickerItems = nil
+	m.pickerIdx = 0
+	m.refresh()
+	m.pushSystem("Model picker cancelled.")
+}
+
+// pickerConfirm applies the highlighted choice and closes the picker.
+// Returns a tea.Cmd for any follow-up work (re-warming the server).
+func (m *chatModel) pickerConfirm() tea.Cmd {
+	if m.pickerIdx < 0 || m.pickerIdx >= len(m.pickerItems) {
+		m.pickerCancel()
+		return nil
+	}
+	target := m.pickerItems[m.pickerIdx]
+	m.picking = ""
+	m.pickerItems = nil
+	m.pickerIdx = 0
+	m.refresh()
+	m.applyModelSelection(target)
+	return nil
+}
+
+// applyModelSelection persists the new choice, updates the header, and
+// tells the user whether the model still needs to be /download'ed.
+// ensureServer will restart the llama-server subprocess on the next
+// inference call if the model actually changed.
+func (m *chatModel) applyModelSelection(target Model) {
+	cfg, _ := loadConfig()
+	cfg.CurrentModel = target.Name
+	if err := saveConfig(cfg); err != nil {
+		m.pushError(err.Error())
+		return
+	}
+	if m.modelName == target.Name {
+		m.pushSystem(fmt.Sprintf("Already using %s.", target.Name))
+		return
+	}
+	m.modelName = target.Name
+	msg := fmt.Sprintf("Switched model to %s.", target.Name)
+	if !isModelDownloaded(target) {
+		msg += fmt.Sprintf(" (not downloaded — run /download %s)", target.Name)
+	}
+	m.pushSystem(msg)
+}
+
+// renderPicker draws the picker into the viewport so it overlays the
+// scrollback while active. Re-rendered on every arrow-key press.
+func (m *chatModel) renderPicker() {
+	title := brandStyle.Render("Select a model") + sysStyle.Render("  (↑/↓ move · enter select · esc cancel)")
+	rowSelected := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#0B1220")).
+		Background(colAccent).
+		Bold(true).
+		Padding(0, 1)
+	rowNormal := lipgloss.NewStyle().Padding(0, 1)
+	dot := sysStyle.Render(" · ")
+
+	lines := []string{title, ""}
+	for i, mm := range m.pickerItems {
+		marker := "  "
+		if mm.Name == m.modelName {
+			marker = brandStyle.Render("● ")
+		}
+		status := sysStyle.Render("not downloaded")
+		if isModelDownloaded(mm) {
+			status = lipgloss.NewStyle().Foreground(colAssistant).Render("downloaded")
+		}
+		row := fmt.Sprintf("%s%-28s  %s%s%s", marker, mm.Name,
+			metaLabelStyle.Render(mm.Size), dot, status)
+		if i == m.pickerIdx {
+			lines = append(lines, rowSelected.Render(row))
+		} else {
+			lines = append(lines, rowNormal.Render(row))
+		}
+	}
+	m.viewport.SetContent(strings.Join(lines, "\n"))
+	m.viewport.GotoTop()
+}
+
 func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -340,6 +443,30 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refresh()
 
 	case tea.KeyMsg:
+		if m.picking != "" {
+			// While the picker is open, swallow key events and don't let the
+			// textarea see them. ↑/↓ move, Enter selects, Esc/Ctrl+C cancels.
+			switch msg.Type {
+			case tea.KeyCtrlC, tea.KeyEsc:
+				m.pickerCancel()
+			case tea.KeyUp:
+				if m.pickerIdx > 0 {
+					m.pickerIdx--
+					m.renderPicker()
+				}
+			case tea.KeyDown:
+				if m.pickerIdx < len(m.pickerItems)-1 {
+					m.pickerIdx++
+					m.renderPicker()
+				}
+			case tea.KeyEnter:
+				cmd := m.pickerConfirm()
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			return m, tea.Quit
@@ -513,7 +640,7 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 
 	case "/model":
 		if len(args) == 0 {
-			m.pushSystem(fmt.Sprintf("Current model: %s", m.modelName))
+			m.openModelPicker()
 			return nil
 		}
 		name := args[0]
@@ -522,18 +649,7 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 			m.pushError(fmt.Sprintf("unknown model: %s (try /list)", name))
 			return nil
 		}
-		cfg, _ := loadConfig()
-		cfg.CurrentModel = target.Name
-		if err := saveConfig(cfg); err != nil {
-			m.pushError(err.Error())
-			return nil
-		}
-		m.modelName = target.Name
-		msg := fmt.Sprintf("Switched model to %s.", target.Name)
-		if !isModelDownloaded(target) {
-			msg += fmt.Sprintf(" (not downloaded — run /download %s)", target.Name)
-		}
-		m.pushSystem(msg)
+		m.applyModelSelection(target)
 		return nil
 
 	case "/download":
