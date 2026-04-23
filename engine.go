@@ -312,6 +312,11 @@ func runInference(prompt string, maxTokens int) (string, error) {
 	// on Windows and the whole app looks like it quit back to the shell.
 	cmd.Stdin = bytes.NewReader(nil)
 	applyEngineSysProcAttr(cmd)
+	// llama.cpp's Haswell CPU backend on Windows runs ops on OpenMP worker
+	// threads. libomp's default thread stack is ~1MB, which is too small for
+	// some matmul/attention kernels and causes STATUS_STACK_OVERFLOW
+	// (0xc00000fd) mid-inference. Give the workers plenty of headroom.
+	cmd.Env = append(os.Environ(), "OMP_STACKSIZE=64M")
 
 	log.Printf("inference: %s (prompt=%d bytes, max_tokens=%d)", eng, len(prompt), maxTokens)
 	start := time.Now()
