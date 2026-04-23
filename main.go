@@ -30,6 +30,9 @@ FLAGS
                        DIR (default: .) that match QUERY (natural language or
                        code). Prints "path:line: snippet" for each hit. Same
                        dependency requirement as --summarize.
+      --max-size       Skip files larger than this many bytes during --grep
+                       (default 32768). Prevents Windows command-line overflow
+                       on minified/generated files.
 
   --dump               Compile every text file in DIR (default: .) into a
                        single Markdown document. Respects .gitignore and
@@ -61,7 +64,7 @@ DATA DIRECTORY
   All engine binaries, models, and the config file live under
   ~/.atlas/atlas.llm.data/:
     config.json            current model selection
-    llamafile[.exe]        inference engine
+    engine/                llama.cpp prebuilt binaries (llama-cli + libs)
     models/<name>.gguf     downloaded model weights
 
 EXAMPLES
@@ -83,6 +86,7 @@ func main() {
 		outputFlag        string
 		excludeFlag       string
 		grepFlag          string
+		maxSizeFlag       int64
 	)
 
 	flag.BoolVar(&versionFlag, "v", false, "")
@@ -96,6 +100,7 @@ func main() {
 	flag.StringVar(&outputFlag, "output", "project_context.md", "")
 	flag.StringVar(&excludeFlag, "exclude", "", "")
 	flag.StringVar(&grepFlag, "grep", "", "")
+	flag.Int64Var(&maxSizeFlag, "max-size", DefaultGrepMaxSize, "")
 
 	flag.Usage = func() { fmt.Print(helpText) }
 	flag.Parse()
@@ -131,7 +136,7 @@ func main() {
 
 	switch {
 	case grepFlag != "":
-		hits, err := grepDirectory(targetDir, grepFlag, nil)
+		hits, err := grepDirectory(targetDir, grepFlag, maxSizeFlag, nil)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "grep: %v\n", err)
 			os.Exit(1)

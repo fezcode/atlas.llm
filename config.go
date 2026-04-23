@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,10 +25,24 @@ var availableModels = []Model{
 	},
 }
 
-const (
-	llamafileURL = "https://github.com/Mozilla-Ocho/llamafile/releases/download/0.10.0/llamafile-0.10.0"
-	defaultModel = "gemma-4-e2b-it"
-)
+const defaultModel = "gemma-4-e2b-it"
+
+// llamacppLatestURL is the GitHub API endpoint that always returns the latest
+// ggml-org/llama.cpp release. We resolve it at download time to pick the
+// correct prebuilt archive for the current OS/arch.
+const llamacppLatestURL = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+
+// llamacppAssetSuffix maps GOOS/GOARCH to the suffix of the release asset
+// filename we want. Assets are named like `llama-b8892-bin-win-cpu-x64.zip`;
+// we match against the tail so the build tag can vary.
+var llamacppAssetSuffix = map[string]string{
+	"windows/amd64": "win-cpu-x64.zip",
+	"windows/arm64": "win-cpu-arm64.zip",
+	"darwin/amd64":  "macos-x64.tar.gz",
+	"darwin/arm64":  "macos-arm64.tar.gz",
+	"linux/amd64":   "ubuntu-x64.tar.gz",
+	"linux/arm64":   "ubuntu-arm64.tar.gz",
+}
 
 type Config struct {
 	CurrentModel string `json:"current_model"`
@@ -65,16 +80,49 @@ func configPath() (string, error) {
 	return filepath.Join(base, "config.json"), nil
 }
 
-func enginePath() (string, error) {
+// engineDir is the directory where the extracted llama.cpp binaries live.
+func engineDir() (string, error) {
 	base, err := atlasDir()
 	if err != nil {
 		return "", err
 	}
-	name := "llamafile"
-	if runtime.GOOS == "windows" {
-		name = "llamafile.exe"
+	dir := filepath.Join(base, "engine")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
 	}
-	return filepath.Join(base, name), nil
+	return dir, nil
+}
+
+// findEngineBinary locates llama-cli[.exe] inside the engine dir. llama.cpp
+// archives nest the binary under paths like `build/bin/` depending on the
+// asset, so we walk to find it rather than hard-coding a location.
+func findEngineBinary() (string, error) {
+	dir, err := engineDir()
+	if err != nil {
+		return "", err
+	}
+	target := "llama-cli"
+	if runtime.GOOS == "windows" {
+		target = "llama-cli.exe"
+	}
+	var found string
+	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return nil
+		}
+		if !d.IsDir() && d.Name() == target {
+			found = p
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if found == "" {
+		return "", fmt.Errorf("%s not found under %s", target, dir)
+	}
+	return found, nil
 }
 
 func modelPath(m Model) (string, error) {
@@ -138,7 +186,7 @@ func isModelDownloaded(m Model) bool {
 }
 
 func isEngineDownloaded() bool {
-	p, err := enginePath()
+	p, err := findEngineBinary()
 	if err != nil {
 		return false
 	}

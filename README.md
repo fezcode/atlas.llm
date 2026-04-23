@@ -6,9 +6,11 @@
 A local AI coding companion in a single Go binary. Opens an interactive chat
 TUI by default — or, in one shot, summarizes a directory, runs semantic grep
 across it, or compiles it into a single Markdown context file for hosted
-LLMs. Inference runs fully on-device via
-[`llamafile`](https://github.com/Mozilla-Ocho/llamafile); model weights and
-the engine are fetched on demand via an explicit `/download` command.
+LLMs. Inference runs fully on-device via the
+[`llama.cpp`](https://github.com/ggml-org/llama.cpp) prebuilt `llama-cli`;
+model weights and the engine are fetched on demand via an explicit
+`/download` command. `/download engine` always pulls the latest llama.cpp
+release for your OS/arch.
 
 ## Modes
 
@@ -65,11 +67,16 @@ Respects `.gitignore`.
 ```powershell
 atlas.llm --grep "where we load the gitignore"
 atlas.llm --grep "download progress callback" ./src
+atlas.llm --grep "retry logic" --max-size 65536
 ```
 
 Unlike regex grep, queries can describe intent (`"retry logic with
 backoff"`) rather than exact tokens. Accuracy depends on the selected
 local model.
+
+| Flag         | Default | Purpose                                              |
+| ------------ | ------- | ---------------------------------------------------- |
+| `--max-size` | `32768` | Skip files larger than this many bytes. Keeps per-file prompts under the OS command-line limit on Windows. |
 
 ### 4. `--dump` — full project context to Markdown
 
@@ -109,7 +116,7 @@ All downloaded artifacts and the config file live under
 ```
 ~/.atlas/atlas.llm.data/
 ├── config.json           # { "current_model": "gemma-4-e2b-it" }
-├── llamafile[.exe]       # inference engine (fetched by /download)
+├── engine/               # extracted llama.cpp release (llama-cli + libs)
 └── models/
     └── <model>.gguf      # model weights (fetched by /download)
 ```

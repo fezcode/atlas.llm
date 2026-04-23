@@ -495,7 +495,7 @@ func runSummarizeCmd(dir string) tea.Cmd {
 
 func runGrepCmd(dir, query string) tea.Cmd {
 	return func() tea.Msg {
-		hits, err := grepDirectory(dir, query, nil)
+		hits, err := grepDirectory(dir, query, DefaultGrepMaxSize, nil)
 		return grepDoneMsg{query: query, hits: hits, err: err}
 	}
 }

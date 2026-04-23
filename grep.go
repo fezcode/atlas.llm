@@ -17,10 +17,20 @@ type GrepHit struct {
 	Snippet string
 }
 
+// DefaultGrepMaxSize is the per-file size cap for --grep. Files larger than
+// this are skipped: the file content is embedded in the prompt as a -p arg,
+// and Windows caps CreateProcess command-lines at ~32K. Minified/generated
+// files above this threshold are rarely useful for semantic search anyway.
+const DefaultGrepMaxSize = 32 * 1024
+
 // grepDirectory walks targetDir and asks the local model to identify lines
-// semantically matching query in each text file. progress is called with
+// semantically matching query in each text file. Files larger than maxSize
+// bytes are skipped (0 = use DefaultGrepMaxSize). progress is called with
 // status strings; pass nil to write to stdout.
-func grepDirectory(targetDir, query string, progress func(string)) ([]GrepHit, error) {
+func grepDirectory(targetDir, query string, maxSize int64, progress func(string)) ([]GrepHit, error) {
+	if maxSize <= 0 {
+		maxSize = DefaultGrepMaxSize
+	}
 	log := func(s string) {
 		if progress != nil {
 			progress(s)
@@ -53,6 +63,11 @@ func grepDirectory(targetDir, query string, progress func(string)) ([]GrepHit, e
 			return nil
 		}
 		if d.IsDir() {
+			return nil
+		}
+
+		if info, ierr := d.Info(); ierr == nil && info.Size() > maxSize {
+			log(fmt.Sprintf("Skipping %s (%d bytes > max-size %d)", relPath, info.Size(), maxSize))
 			return nil
 		}
 
