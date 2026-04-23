@@ -210,11 +210,56 @@ type chatChoice struct {
 	FinishReason string  `json:"finish_reason"`
 }
 
+type chatUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 type chatResponse struct {
 	Choices []chatChoice `json:"choices"`
+	Usage   chatUsage    `json:"usage"`
 	Error   struct {
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+// UsageStats mirrors the last /v1/chat/completions usage block so the TUI
+// can render a context-usage indicator. Total == prompt + completion.
+type UsageStats struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	ContextSize      int
+}
+
+var (
+	lastUsageMu sync.RWMutex
+	lastUsage   UsageStats
+)
+
+func setLastUsage(u UsageStats) {
+	lastUsageMu.Lock()
+	lastUsage = u
+	lastUsageMu.Unlock()
+}
+
+// GetLastUsage returns the most recent token usage reported by
+// llama-server, including the active context-window size. ContextSize
+// defaults to 0 until the first request completes.
+func GetLastUsage() UsageStats {
+	lastUsageMu.RLock()
+	defer lastUsageMu.RUnlock()
+	return lastUsage
+}
+
+// ResetUsage zeroes the usage counter (e.g. after /reset). Preserves the
+// context-size hint so the TUI can still render the denominator.
+func ResetUsage() {
+	lastUsageMu.Lock()
+	ctx := lastUsage.ContextSize
+	lastUsage = UsageStats{ContextSize: ctx}
+	lastUsageMu.Unlock()
 }
 
 // ChatComplete sends a chat-style request to the running server. llama-server
@@ -264,7 +309,35 @@ func (s *llamaServer) ChatComplete(msgs []ChatMsg, maxTokens int) (string, error
 	if content == "" && cr.Choices[0].FinishReason == "length" {
 		log.Printf("  WARNING: reply was empty and finish_reason=length — max_tokens=%d likely too small", maxTokens)
 	}
+	setLastUsage(UsageStats{
+		PromptTokens:     cr.Usage.PromptTokens,
+		CompletionTokens: cr.Usage.CompletionTokens,
+		TotalTokens:      cr.Usage.TotalTokens,
+		ContextSize:      s.ctxN,
+	})
 	return content, nil
+}
+
+// DropKVCache asks llama-server to forget any cached prompt prefix so the
+// next request starts from a clean slate. Called from the TUI's /reset so
+// the server doesn't silently reuse tokens from the previous conversation.
+func (s *llamaServer) DropKVCache() error {
+	url := fmt.Sprintf("http://127.0.0.1:%d/slots/0?action=erase", s.port)
+	req, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		// Older llama-server builds don't expose this; don't treat it as fatal.
+		log.Printf("/slots erase returned %d (probably unsupported on this llama-server)", resp.StatusCode)
+		return nil
+	}
+	return nil
 }
 
 func truncateForLog(s string, n int) string {

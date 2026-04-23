@@ -203,7 +203,8 @@ func welcomeText() string {
 		}},
 		{"Chat", [][2]string{
 			{"/help", "show this help"},
-			{"/clear", "clear on-screen chat history"},
+			{"/clear", "clear the on-screen scrollback (keeps context)"},
+			{"/reset", "drop conversation context + server KV cache"},
 			{"/quit  /exit", "leave chat (or press ctrl+c)"},
 		}},
 	}
@@ -472,9 +473,18 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 		return tea.Quit
 
 	case "/clear":
+		m.rendered = nil
+		m.pushSystem("Screen cleared. (Conversation context still active — use /reset to drop it.)")
+		return nil
+
+	case "/reset":
 		m.history = nil
 		m.rendered = nil
-		m.pushSystem("Chat cleared.")
+		ResetUsage()
+		if s, err := ensureServer(); err == nil {
+			_ = s.DropKVCache()
+		}
+		m.pushSystem("Conversation reset. Context and KV cache cleared.")
 		return nil
 
 	case "/list":
@@ -600,7 +610,28 @@ func (m chatModel) renderHeader(width int) string {
 	brand := brandStyle.Render("◆ atlas.llm")
 	model := metaLabelStyle.Render("model ") + metaValueStyle.Render(m.modelName)
 
-	dirMax := width - lipgloss.Width(brand) - lipgloss.Width(model) - 30
+	ctxSeg := renderCtxSegment()
+
+	var stateSeg string
+	switch {
+	case m.busy && m.busyReason == "downloading":
+		stateSeg = busyStyle.Render(m.spinner.View() + " downloading")
+	case m.busy:
+		elapsed := ""
+		if !m.busyStart.IsZero() {
+			elapsed = fmt.Sprintf(" %ds", int(time.Since(m.busyStart).Seconds()))
+		}
+		stateSeg = busyStyle.Render(m.spinner.View() + " " + m.busyReason + elapsed)
+	default:
+		stateSeg = sysStyle.Render("● ready")
+	}
+
+	right := stateSeg
+	if ctxSeg != "" {
+		right = ctxSeg + dot + stateSeg
+	}
+
+	dirMax := width - lipgloss.Width(brand) - lipgloss.Width(model) - lipgloss.Width(right) - 12
 	if dirMax < 12 {
 		dirMax = 12
 	}
@@ -608,25 +639,48 @@ func (m chatModel) renderHeader(width int) string {
 
 	left := brand + dot + model + dot + dir
 
-	var right string
-	switch {
-	case m.busy && m.busyReason == "downloading":
-		right = busyStyle.Render(m.spinner.View() + " downloading")
-	case m.busy:
-		elapsed := ""
-		if !m.busyStart.IsZero() {
-			elapsed = fmt.Sprintf(" %ds", int(time.Since(m.busyStart).Seconds()))
-		}
-		right = busyStyle.Render(m.spinner.View() + " " + m.busyReason + elapsed)
-	default:
-		right = sysStyle.Render("● ready")
-	}
-
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if gap < 1 {
 		gap = 1
 	}
 	return " " + left + strings.Repeat(" ", gap) + right + " "
+}
+
+// renderCtxSegment formats the last-known prompt/ctx usage as "ctx N/C (P%)"
+// with the percent colored by fill level (muted → amber → red). Returns an
+// empty string if no inference has completed yet.
+func renderCtxSegment() string {
+	u := GetLastUsage()
+	if u.ContextSize == 0 {
+		return ""
+	}
+	used := u.PromptTokens + u.CompletionTokens
+	if u.TotalTokens > used {
+		used = u.TotalTokens
+	}
+	pct := 0
+	if u.ContextSize > 0 {
+		pct = (used * 100) / u.ContextSize
+	}
+	label := metaLabelStyle.Render("ctx ")
+	value := metaValueStyle.Render(fmt.Sprintf("%s/%s", formatTokens(used), formatTokens(u.ContextSize)))
+	pctStyle := sysStyle
+	switch {
+	case pct >= 90:
+		pctStyle = lipgloss.NewStyle().Foreground(colErr).Bold(true)
+	case pct >= 70:
+		pctStyle = lipgloss.NewStyle().Foreground(colBusy).Bold(true)
+	}
+	return label + value + " " + pctStyle.Render(fmt.Sprintf("(%d%%)", pct))
+}
+
+func formatTokens(n int) string {
+	switch {
+	case n >= 1000:
+		return fmt.Sprintf("%.1fK", float64(n)/1000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 func (m chatModel) renderInput(width int) string {
