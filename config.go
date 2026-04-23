@@ -18,6 +18,12 @@ type Model struct {
 
 var availableModels = []Model{
 	{
+		Name:     "gemma-3-1b-it",
+		Filename: "gemma-3-1b-it-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf",
+		Size:     "~700MB",
+	},
+	{
 		Name:     "gemma-4-e2b-it",
 		Filename: "gemma-4-E2B-it-Q4_K_M.gguf",
 		URL:      "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
@@ -25,7 +31,7 @@ var availableModels = []Model{
 	},
 }
 
-const defaultModel = "gemma-4-e2b-it"
+const defaultModel = "gemma-3-1b-it"
 
 // llamacppLatestURL is the GitHub API endpoint that always returns the latest
 // ggml-org/llama.cpp release. We resolve it at download time to pick the

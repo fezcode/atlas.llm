@@ -68,6 +68,7 @@ type chatModel struct {
 	height     int
 	busy       bool
 	busyReason string
+	busyStart  time.Time
 	modelName  string
 	cwd        string
 
@@ -238,6 +239,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.history = append(m.history, ChatMessage{Role: "user", Content: input})
 				m.busy = true
 				m.busyReason = "thinking"
+				m.busyStart = time.Now()
 				hist := append([]ChatMessage(nil), m.history[:len(m.history)-1]...)
 				cmds = append(cmds, runChatCmd(hist, input), m.spinner.Tick)
 			}
@@ -407,6 +409,7 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 		}
 		m.busy = true
 		m.busyReason = "downloading"
+		m.busyStart = time.Now()
 		m.dlName = summary[0]
 		m.dlWritten = 0
 		m.dlTotal = 0
@@ -417,6 +420,7 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 	case "/summarize":
 		m.busy = true
 		m.busyReason = "summarizing"
+		m.busyStart = time.Now()
 		m.pushSystem("Summarizing current directory → SUMMARY.md ...")
 		return tea.Batch(runSummarizeCmd("."), m.spinner.Tick)
 
@@ -428,6 +432,7 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 		query := strings.TrimSpace(strings.TrimPrefix(input, parts[0]))
 		m.busy = true
 		m.busyReason = "grepping"
+		m.busyStart = time.Now()
 		m.pushSystem(fmt.Sprintf("Searching current directory for: %s", query))
 		return tea.Batch(runGrepCmd(".", query), m.spinner.Tick)
 
@@ -467,7 +472,11 @@ func (m chatModel) View() string {
 			))
 		}
 	case m.busy:
-		footer = footerStyle.Render(fmt.Sprintf("%s %s ...", m.spinner.View(), m.busyReason))
+		elapsed := ""
+		if !m.busyStart.IsZero() {
+			elapsed = fmt.Sprintf(" (%ds)", int(time.Since(m.busyStart).Seconds()))
+		}
+		footer = footerStyle.Render(fmt.Sprintf("%s %s ...%s", m.spinner.View(), m.busyReason, elapsed))
 	default:
 		footer = footerStyle.Render("enter: send  ·  /help  ·  ctrl+c: quit")
 	}

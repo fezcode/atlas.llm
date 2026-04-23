@@ -115,7 +115,7 @@ All downloaded artifacts and the config file live under
 
 ```
 ~/.atlas/atlas.llm.data/
-├── config.json           # { "current_model": "gemma-4-e2b-it" }
+├── config.json           # { "current_model": "gemma-3-1b-it" }
 ├── engine/               # extracted llama.cpp release (llama-cli + libs)
 └── models/
     └── <model>.gguf      # model weights (fetched by /download)
@@ -123,9 +123,10 @@ All downloaded artifacts and the config file live under
 
 ## Available models
 
-Currently ships with one model in the registry:
+Currently ships with two models in the registry:
 
-- `gemma-4-e2b-it` (~1.7GB)
+- `gemma-3-1b-it` (~700MB, default) — small, widely compatible with current llama.cpp.
+- `gemma-4-e2b-it` (~2.9GB) — newer architecture; may crash on some llama.cpp builds.
 
 More can be added by extending `availableModels` in `config.go`.
 

@@ -355,7 +355,7 @@ func buildChatPrompt(history []ChatMessage, userInput string) string {
 }
 
 func chat(history []ChatMessage, userInput string) (string, error) {
-	return runInference(buildChatPrompt(history, userInput), 512)
+	return runInference(buildChatPrompt(history, userInput), 192)
 }
 
 func formatBytes(n int64) string {
