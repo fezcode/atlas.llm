@@ -21,9 +21,11 @@ atlas.llm
 ```
 
 Launches a terminal UI (bubbletea) with the currently selected local model.
-Dependencies (engine + model) are **not** downloaded automatically — run
-`/download` inside chat to fetch them. Sending a message or running
-`/summarize` while they are missing returns an error with the command to run.
+Assistant replies are rendered with [glamour](https://github.com/charmbracelet/glamour)
+so markdown — code fences, lists, tables — is styled inline. Dependencies
+(engine + model) are **not** downloaded automatically — run `/download`
+inside chat to fetch them. Sending a message or running `/summarize` while
+they are missing returns an error with the command to run.
 
 **Slash commands inside chat:**
 
@@ -31,18 +33,21 @@ Dependencies (engine + model) are **not** downloaded automatically — run
 | ----------------- | ------------------------------------------------------------------- |
 | `/help`           | Show in-app help.                                                   |
 | `/list`           | List known models and their download status (`*` = current).        |
-| `/model`          | Show the current model.                                             |
-| `/model <name>`   | Switch to `<name>` (does **not** download — use `/download`).       |
+| `/model`          | Open the model picker (↑/↓ + Enter), or `/model <name>` to switch.  |
 | `/download`       | Download engine + current model.                                    |
 | `/download engine`| Download only the inference engine.                                 |
 | `/download <name>`| Download engine + the named model (does not switch to it).          |
 | `/download all`   | Download engine + every model in the registry.                      |
 | `/summarize`      | Summarize the current directory into `SUMMARY.md`.                  |
 | `/grep <query>`   | Semantic grep: ask the local model to find lines matching `<query>`.|
-| `/clear`          | Clear on-screen chat history.                                       |
+| `/set [k [v]]`    | List or change persistent settings (currently: `max_tokens`).       |
+| `/clear`          | Clear on-screen chat history (keeps conversation context).          |
+| `/reset`          | Drop conversation context and the server KV cache.                  |
 | `/quit`, `/exit`  | Leave chat (Ctrl+C also works).                                     |
 
-Keys: `Enter` sends, `Shift+Enter` newline, `Ctrl+C` quits.
+Keys: `Enter` sends, `Shift+Enter` newline, `Tab` completes slash commands
+and their arguments (model names, `/set` keys, `/download` targets), `Ctrl+Y`
+copies the last assistant reply to the clipboard, `Ctrl+C` quits.
 
 ### 2. `--summarize` — project summary to SUMMARY.md
 
@@ -78,7 +83,23 @@ local model.
 | ------------ | ------- | ---------------------------------------------------- |
 | `--max-size` | `32768` | Skip files larger than this many bytes. Keeps per-file prompts under the OS command-line limit on Windows. |
 
-### 4. `--dump` — full project context to Markdown
+### 4. `-c` / `--chat` — one-shot non-interactive chat
+
+Send a single prompt to the local model, print the reply to stdout, and
+exit. No history is kept between calls — useful for shell pipelines and
+scripting. Same dependency requirement as `--summarize` / `--grep`
+(engine + selected model must already be downloaded).
+
+```powershell
+atlas.llm -c "explain goroutines in one paragraph"
+atlas.llm -c "summarize this commit" < (git show HEAD)
+git diff | atlas.llm -c -
+```
+
+Pass `-` as the prompt (or omit the value entirely when piping) to read
+the prompt from stdin.
+
+### 5. `--dump` — full project context to Markdown
 
 Compiles every text file under the target directory into a single Markdown
 document, with syntax-highlighted fenced code blocks. Intended for pasting
@@ -107,6 +128,8 @@ atlas.llm --dump --with-summaries        # inline AI summaries per file
 | `--summarize`      | Run summary-to-`SUMMARY.md` mode.|
 | `--grep QUERY`     | Run semantic grep mode.          |
 | `--dump`           | Run directory-to-Markdown mode.  |
+| `-c`, `--chat PROMPT` | One-shot chat — print reply and exit. `-` reads from stdin. |
+| `--clear-logs`     | Delete the persistent TUI log file and exit. |
 
 ## Data directory
 
@@ -123,10 +146,13 @@ All downloaded artifacts and the config file live under
 
 ## Available models
 
-Currently ships with two models in the registry:
+Models in the registry (`/list` shows download status):
 
-- `gemma-3-1b-it` (~700MB, default) — small, widely compatible with current llama.cpp.
+- `gemma-3-1b-it` (~700MB, default) — small, widely compatible.
+- `gemma-3-4b-it` (~2.5GB) — middle ground between 1B and 9B+.
 - `gemma-4-e2b-it` (~2.9GB) — newer architecture; may crash on some llama.cpp builds.
+- `qwen3.5-9b` (~5.7GB)
+- `ministral-3-14b-instruct` (~8.2GB)
 
 More can be added by extending `availableModels` in `config.go`.
 

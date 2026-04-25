@@ -97,14 +97,24 @@ Plan:
 `/sessions` lists. Survives restarts. Useful once replies are
 worth keeping.
 
-### 5. Generation settings  — LOW IMPACT, trivial
-`/set temp 0.7`, `/set top_p 0.9`, `/set max_tokens 1024`. Store in
-the chatModel, pass into `runChat`. One-evening change; do this when
-bored or right before a release note.
+### 5. Generation settings  — PARTIALLY SHIPPED (v0.13.0)
+`/set max_tokens N` ships and persists to `config.json` (default 4096,
+ceiling 12000 to leave headroom in the 16K ctx). `/set` with no args
+lists current settings. `temp` / `top_p` not wired yet — add when there's
+a reason to tune them.
 
-### 6. Slash autocomplete
-Tab-complete slash commands and model names. Nice-to-have; wait
-until the command set stabilizes.
+### 6. Slash autocomplete  — SHIPPED (v0.14.0)
+Tab completes slash command names, with a second pass for arg
+completion: `/model <prefix>` against the model registry, `/set <prefix>`
+against known keys, `/download <prefix>` against `engine` / `all` / model
+names. Multiple matches extend to the longest common prefix and list
+candidates inline.
+
+### 8. Non-interactive `-c` mode  — SHIPPED (v0.15.0)
+`atlas.llm -c "prompt"` prints the model reply to stdout and exits;
+`-c -` (or piping into `-c ""`) reads the prompt from stdin. No history
+across invocations. Lets atlas.llm slot into shell pipelines without
+touching the TUI.
 
 ### 7. GPU offload
 llama-server already accepts `-ngl N` (number of layers to put on
