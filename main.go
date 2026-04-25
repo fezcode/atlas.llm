@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -17,11 +18,18 @@ const helpText = `atlas.llm - local AI chat + project context tooling
 USAGE
   atlas.llm                    Launch interactive chat (TUI)
   atlas.llm [flags] [DIR]      Run a one-shot command
+  atlas.llm -c PROMPT          One-shot chat — print reply and exit
 
 FLAGS
   -h, --help           Show this help and exit.
   -v, --version        Print version and exit.
   --clear-logs         Delete the persistent TUI log file and exit.
+
+  -c, --chat PROMPT    Send PROMPT to the local model and print the reply
+                       to stdout, then exit. Pass "-" to read PROMPT from
+                       stdin (e.g. 'git diff | atlas.llm -c -'). No history
+                       is persisted between calls. Same dependency
+                       requirement as --summarize/--grep.
 
   --summarize          Summarize every text file in DIR (default: .) and write
                        the result to SUMMARY.md in the target directory.
@@ -77,6 +85,8 @@ DATA DIRECTORY
 
 EXAMPLES
   atlas.llm
+  atlas.llm -c "explain goroutines in one paragraph"
+  atlas.llm -c - < prompt.txt
   atlas.llm --summarize
   atlas.llm --summarize ./src
   atlas.llm --dump -o context.md ./src
@@ -129,6 +139,8 @@ func main() {
 		grepFlag          string
 		maxSizeFlag       int64
 		clearLogsFlag     bool
+		chatFlag          string
+		chatFlagSet       bool
 	)
 
 	flag.BoolVar(&versionFlag, "v", false, "")
@@ -144,9 +156,16 @@ func main() {
 	flag.StringVar(&grepFlag, "grep", "", "")
 	flag.Int64Var(&maxSizeFlag, "max-size", DefaultGrepMaxSize, "")
 	flag.BoolVar(&clearLogsFlag, "clear-logs", false, "")
+	flag.StringVar(&chatFlag, "c", "", "")
+	flag.StringVar(&chatFlag, "chat", "", "")
 
 	flag.Usage = func() { fmt.Print(helpText) }
 	flag.Parse()
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "c" || f.Name == "chat" {
+			chatFlagSet = true
+		}
+	})
 
 	if helpFlag {
 		fmt.Print(helpText)
@@ -180,12 +199,41 @@ func main() {
 	if grepFlag != "" {
 		modes++
 	}
+	if chatFlagSet {
+		modes++
+	}
 	if modes > 1 {
-		fmt.Fprintln(os.Stderr, "--summarize, --dump, and --grep are mutually exclusive.")
+		fmt.Fprintln(os.Stderr, "--summarize, --dump, --grep, and -c are mutually exclusive.")
 		os.Exit(2)
 	}
 
 	switch {
+	case chatFlagSet:
+		prompt := chatFlag
+		if prompt == "-" || prompt == "" {
+			b, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "chat: read stdin: %v\n", err)
+				os.Exit(1)
+			}
+			prompt = string(b)
+		}
+		prompt = strings.TrimSpace(prompt)
+		if prompt == "" {
+			fmt.Fprintln(os.Stderr, "chat: empty prompt")
+			os.Exit(2)
+		}
+		if err := prewarm(); err != nil {
+			fmt.Fprintf(os.Stderr, "chat: %v\n", err)
+			os.Exit(1)
+		}
+		reply, err := chat(nil, prompt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "chat: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(reply)
+
 	case grepFlag != "":
 		if err := prewarm(); err != nil {
 			fmt.Fprintf(os.Stderr, "grep: %v\n", err)

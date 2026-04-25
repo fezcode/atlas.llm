@@ -221,6 +221,7 @@ func welcomeText() string {
 			{"/reset", "drop conversation context + server KV cache"},
 			{"/set [k [v]]", "show or change settings (max_tokens)"},
 			{"/quit  /exit", "leave chat (or press ctrl+c)"},
+			{"tab", "complete slash commands and their arguments"},
 		}},
 	}
 
@@ -569,6 +570,10 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			return m, tea.Quit
+		case tea.KeyTab:
+			if m.tabComplete() {
+				return m, tea.Batch(cmds...)
+			}
 		case tea.KeyCtrlY:
 			content := m.lastAssistantContent()
 			if content == "" {
@@ -823,6 +828,107 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 		m.pushError(fmt.Sprintf("unknown command: %s", cmd))
 		return nil
 	}
+}
+
+// slashCommands is the canonical list of completable command names.
+var slashCommands = []string{
+	"/clear", "/download", "/exit", "/grep", "/help", "/list",
+	"/model", "/quit", "/reset", "/set", "/summarize",
+}
+
+// tabComplete handles Tab in the input box. Returns true if it modified
+// the textarea (or printed a hint), so the caller can swallow the key.
+func (m *chatModel) tabComplete() bool {
+	val := m.textarea.Value()
+	if !strings.HasPrefix(val, "/") || strings.Contains(val, "\n") {
+		return false
+	}
+	// First-word completion — no space yet typed.
+	if !strings.Contains(val, " ") {
+		return m.completeToken("", strings.ToLower(val), slashCommands)
+	}
+	// Sub-arg completion — only when we're still on the first arg.
+	parts := strings.SplitN(val, " ", 2)
+	head := strings.ToLower(parts[0])
+	arg := parts[1]
+	if strings.Contains(arg, " ") {
+		return false
+	}
+	var pool []string
+	switch head {
+	case "/model":
+		for _, mm := range availableModels {
+			pool = append(pool, mm.Name)
+		}
+	case "/set":
+		pool = []string{"max_tokens"}
+	case "/download":
+		pool = []string{"all", "engine"}
+		for _, mm := range availableModels {
+			pool = append(pool, mm.Name)
+		}
+	default:
+		return false
+	}
+	return m.completeToken(head+" ", arg, pool)
+}
+
+// completeToken extends `prefix` against `pool`. With one match it
+// substitutes; with several it extends to the longest common prefix and
+// lists candidates as a system message.
+func (m *chatModel) completeToken(head, prefix string, pool []string) bool {
+	var matches []string
+	for _, s := range pool {
+		if strings.HasPrefix(s, prefix) {
+			matches = append(matches, s)
+		}
+	}
+	if len(matches) == 0 {
+		return false
+	}
+	if len(matches) == 1 {
+		suffix := ""
+		// Trailing space only for top-level commands that take args.
+		if head == "" && commandTakesArgs(matches[0]) {
+			suffix = " "
+		}
+		m.textarea.SetValue(head + matches[0] + suffix)
+		m.textarea.CursorEnd()
+		return true
+	}
+	common := longestCommonPrefix(matches)
+	if len(common) > len(prefix) {
+		m.textarea.SetValue(head + common)
+		m.textarea.CursorEnd()
+	}
+	m.pushSystem("Completions: " + strings.Join(matches, "  "))
+	return true
+}
+
+func commandTakesArgs(cmd string) bool {
+	switch cmd {
+	case "/model", "/download", "/summarize", "/grep", "/set":
+		return true
+	}
+	return false
+}
+
+func longestCommonPrefix(ss []string) string {
+	if len(ss) == 0 {
+		return ""
+	}
+	p := ss[0]
+	for _, s := range ss[1:] {
+		n := 0
+		for n < len(p) && n < len(s) && p[n] == s[n] {
+			n++
+		}
+		p = p[:n]
+		if p == "" {
+			break
+		}
+	}
+	return p
 }
 
 func (m chatModel) View() string {
