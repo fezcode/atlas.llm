@@ -110,6 +110,15 @@ against known keys, `/download <prefix>` against `engine` / `all` / model
 names. Multiple matches extend to the longest common prefix and list
 candidates inline.
 
+### 9. Agentic tool-use  — SHIPPED (v0.17.0)
+`/tools on` enables an OpenAI-style tool-call loop against llama-server's
+`/v1/chat/completions`. Six tools: `read_file`, `list_dir`, `grep`,
+`write_file`, `edit_file`, `run_cmd`. Destructive tools route through a
+TUI confirm modal that pauses the agent loop until the user approves or
+denies. Max 20 tool-call rounds per user turn. Qwen3.5-9B and
+Ministral-3-14B are the realistic targets; Gemma 3 doesn't reliably
+emit tool calls. No prompted-JSON fallback yet — add if there's demand.
+
 ### 8. Non-interactive `-c` mode  — SHIPPED (v0.15.0)
 `atlas.llm -c "prompt"` prints the model reply to stdout and exits;
 `-c -` (or piping into `-c ""`) reads the prompt from stdin. No history

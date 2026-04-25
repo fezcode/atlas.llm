@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -70,6 +72,16 @@ var (
 type (
 	assistantReplyMsg struct{ content string }
 	inferenceErrMsg   struct{ err error }
+	agentStepMsg      struct {
+		content   string
+		toolCalls []ToolCall
+		err       error
+	}
+	toolRanMsg struct {
+		call   ToolCall
+		result string
+		err    error
+	}
 	sysMsg            struct{ content string }
 	summarizeDoneMsg  struct {
 		path string
@@ -124,6 +136,19 @@ type chatModel struct {
 	// wrap tracks the viewport width.
 	mdRenderer *glamour.TermRenderer
 	mdWidth    int
+
+	// Agent (tool-use) state. Persists across turns when cfg.ToolsEnabled.
+	// agentMsgs is the full rolling message list handed to the model —
+	// including system prompt, user turns, assistant tool_calls, and tool
+	// results. pendingCalls holds tool calls from the latest assistant
+	// step that haven't been executed yet. stepCount guards against loops
+	// (see maxAgentSteps).
+	agentEnabled bool
+	agentMsgs    []ChatMsg
+	pendingCalls []ToolCall
+	stepCount    int
+	confirmCall  *ToolCall
+	confirmIdx   int // 0 = approve, 1 = deny
 }
 
 func newChatModel() chatModel {
@@ -152,12 +177,13 @@ func newChatModel() chatModel {
 	cfg, _ := loadConfig()
 
 	cm := chatModel{
-		viewport:  vp,
-		textarea:  ta,
-		spinner:   sp,
-		progress:  pr,
-		modelName: cfg.CurrentModel,
-		cwd:       displayCwd(),
+		viewport:     vp,
+		textarea:     ta,
+		spinner:      sp,
+		progress:     pr,
+		modelName:    cfg.CurrentModel,
+		cwd:          displayCwd(),
+		agentEnabled: cfg.ToolsEnabled,
 	}
 	if m, ok := findModel(cfg.CurrentModel); ok &&
 		isEngineDownloaded() && isModelDownloaded(m) {
@@ -220,6 +246,7 @@ func welcomeText() string {
 			{"/clear", "clear the on-screen scrollback (keeps context)"},
 			{"/reset", "drop conversation context + server KV cache"},
 			{"/set [k [v]]", "show or change settings (max_tokens)"},
+			{"/tools [on|off|list]", "agentic tool-use (read/write/grep/run_cmd; off by default)"},
 			{"/quit  /exit", "leave chat (or press ctrl+c)"},
 			{"tab", "complete slash commands and their arguments"},
 		}},
@@ -543,6 +570,22 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refresh()
 
 	case tea.KeyMsg:
+		if m.picking == "tool_confirm" {
+			switch msg.Type {
+			case tea.KeyCtrlC, tea.KeyEsc:
+				if c := m.resolveConfirm(false); c != nil {
+					cmds = append(cmds, c)
+				}
+			case tea.KeyUp, tea.KeyDown:
+				m.confirmIdx = 1 - m.confirmIdx
+				m.renderConfirm()
+			case tea.KeyEnter:
+				if c := m.resolveConfirm(m.confirmIdx == 0); c != nil {
+					cmds = append(cmds, c)
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
 		if m.picking != "" {
 			// While the picker is open, swallow key events and don't let the
 			// textarea see them. ↑/↓ move, Enter selects, Esc/Ctrl+C cancels.
@@ -599,6 +642,17 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if cmd != nil {
 					cmds = append(cmds, cmd)
 				}
+			} else if m.agentEnabled {
+				m.pushUser(input)
+				if len(m.agentMsgs) == 0 {
+					m.agentMsgs = append(m.agentMsgs, ChatMsg{Role: "system", Content: agentSystemPrompt})
+				}
+				m.agentMsgs = append(m.agentMsgs, ChatMsg{Role: "user", Content: input})
+				m.stepCount = 0
+				m.busy = true
+				m.busyReason = "thinking"
+				m.busyStart = time.Now()
+				cmds = append(cmds, runAgentStepCmd(m.agentMsgs), m.spinner.Tick)
 			} else {
 				m.pushUser(input)
 				m.history = append(m.history, ChatMessage{Role: "user", Content: input})
@@ -615,6 +669,16 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busyReason = ""
 		m.history = append(m.history, ChatMessage{Role: "assistant", Content: msg.content})
 		m.pushAssistant(msg.content)
+
+	case agentStepMsg:
+		if c := m.handleAgentStep(msg); c != nil {
+			cmds = append(cmds, c)
+		}
+
+	case toolRanMsg:
+		if c := m.handleToolRan(msg); c != nil {
+			cmds = append(cmds, c)
+		}
 
 	case inferenceErrMsg:
 		m.busy = false
@@ -721,12 +785,19 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 
 	case "/reset":
 		m.history = nil
+		m.agentMsgs = nil
+		m.pendingCalls = nil
+		m.stepCount = 0
 		m.rendered = nil
 		ResetUsage()
 		if s, err := ensureServer(); err == nil {
 			_ = s.DropKVCache()
 		}
 		m.pushSystem("Conversation reset. Context and KV cache cleared.")
+		return nil
+
+	case "/tools":
+		m.handleTools(args)
 		return nil
 
 	case "/list":
@@ -833,7 +904,7 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 // slashCommands is the canonical list of completable command names.
 var slashCommands = []string{
 	"/clear", "/download", "/exit", "/grep", "/help", "/list",
-	"/model", "/quit", "/reset", "/set", "/summarize",
+	"/model", "/quit", "/reset", "/set", "/summarize", "/tools",
 }
 
 // tabComplete handles Tab in the input box. Returns true if it modified
@@ -862,6 +933,8 @@ func (m *chatModel) tabComplete() bool {
 		}
 	case "/set":
 		pool = []string{"max_tokens"}
+	case "/tools":
+		pool = []string{"on", "off", "list"}
 	case "/download":
 		pool = []string{"all", "engine"}
 		for _, mm := range availableModels {
@@ -907,7 +980,7 @@ func (m *chatModel) completeToken(head, prefix string, pool []string) bool {
 
 func commandTakesArgs(cmd string) bool {
 	switch cmd {
-	case "/model", "/download", "/summarize", "/grep", "/set":
+	case "/model", "/download", "/summarize", "/grep", "/set", "/tools":
 		return true
 	}
 	return false
@@ -1063,6 +1136,300 @@ func runChatCmd(history []ChatMessage, input string) tea.Cmd {
 		}
 		return assistantReplyMsg{content: reply}
 	}
+}
+
+// runAgentStepCmd posts the current agent message list to llama-server with
+// the tool definitions attached, and wraps the response (content + any
+// tool_calls) into an agentStepMsg for the update loop.
+func runAgentStepCmd(msgs []ChatMsg) tea.Cmd {
+	snapshot := append([]ChatMsg(nil), msgs...)
+	return func() tea.Msg {
+		cfg, _ := loadConfig()
+		content, calls, err := runAgentStep(snapshot, cfg.MaxTokens)
+		return agentStepMsg{content: content, toolCalls: calls, err: err}
+	}
+}
+
+// runToolCmd executes a single approved tool call off the UI goroutine so
+// slow tools (run_cmd, large reads) don't freeze the TUI.
+func runToolCmd(call ToolCall) tea.Cmd {
+	return func() tea.Msg {
+		t, ok := toolRegistry[call.Function.Name]
+		if !ok {
+			return toolRanMsg{call: call, err: fmt.Errorf("unknown tool: %s", call.Function.Name)}
+		}
+		var args map[string]any
+		if call.Function.Arguments != "" {
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+				return toolRanMsg{call: call, err: fmt.Errorf("parse arguments: %w", err)}
+			}
+		}
+		result, err := t.Run(args)
+		return toolRanMsg{call: call, result: result, err: err}
+	}
+}
+
+// handleTools implements `/tools`, `/tools on|off`, and `/tools list`.
+func (m *chatModel) handleTools(args []string) {
+	cfg, err := loadConfig()
+	if err != nil {
+		m.pushError("load config: " + err.Error())
+		return
+	}
+	if len(args) == 0 {
+		state := "off"
+		if cfg.ToolsEnabled {
+			state = "on"
+		}
+		m.pushSystem(fmt.Sprintf("tools = %s  (use `/tools on` to enable agentic tool-use, `/tools list` to see tools)", state))
+		return
+	}
+	switch strings.ToLower(args[0]) {
+	case "on":
+		cfg.ToolsEnabled = true
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		m.agentEnabled = true
+		m.pushSystem("Agentic tools enabled. Destructive actions (write/edit/run_cmd) will prompt for confirmation. Smaller models (e.g. Gemma 3 1B) may not reliably emit tool calls.")
+	case "off":
+		cfg.ToolsEnabled = false
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		m.agentEnabled = false
+		m.agentMsgs = nil
+		m.pendingCalls = nil
+		m.pushSystem("Agentic tools disabled.")
+	case "list":
+		var b strings.Builder
+		b.WriteString("Available tools:\n")
+		for _, name := range toolNames() {
+			t := toolRegistry[name]
+			tag := "safe"
+			if t.Destructive {
+				tag = "needs confirm"
+			}
+			fmt.Fprintf(&b, "  %-12s [%s]  %s\n", t.Name, tag, t.Description)
+		}
+		m.pushSystem(b.String())
+	default:
+		m.pushError(fmt.Sprintf("unknown /tools arg: %s (expected on|off|list)", args[0]))
+	}
+}
+
+// handleAgentStep processes one assistant response from the model: records
+// it, renders any textual content, and either dispatches the next tool call
+// or ends the turn when no more calls are pending.
+func (m *chatModel) handleAgentStep(msg agentStepMsg) tea.Cmd {
+	if msg.err != nil {
+		m.busy = false
+		m.busyReason = ""
+		m.pendingCalls = nil
+		m.pushError(msg.err.Error())
+		return nil
+	}
+	m.stepCount++
+	// Record the assistant turn verbatim so the next call replays the
+	// tool_calls the model emitted — llama-server needs that to match up
+	// with the `role: tool` replies we're about to send.
+	m.agentMsgs = append(m.agentMsgs, ChatMsg{
+		Role:      "assistant",
+		Content:   msg.content,
+		ToolCalls: msg.toolCalls,
+	})
+	if strings.TrimSpace(msg.content) != "" {
+		m.pushAssistant(msg.content)
+	}
+	if len(msg.toolCalls) == 0 {
+		m.busy = false
+		m.busyReason = ""
+		return nil
+	}
+	if m.stepCount >= maxAgentSteps {
+		m.pushError(fmt.Sprintf("agent stopped after %d tool-call rounds", m.stepCount))
+		m.busy = false
+		m.busyReason = ""
+		m.pendingCalls = nil
+		return nil
+	}
+	m.pendingCalls = append(m.pendingCalls, msg.toolCalls...)
+	m.busyReason = "using tools"
+	return m.dispatchNextTool()
+}
+
+// dispatchNextTool pops the head of the pending-call queue and either runs
+// it immediately (safe tool), opens the confirm modal (destructive tool),
+// or fabricates an error result (unknown tool) and recurses.
+func (m *chatModel) dispatchNextTool() tea.Cmd {
+	if len(m.pendingCalls) == 0 {
+		return runAgentStepCmd(m.agentMsgs)
+	}
+	call := m.pendingCalls[0]
+	m.pendingCalls = m.pendingCalls[1:]
+	t, ok := toolRegistry[call.Function.Name]
+	if !ok {
+		m.renderToolTrace(call, "(unknown tool)", true)
+		m.appendToolResult(call, fmt.Sprintf("unknown tool: %s", call.Function.Name))
+		return m.dispatchNextTool()
+	}
+	if t.Destructive {
+		m.confirmCall = &call
+		m.confirmIdx = 0
+		m.picking = "tool_confirm"
+		m.renderConfirm()
+		return nil
+	}
+	m.renderToolTrace(call, "", false)
+	return runToolCmd(call)
+}
+
+// handleToolRan records a completed tool invocation's result and advances
+// the queue: either runs the next pending call or, if the batch is empty,
+// re-invokes the model with the updated message list.
+func (m *chatModel) handleToolRan(msg toolRanMsg) tea.Cmd {
+	result := msg.result
+	if msg.err != nil {
+		result = "Error: " + msg.err.Error()
+	}
+	m.renderToolResult(msg.call, result, msg.err != nil)
+	m.appendToolResult(msg.call, result)
+	return m.dispatchNextTool()
+}
+
+// appendToolResult pushes a `role: tool` turn into the agent message list.
+// The tool_call_id links back to the assistant's request so llama-server
+// can pair the reply with the originating call.
+func (m *chatModel) appendToolResult(call ToolCall, content string) {
+	m.agentMsgs = append(m.agentMsgs, ChatMsg{
+		Role:       "tool",
+		ToolCallID: call.ID,
+		Name:       call.Function.Name,
+		Content:    content,
+	})
+}
+
+// renderToolTrace prints the tool-call invocation as a dim inline block so
+// the user can see what the model is doing between visible assistant turns.
+func (m *chatModel) renderToolTrace(call ToolCall, note string, bad bool) {
+	var args map[string]any
+	_ = json.Unmarshal([]byte(call.Function.Arguments), &args)
+	argSummary := summarizeToolCallArgs(args)
+	style := lipgloss.NewStyle().Foreground(colDim).Italic(true)
+	if bad {
+		style = lipgloss.NewStyle().Foreground(colErr).Italic(true)
+	}
+	line := fmt.Sprintf("↳ tool %s %s", call.Function.Name, argSummary)
+	if note != "" {
+		line += "  " + note
+	}
+	m.rendered = append(m.rendered, style.Render(line))
+	m.refresh()
+}
+
+// renderToolResult previews the first couple of lines of a tool result
+// inline so the conversation stays scannable without dumping the full
+// content (the model still sees the full result).
+func (m *chatModel) renderToolResult(_ ToolCall, result string, bad bool) {
+	const maxLines = 3
+	lines := strings.Split(result, "\n")
+	preview := lines
+	if len(preview) > maxLines {
+		preview = preview[:maxLines]
+	}
+	for i, ln := range preview {
+		if len(ln) > 200 {
+			preview[i] = ln[:200] + "…"
+		}
+	}
+	more := ""
+	if len(lines) > maxLines {
+		more = fmt.Sprintf("  (+%d more lines)", len(lines)-maxLines)
+	}
+	col := colDim
+	if bad {
+		col = colErr
+	}
+	style := lipgloss.NewStyle().Foreground(col)
+	for _, ln := range preview {
+		m.rendered = append(m.rendered, style.Render("   "+ln))
+	}
+	if more != "" {
+		m.rendered = append(m.rendered, style.Render(more))
+	}
+	m.refresh()
+}
+
+// renderConfirm paints the confirm modal over the viewport. Mirrors the
+// model-picker rendering conventions: title, body, two selectable rows.
+func (m *chatModel) renderConfirm() {
+	if m.confirmCall == nil {
+		return
+	}
+	var args map[string]any
+	_ = json.Unmarshal([]byte(m.confirmCall.Function.Arguments), &args)
+
+	title := brandStyle.Render("Tool call requires approval") + sysStyle.Render("  (↑/↓ switch · enter confirm · esc deny)")
+	sub := lipgloss.NewStyle().Foreground(colErr).Bold(true).Render("DESTRUCTIVE") +
+		"  " + metaLabelStyle.Render(m.confirmCall.Function.Name)
+	argStyle := lipgloss.NewStyle().Foreground(colMuted)
+
+	lines := []string{title, "", sub, ""}
+	// Argument preview — one line per key, content previewed.
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		val := fmt.Sprintf("%v", args[k])
+		if len(val) > 120 {
+			val = val[:120] + "…"
+		}
+		val = strings.ReplaceAll(val, "\n", " ⏎ ")
+		lines = append(lines, "  "+argStyle.Render(k+": ")+val)
+	}
+	lines = append(lines, "")
+
+	rowSelected := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#0B1220")).
+		Background(colAccent).
+		Bold(true).
+		Padding(0, 1)
+	rowNormal := lipgloss.NewStyle().Padding(0, 1)
+	opts := []string{"▶ Approve and run", "  Deny"}
+	for i, o := range opts {
+		if i == m.confirmIdx {
+			lines = append(lines, rowSelected.Render(o))
+		} else {
+			lines = append(lines, rowNormal.Render(o))
+		}
+	}
+	m.viewport.SetContent(strings.Join(lines, "\n"))
+}
+
+// resolveConfirm closes the confirm modal. approved=true runs the tool;
+// approved=false synthesizes a denial result and hands control back to the
+// agent loop.
+func (m *chatModel) resolveConfirm(approved bool) tea.Cmd {
+	if m.confirmCall == nil {
+		m.picking = ""
+		return nil
+	}
+	call := *m.confirmCall
+	m.confirmCall = nil
+	m.picking = ""
+	m.refresh()
+
+	if !approved {
+		m.renderToolTrace(call, "(denied by user)", true)
+		m.appendToolResult(call, "User denied this tool call. Do not retry; continue without it.")
+		return m.dispatchNextTool()
+	}
+	m.renderToolTrace(call, "(approved)", false)
+	return runToolCmd(call)
 }
 
 // progressToSysMsg returns a progress callback that forwards each status

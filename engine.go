@@ -343,6 +343,36 @@ type ChatMessage struct {
 	Content string
 }
 
+// runAgentStep advances a tool-enabled conversation by one round-trip: it
+// POSTs the current message list (plus tool definitions) and returns the
+// assistant content and any requested tool calls. Callers loop until the
+// returned toolCalls list is empty.
+func runAgentStep(msgs []ChatMsg, maxTokens int) (string, []ToolCall, error) {
+	if _, err := requireEngine(); err != nil {
+		return "", nil, err
+	}
+	if m, err := currentModel(); err == nil {
+		if _, err := requireModel(m); err != nil {
+			return "", nil, err
+		}
+	}
+	s, err := ensureServer()
+	if err != nil {
+		return "", nil, fmt.Errorf("server: %w", err)
+	}
+	content, calls, err := s.ChatCompleteWithTools(msgs, toolDefsJSON(), maxTokens)
+	if err != nil {
+		return "", nil, fmt.Errorf("inference failed: %w", err)
+	}
+	return strings.TrimSpace(content), calls, nil
+}
+
+// agentSystemPrompt is prepended to the conversation when tools are
+// enabled. Tells the model it has filesystem + shell capabilities, and
+// that destructive actions require user approval (so it doesn't loop on
+// unexpected denials).
+const agentSystemPrompt = `You are atlas, a concise coding assistant with access to the user's local project via tools. Use tools when you need to inspect or change files or run commands — don't guess about file contents. Destructive tools (write_file, edit_file, run_cmd) require the user to approve each call; if a call is denied, acknowledge and continue without retrying. After gathering what you need, answer plainly in markdown.`
+
 func chat(history []ChatMessage, userInput string) (string, error) {
 	msgs := []ChatMsg{
 		{Role: "system", Content: "You are a concise, helpful coding assistant. Keep replies under three short paragraphs unless more detail is explicitly requested."},

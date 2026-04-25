@@ -190,24 +190,51 @@ func (s *llamaServer) stopLocked() {
 	}
 }
 
-// ChatMsg is a single turn passed to /v1/chat/completions. The "role" is
-// one of "system", "user", or "assistant".
+// ChatMsg is a single turn passed to /v1/chat/completions. Role is one of
+// "system", "user", "assistant", or "tool". The tool-call fields only apply
+// to assistant messages (ToolCalls) and tool messages (Name, ToolCallID).
 type ChatMsg struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Name       string     `json:"name,omitempty"`
+}
+
+// ToolCall is one requested function invocation emitted by the assistant.
+// Arguments is a JSON-encoded string per the OpenAI schema, not a decoded
+// object — the caller is responsible for unmarshalling.
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
+}
+
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type chatRequest struct {
-	Messages    []ChatMsg `json:"messages"`
-	MaxTokens   int       `json:"max_tokens"`
-	Temperature float64   `json:"temperature"`
-	Stream      bool      `json:"stream"`
-	CachePrompt bool      `json:"cache_prompt"`
+	Messages    []ChatMsg        `json:"messages"`
+	MaxTokens   int              `json:"max_tokens"`
+	Temperature float64          `json:"temperature"`
+	Stream      bool             `json:"stream"`
+	CachePrompt bool             `json:"cache_prompt"`
+	Tools       []map[string]any `json:"tools,omitempty"`
 }
 
 type chatChoice struct {
-	Message      ChatMsg `json:"message"`
-	FinishReason string  `json:"finish_reason"`
+	Message      assistantMessage `json:"message"`
+	FinishReason string           `json:"finish_reason"`
+}
+
+// assistantMessage is the response-side shape of an assistant reply. Content
+// can be null when the model chose to emit tool_calls instead.
+type assistantMessage struct {
+	Role      string     `json:"role"`
+	Content   string     `json:"content"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatUsage struct {
@@ -268,12 +295,26 @@ func ResetUsage() {
 // and returns only the assistant's reply — so the model stops at the turn
 // boundary instead of spewing fake "User:/Assistant:" continuations.
 func (s *llamaServer) ChatComplete(msgs []ChatMsg, maxTokens int) (string, error) {
+	content, _, err := s.chatCompleteCore(msgs, maxTokens, nil)
+	return content, err
+}
+
+// ChatCompleteWithTools is the tool-enabled variant: advertises `tools` on
+// the request and returns the (possibly empty) list of tool_calls the model
+// emitted in addition to any assistant content. The caller is responsible
+// for executing the calls and re-invoking with the tool results appended.
+func (s *llamaServer) ChatCompleteWithTools(msgs []ChatMsg, tools []map[string]any, maxTokens int) (string, []ToolCall, error) {
+	return s.chatCompleteCore(msgs, maxTokens, tools)
+}
+
+func (s *llamaServer) chatCompleteCore(msgs []ChatMsg, maxTokens int, tools []map[string]any) (string, []ToolCall, error) {
 	reqBody, _ := json.Marshal(chatRequest{
 		Messages:    msgs,
 		MaxTokens:   maxTokens,
 		Temperature: 0.2,
 		Stream:      false,
 		CachePrompt: true,
+		Tools:       tools,
 	})
 	log.Printf("→ POST /v1/chat/completions port=%d max_tokens=%d msgs=%d", s.port, maxTokens, len(msgs))
 	for i, m := range msgs {
@@ -284,29 +325,30 @@ func (s *llamaServer) ChatComplete(msgs []ChatMsg, maxTokens int) (string, error
 	start := time.Now()
 	resp, err := s.client.Post(url, "application/json", bytes.NewReader(reqBody))
 	if err != nil {
-		return "", fmt.Errorf("POST /v1/chat/completions: %w", err)
+		return "", nil, fmt.Errorf("POST /v1/chat/completions: %w", err)
 	}
 	defer resp.Body.Close()
 
 	raw, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
-		return "", fmt.Errorf("read chat completion body: %w", readErr)
+		return "", nil, fmt.Errorf("read chat completion body: %w", readErr)
 	}
 	log.Printf("← HTTP %d in %s (body=%d bytes)", resp.StatusCode, time.Since(start), len(raw))
 	log.Printf("  body: %s", truncateForLog(string(raw), 2000))
 
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("llama-server HTTP %d: %s", resp.StatusCode, truncateForLog(string(raw), 300))
+		return "", nil, fmt.Errorf("llama-server HTTP %d: %s", resp.StatusCode, truncateForLog(string(raw), 300))
 	}
 	var cr chatResponse
 	if err := json.Unmarshal(raw, &cr); err != nil {
-		return "", fmt.Errorf("decode chat completion: %w", err)
+		return "", nil, fmt.Errorf("decode chat completion: %w", err)
 	}
 	if len(cr.Choices) == 0 {
-		return "", fmt.Errorf("empty chat completion response")
+		return "", nil, fmt.Errorf("empty chat completion response")
 	}
-	content := cr.Choices[0].Message.Content
-	if content == "" && cr.Choices[0].FinishReason == "length" {
+	msg := cr.Choices[0].Message
+	content := msg.Content
+	if content == "" && len(msg.ToolCalls) == 0 && cr.Choices[0].FinishReason == "length" {
 		log.Printf("  WARNING: reply was empty and finish_reason=length — max_tokens=%d likely too small", maxTokens)
 	}
 	setLastUsage(UsageStats{
@@ -315,7 +357,7 @@ func (s *llamaServer) ChatComplete(msgs []ChatMsg, maxTokens int) (string, error
 		TotalTokens:      cr.Usage.TotalTokens,
 		ContextSize:      s.ctxN,
 	})
-	return content, nil
+	return content, msg.ToolCalls, nil
 }
 
 // DropKVCache asks llama-server to forget any cached prompt prefix so the

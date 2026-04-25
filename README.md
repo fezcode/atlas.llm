@@ -41,6 +41,7 @@ they are missing returns an error with the command to run.
 | `/summarize`      | Summarize the current directory into `SUMMARY.md`.                  |
 | `/grep <query>`   | Semantic grep: ask the local model to find lines matching `<query>`.|
 | `/set [k [v]]`    | List or change persistent settings (currently: `max_tokens`).       |
+| `/tools [on\|off\|list]` | Toggle agentic tool-use (off by default). See below.         |
 | `/clear`          | Clear on-screen chat history (keeps conversation context).          |
 | `/reset`          | Drop conversation context and the server KV cache.                  |
 | `/quit`, `/exit`  | Leave chat (Ctrl+C also works).                                     |
@@ -83,7 +84,34 @@ local model.
 | ------------ | ------- | ---------------------------------------------------- |
 | `--max-size` | `32768` | Skip files larger than this many bytes. Keeps per-file prompts under the OS command-line limit on Windows. |
 
-### 4. `-c` / `--chat` — one-shot non-interactive chat
+### Agentic tool-use
+
+Enable with `/tools on` inside chat. When enabled, the model can call a
+small set of filesystem + shell tools to inspect or change the project
+before replying. Destructive tools prompt for approval in a confirm modal
+before they run.
+
+| Tool         | Destructive | Purpose                                                         |
+| ------------ | ----------- | --------------------------------------------------------------- |
+| `read_file`  |             | Read a UTF-8 file.                                              |
+| `list_dir`   |             | List entries in a directory.                                    |
+| `grep`       |             | RE2 regex search across files under a directory.                |
+| `write_file` | ✓           | Overwrite a file with new contents.                             |
+| `edit_file`  | ✓           | Replace one unique occurrence of `old_string` with `new_string`.|
+| `run_cmd`    | ✓           | Execute a shell command (30s timeout).                          |
+
+Caveats:
+- **Model capability matters.** Qwen3.5-9B and Ministral-3-14B handle
+  tool-calling reliably. Gemma 3 (1B/4B) often ignores or hallucinates
+  tool shapes — the feature will feel broken on those models.
+- **No persistent tool loop across sessions.** `/reset` clears the agent
+  message list alongside the regular conversation.
+- **The confirm modal is synchronous.** The agent loop pauses while it's
+  open; press Enter to approve, Esc (or select Deny) to reject. Denials
+  are fed back to the model as a tool error so it can adapt rather than
+  retry.
+
+### 5. `-c` / `--chat` — one-shot non-interactive chat
 
 Send a single prompt to the local model, print the reply to stdout, and
 exit. No history is kept between calls — useful for shell pipelines and
@@ -99,7 +127,7 @@ git diff | atlas.llm -c -
 Pass `-` as the prompt (or omit the value entirely when piping) to read
 the prompt from stdin.
 
-### 5. `--dump` — full project context to Markdown
+### 6. `--dump` — full project context to Markdown
 
 Compiles every text file under the target directory into a single Markdown
 document, with syntax-highlighted fenced code blocks. Intended for pasting

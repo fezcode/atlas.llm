@@ -71,6 +71,7 @@ var llamacppAssetSuffix = map[string]string{
 type Config struct {
 	CurrentModel string `json:"current_model"`
 	MaxTokens    int    `json:"max_tokens,omitempty"`
+	ToolsEnabled bool   `json:"tools_enabled,omitempty"`
 }
 
 // defaultMaxTokens is the reply-length cap applied when the config hasn't
