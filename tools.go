@@ -138,6 +138,44 @@ var toolRegistry = map[string]Tool{
 		},
 		Run: toolEditFile,
 	},
+	"multi_edit": {
+		Name: "multi_edit",
+		Description: "Apply several find/replace edits to one file in a single atomic operation. " +
+			"Edits are applied in order, and each old_string must match exactly once at the point it is applied " +
+			"(so a later edit may target text an earlier one introduced). " +
+			"If any edit fails, the file is left completely untouched. " +
+			"Prefer this over repeated edit_file calls when changing one file in several places. Confirmation required.",
+		Destructive: true,
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "File to edit.",
+				},
+				"edits": map[string]any{
+					"type":        "array",
+					"description": "Edits to apply, in order.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"old_string": map[string]any{
+								"type":        "string",
+								"description": "Exact string to find. Include enough surrounding context for it to be unique in the file.",
+							},
+							"new_string": map[string]any{
+								"type":        "string",
+								"description": "Replacement string.",
+							},
+						},
+						"required": []string{"old_string", "new_string"},
+					},
+				},
+			},
+			"required": []string{"path", "edits"},
+		},
+		Run: toolMultiEdit,
+	},
 	"run_cmd": {
 		Name:        "run_cmd",
 		Description: "Execute a shell command in the working directory and return combined stdout+stderr. 30s timeout. Confirmation required.",
@@ -432,4 +470,90 @@ func summarizeToolCallArgs(args map[string]any) string {
 		s = s[:120] + "…"
 	}
 	return s
+}
+
+// fileEdit is one find/replace pair within a multi_edit call.
+type fileEdit struct {
+	oldStr string
+	newStr string
+}
+
+// argEdits decodes the `edits` array. Models get this shape wrong in
+// predictable ways, so each failure names the offending index.
+func argEdits(args map[string]any) ([]fileEdit, error) {
+	raw, ok := args["edits"]
+	if !ok || raw == nil {
+		return nil, fmt.Errorf("missing required argument %q", "edits")
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("argument %q must be an array of {old_string, new_string} objects (got %T)", "edits", raw)
+	}
+	if len(list) == 0 {
+		return nil, fmt.Errorf("%q is empty — nothing to do", "edits")
+	}
+	out := make([]fileEdit, 0, len(list))
+	for i, item := range list {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("edits[%d] must be an object with old_string and new_string (got %T)", i, item)
+		}
+		oldStr, err := argString(obj, "old_string", true)
+		if err != nil {
+			return nil, fmt.Errorf("edits[%d]: %w", i, err)
+		}
+		newStr, err := argString(obj, "new_string", true)
+		if err != nil {
+			return nil, fmt.Errorf("edits[%d]: %w", i, err)
+		}
+		if oldStr == "" {
+			return nil, fmt.Errorf("edits[%d]: old_string must not be empty", i)
+		}
+		out = append(out, fileEdit{oldStr: oldStr, newStr: newStr})
+	}
+	return out, nil
+}
+
+// toolMultiEdit applies every edit to an in-memory copy and writes once at
+// the end. A failure anywhere means nothing is written — a partially
+// applied batch would leave the file in a state neither the user nor the
+// model expects.
+func toolMultiEdit(args map[string]any) (string, error) {
+	path, err := argString(args, "path", true)
+	if err != nil {
+		return "", err
+	}
+	edits, err := argEdits(args)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+
+	updated := string(data)
+	for i, e := range edits {
+		// Counted against the running content, not the original, so an edit
+		// may legitimately target text an earlier edit introduced.
+		switch strings.Count(updated, e.oldStr) {
+		case 0:
+			return "", fmt.Errorf("edits[%d]: old_string not found in %s. No edits were applied", i, path)
+		case 1:
+		default:
+			return "", fmt.Errorf("edits[%d]: old_string matches %d times in %s — needs to be unique; "+
+				"include more surrounding context. No edits were applied",
+				i, strings.Count(updated, e.oldStr), path)
+		}
+		updated = strings.Replace(updated, e.oldStr, e.newStr, 1)
+	}
+
+	if updated == string(data) {
+		return fmt.Sprintf("No change: the %d edits left %s byte-identical", len(edits), path), nil
+	}
+	if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Applied %d edits to %s (%d bytes → %d bytes)",
+		len(edits), path, len(data), len(updated)), nil
 }

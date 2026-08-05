@@ -99,6 +99,10 @@ small set of filesystem + shell tools to inspect or change the project
 before replying. Destructive tools prompt for approval in a confirm modal
 before they run.
 
+Edits are partial by default: `edit_file` and `multi_edit` replace matched
+strings and leave the rest of the file alone. Only `write_file` rewrites a
+whole file.
+
 | Tool         | Destructive | Purpose                                                         |
 | ------------ | ----------- | --------------------------------------------------------------- |
 | `read_file`  |             | Read a UTF-8 file.                                              |
@@ -106,6 +110,7 @@ before they run.
 | `grep`       |             | RE2 regex search across files under a directory.                |
 | `write_file` | ✓           | Overwrite a file with new contents.                             |
 | `edit_file`  | ✓           | Replace one unique occurrence of `old_string` with `new_string`.|
+| `multi_edit` | ✓           | Apply several edits to one file atomically — all or nothing.    |
 | `run_cmd`    | ✓           | Execute a shell command (30s timeout).                          |
 
 Caveats:

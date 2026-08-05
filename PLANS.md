@@ -289,6 +289,17 @@ Not covered: an MCP tool call already in flight still runs to its own
 timeout — Tool.Run takes no context. Threading one through would let Esc
 interrupt a slow server too.
 
+### 15. multi_edit tool  — SHIPPED (v0.18.0)
+`multi_edit` applies a batch of find/replace edits to one file atomically.
+Previously N changes to one file meant N `edit_file` calls, each with its own
+confirmation, and a failure partway left the file half-edited.
+
+- Edits apply in order against the running content, so a later edit may
+  legitimately target text an earlier one introduced.
+- Each `old_string` must still match exactly once at the point it is applied.
+- Any failure means nothing is written, and the error names the failing
+  index so a large batch is debuggable.
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships

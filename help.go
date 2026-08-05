@@ -200,11 +200,14 @@ var helpTopics = []helpTopic{
 		Detail: "Off by default. When on, the model can call tools instead of " +
 			"guessing — reading files, searching, editing, running commands — and " +
 			"loops until it has what it needs before answering.\n\n" +
-			"Six built-in tools. read_file, list_dir, and grep are read-only and " +
-			"run silently. write_file, edit_file, and run_cmd are destructive and " +
-			"open a confirmation modal first: Enter approves, Esc denies. A denial " +
-			"is fed back to the model as a tool error so it adapts instead of " +
-			"retrying the same call.\n\n" +
+			"Seven built-in tools. read_file, list_dir, and grep are read-only " +
+			"and run silently. write_file, edit_file, multi_edit, and run_cmd are " +
+			"destructive and open a confirmation modal first: Enter approves, Esc " +
+			"denies. A denial is fed back to the model as a tool error so it " +
+			"adapts instead of retrying the same call.\n\n" +
+			"Edits are partial: edit_file replaces one unique string and " +
+			"multi_edit applies a batch of them atomically, both leaving the rest " +
+			"of the file untouched. Only write_file rewrites a whole file.\n\n" +
 			"This switch also governs MCP tools. /mcp manages connections; /tools " +
 			"decides whether the model may call anything at all.",
 		Subcommands: []helpSub{
