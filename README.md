@@ -31,7 +31,7 @@ they are missing returns an error with the command to run.
 
 | Command           | What it does                                                        |
 | ----------------- | ------------------------------------------------------------------- |
-| `/help`           | Show in-app help.                                                   |
+| `/help [cmd [sub]]` | Command overview, or full detail for one command/subcommand.       |
 | `/list`           | List known models and their download status (`*` = current).        |
 | `/model`          | Open the model picker (↑/↓ + Enter), or `/model <name>` to switch.  |
 | `/download`       | Download engine + current model.                                    |

@@ -1,0 +1,591 @@
+package main
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+// helpSub documents one subcommand, reachable as `/help <cmd> <sub>`.
+type helpSub struct {
+	Name   string
+	Usage  string
+	Detail string
+}
+
+// helpTopic is the long-form documentation for one slash command. The
+// compact table in welcomeText() says what a command is; this says how it
+// behaves, what it costs, and where it bites.
+type helpTopic struct {
+	Name    string
+	Aliases []string
+	Summary string
+	Usage   []string
+	// Detail is prose. Blank lines separate paragraphs.
+	Detail      string
+	Subcommands []helpSub
+	Examples    [][2]string // command, what it does
+	Notes       []string
+	SeeAlso     []string
+}
+
+var helpTopics = []helpTopic{
+	{
+		Name:    "help",
+		Summary: "Show the command overview, or detailed help for one command.",
+		Usage:   []string{"/help", "/help <command>", "/help <command> <subcommand>"},
+		Detail: "With no arguments, prints the grouped command overview plus a " +
+			"Performance block reflecting what this machine can actually do.\n\n" +
+			"With a command name, prints everything about that command: every " +
+			"form it accepts, what it changes on disk, and the failure modes " +
+			"worth knowing. With a subcommand too, narrows to just that.",
+		Examples: [][2]string{
+			{"/help mcp", "everything about MCP servers"},
+			{"/help mcp add", "just the add subcommand"},
+			{"/help set", "all settings and their effects"},
+		},
+	},
+	{
+		Name:    "list",
+		Summary: "List known models and whether they're downloaded.",
+		Usage:   []string{"/list"},
+		Detail: "Prints the model registry with a download indicator, the " +
+			"approximate on-disk size, and which model is currently selected. " +
+			"Also shows whether the inference engine itself has been downloaded.\n\n" +
+			"Nothing here is fetched automatically — a model showing " +
+			"\"not downloaded\" needs an explicit /download.",
+		SeeAlso: []string{"model", "download"},
+	},
+	{
+		Name:    "model",
+		Summary: "Switch the active model, via a picker or by name.",
+		Usage:   []string{"/model", "/model <name>"},
+		Detail: "With no argument, opens a picker: ↑/↓ to move, Enter to select, " +
+			"Esc to cancel. The currently active model is marked and preselected.\n\n" +
+			"Switching is instant and persists to config.json, but it does not " +
+			"download anything. If the model you pick isn't on disk, you'll be " +
+			"told to run /download for it.\n\n" +
+			"The model server restarts on your next message, not immediately — " +
+			"so the first reply after a switch pays the model-load cost.",
+		Examples: [][2]string{
+			{"/model", "open the picker"},
+			{"/model qwen3.5-9b", "switch directly by name"},
+		},
+		Notes: []string{
+			"Tool-calling only works reliably on the larger models. Qwen3.5-9B " +
+				"and Ministral-3-14B handle it; Gemma 3 1B/4B will usually ignore " +
+				"tools or invent a fake call, which makes /tools and /mcp look broken.",
+		},
+		SeeAlso: []string{"list", "download", "tools"},
+	},
+	{
+		Name:    "download",
+		Summary: "Fetch the inference engine and model weights.",
+		Usage: []string{
+			"/download", "/download engine", "/download <model>", "/download all",
+		},
+		Detail: "Nothing is downloaded automatically — this is the only thing " +
+			"that pulls the engine or model weights.\n\n" +
+			"The engine is the latest llama.cpp release build for your OS and " +
+			"architecture, resolved from GitHub at download time, so you get " +
+			"current binaries rather than a pinned version. Which archive is " +
+			"fetched depends on `/set engine_variant` (CPU vs a GPU build).\n\n" +
+			"Re-running is cheap: an engine or model already present is skipped. " +
+			"The exception is an engine_variant change, which wipes the engine " +
+			"directory and re-downloads, since mixing build variants would leave " +
+			"the wrong binaries behind.",
+		Subcommands: []helpSub{
+			{Name: "engine", Usage: "/download engine",
+				Detail: "Just the llama.cpp engine. Also the way to apply an " +
+					"engine_variant change."},
+			{Name: "<model>", Usage: "/download qwen3.5-9b",
+				Detail: "The engine plus that model. Does not switch to it — use /model."},
+			{Name: "all", Usage: "/download all",
+				Detail: "The engine plus every model in the registry. Tens of gigabytes."},
+		},
+		Notes: []string{
+			"Downloads run in the background with a progress bar; the TUI stays usable.",
+			"CUDA is a two-archive install (engine + ~391MB CUDA runtime), so it's " +
+				"markedly larger than the other variants.",
+		},
+		SeeAlso: []string{"list", "model", "set"},
+	},
+	{
+		Name:    "summarize",
+		Summary: "Write a per-file summary of a directory to SUMMARY.md.",
+		Usage:   []string{"/summarize [dir]", "/summarize [dir] --max-size=N --exclude=.ext,..."},
+		Detail: "Walks the directory, asks the local model for a 1–3 sentence " +
+			"summary of every text file, and writes SUMMARY.md there. " +
+			".gitignore is respected.\n\n" +
+			"Output contains only the generated summaries, never raw file " +
+			"contents — it's for orientation, not for feeding to another model. " +
+			"Use --dump on the command line if you want full contents.\n\n" +
+			"Runtime scales with file count: every file is a separate inference " +
+			"call, so a large repo on a small model still takes a while.",
+		Examples: [][2]string{
+			{"/summarize", "the current directory"},
+			{"/summarize ./src", "one subtree"},
+			{"/summarize --max-size=131072", "include larger files than the default"},
+			{"/summarize --exclude=.min.js,.lock", "skip noisy generated files"},
+		},
+		SeeAlso: []string{"grep"},
+	},
+	{
+		Name:    "grep",
+		Summary: "Semantic search: find lines by intent, not by regex.",
+		Usage:   []string{"/grep <query>"},
+		Detail: "Walks the current directory and asks the model which lines match " +
+			"a natural-language description, printing path:line: snippet for each " +
+			"hit. .gitignore is respected.\n\n" +
+			"The point is queries regex can't express — \"retry logic with " +
+			"backoff\", \"where we load the gitignore\". For literal tokens, " +
+			"ordinary grep is faster and exact.\n\n" +
+			"Accuracy tracks model quality; small models miss hits and invent " +
+			"others. This is different from the `grep` *tool* available under " +
+			"/tools, which is a real RE2 regex search the model can call.",
+		Examples: [][2]string{
+			{"/grep where we parse config", "find config parsing"},
+			{"/grep retry logic with backoff", "find retry handling"},
+		},
+		SeeAlso: []string{"summarize", "tools"},
+	},
+	{
+		Name:    "set",
+		Summary: "Show or change persistent settings.",
+		Usage:   []string{"/set", "/set <key>", "/set <key> <value>"},
+		Detail: "With no arguments, lists every setting and its current value. " +
+			"With a key, shows just that one. With a key and value, validates and " +
+			"persists to config.json.\n\n" +
+			"Settings survive restarts.",
+		Subcommands: []helpSub{
+			{Name: "max_tokens", Usage: "/set max_tokens 4096",
+				Detail: "Cap on reply length in tokens. Default 4096, ceiling 12000 — " +
+					"the context window is 16K, and a reply that large would leave no " +
+					"room for the prompt and history. If replies are being cut off " +
+					"mid-sentence, raise this."},
+			{Name: "gpu_layers", Usage: "/set gpu_layers auto|0|N",
+				Detail: "How many model layers to offload to the GPU (llama.cpp's " +
+					"-ngl). `auto` (the default) offloads everything when the " +
+					"installed engine has a GPU backend, and stays on CPU otherwise. " +
+					"`0` forces CPU-only. A number offloads that many layers, which " +
+					"is how you fit a model that would otherwise exceed VRAM.\n\n" +
+					"Changing this restarts the model server, so it applies on your " +
+					"next message."},
+			{Name: "engine_variant", Usage: "/set engine_variant auto|cpu|vulkan|cuda|hip",
+				Detail: "Which llama.cpp build to download. Only variants that " +
+					"llama.cpp actually publishes for your platform are accepted.\n\n" +
+					"macOS needs nothing here: its archive always ships the Metal " +
+					"backend, so the GPU is used by default. Windows and Linux get a " +
+					"CPU-only build unless you pick one of vulkan (small, portable, " +
+					"any vendor), cuda (NVIDIA, largest — includes the CUDA runtime), " +
+					"or hip (AMD Radeon, Windows).\n\n" +
+					"After changing it, run /download engine to actually install the " +
+					"new build."},
+		},
+		Notes: []string{
+			"`auto` never selects a GPU build on Windows or Linux. A GPU build " +
+				"without a matching driver fails at load and there's no reliable way " +
+				"to detect one, so that choice is left to you.",
+		},
+		SeeAlso: []string{"download"},
+	},
+	{
+		Name:    "tools",
+		Summary: "Let the model read, edit, and run things in your project.",
+		Usage:   []string{"/tools", "/tools on", "/tools off", "/tools list"},
+		Detail: "Off by default. When on, the model can call tools instead of " +
+			"guessing — reading files, searching, editing, running commands — and " +
+			"loops until it has what it needs before answering.\n\n" +
+			"Six built-in tools. read_file, list_dir, and grep are read-only and " +
+			"run silently. write_file, edit_file, and run_cmd are destructive and " +
+			"open a confirmation modal first: Enter approves, Esc denies. A denial " +
+			"is fed back to the model as a tool error so it adapts instead of " +
+			"retrying the same call.\n\n" +
+			"This switch also governs MCP tools. /mcp manages connections; /tools " +
+			"decides whether the model may call anything at all.",
+		Subcommands: []helpSub{
+			{Name: "on", Usage: "/tools on", Detail: "Enable tool-use. Persists across restarts."},
+			{Name: "off", Usage: "/tools off",
+				Detail: "Disable it, and drop the current agent message list."},
+			{Name: "list", Usage: "/tools list",
+				Detail: "Show the built-in tools and which need confirmation."},
+		},
+		Notes: []string{
+			"Bounded at 20 tool-call rounds per message, so a confused model " +
+				"can't loop forever.",
+			"Needs a model that can emit tool calls — Qwen3.5-9B or " +
+				"Ministral-3-14B. On Gemma 3 the feature will appear broken.",
+			"/reset clears the agent's message list along with the conversation.",
+		},
+		SeeAlso: []string{"mcp", "model"},
+	},
+	{
+		Name:    "mcp",
+		Summary: "Connect external tool servers — Slack, Confluence, GitHub, and more.",
+		Usage: []string{
+			"/mcp", "/mcp add [name [KEY=VALUE ...]]", "/mcp catalog",
+			"/mcp remove <name>", "/mcp trust <name> [on|off]",
+			"/mcp env <name> KEY=VALUE", "/mcp connect [name]",
+			"/mcp disconnect <name>", "/mcp tools", "/mcp logout <name>",
+		},
+		Detail: "atlas.llm is an MCP client: it connects to Model Context Protocol " +
+			"servers and hands their tools to the model through the same loop and " +
+			"confirmation modal as the built-ins. That's how it reaches Slack, " +
+			"Confluence, GitHub, a database — anything with an MCP server.\n\n" +
+			"Start with /mcp add and pick from the list. You don't need to write " +
+			"a config file; the commands maintain mcp.json for you.\n\n" +
+			"Two kinds of server. Local ones run as a subprocess over stdio " +
+			"(most published servers, including Slack's). Remote ones are hosted " +
+			"and reached over HTTP, usually behind OAuth — /mcp add opens your " +
+			"browser to authorize, and the tokens are stored so later runs " +
+			"reconnect on their own.\n\n" +
+			"Tools are namespaced server__tool, so two servers both exposing " +
+			"`search` don't collide.",
+		Subcommands: []helpSub{
+			{Name: "add", Usage: "/mcp add [name [KEY=VALUE ...]]",
+				Detail: "With no arguments, opens a picker of ready-made servers. " +
+					"Picking one writes mcp.json and connects it.\n\n" +
+					"Servers needing a token or a path can't be finished from a list, " +
+					"so those pre-fill the command in the input box — replace the " +
+					"placeholder and press Enter.\n\n" +
+					"For anything not in the catalog:\n" +
+					"  /mcp add NAME -- npx -y some-mcp-package\n" +
+					"  /mcp add NAME --url=https://host/mcp --oauth\n\n" +
+					"Flags: --oauth (browser authorization), --sse (older 2024-11-05 " +
+					"protocol), --trust (skip confirmation)."},
+			{Name: "catalog", Usage: "/mcp catalog",
+				Detail: "List the built-in servers, what each needs, and the exact " +
+					"command to add it."},
+			{Name: "remove", Usage: "/mcp remove <name>",
+				Detail: "Delete the server from mcp.json, drop its tools, and clear " +
+					"any stored OAuth credentials for it."},
+			{Name: "trust", Usage: "/mcp trust <name> [on|off]",
+				Detail: "Trusted servers run their tools without asking. Untrusted " +
+					"ones — the default — confirm every call.\n\n" +
+					"Trust is per server and set by you. A server's own readOnlyHint " +
+					"annotations are deliberately ignored, since those come from the " +
+					"third party being gated.\n\n" +
+					"Reconnects the server, because trust is baked into each tool " +
+					"when it's registered."},
+			{Name: "env", Usage: "/mcp env <name> KEY=VALUE",
+				Detail: "Set or rotate a token without reopening the config file. " +
+					"Reconnects afterwards."},
+			{Name: "connect", Usage: "/mcp connect [name]",
+				Detail: "Connect every enabled server, or just one. Needed for OAuth " +
+					"servers on first use, since those are skipped at startup rather " +
+					"than launching a browser unprompted."},
+			{Name: "disconnect", Usage: "/mcp disconnect <name>",
+				Detail: "Drop a server and its tools for this session. The config " +
+					"entry stays; use remove to delete it."},
+			{Name: "tools", Usage: "/mcp tools",
+				Detail: "List the tools connected servers are contributing, and " +
+					"whether each will ask for confirmation."},
+			{Name: "logout", Usage: "/mcp logout <name>",
+				Detail: "Forget a server's stored OAuth tokens. The next connect " +
+					"re-authorizes."},
+		},
+		Examples: [][2]string{
+			{"/mcp add", "pick a server from the list"},
+			{"/mcp add deepwiki", "no-auth remote server — quickest way to test"},
+			{"/mcp add slack SLACK_BOT_TOKEN=xoxb-... SLACK_TEAM_ID=T...", "Slack"},
+			{"/mcp add atlassian", "Confluence + Jira, opens a browser"},
+			{"/mcp trust deepwiki on", "stop confirming every call"},
+		},
+		Notes: []string{
+			"/tools on is also required — /mcp only manages connections.",
+			"At startup every enabled server reconnects automatically, except " +
+				"OAuth servers with no stored credentials.",
+			"OAuth tokens live in mcp-auth.json with 0600 permissions. That's a " +
+				"protected file, not an OS keychain — comparable to ~/.aws/credentials.",
+		},
+		SeeAlso: []string{"tools", "model"},
+	},
+	{
+		Name:    "clear",
+		Summary: "Clear the screen, keeping the conversation.",
+		Usage:   []string{"/clear"},
+		Detail: "Wipes the visible scrollback only. The model still remembers the " +
+			"conversation — use /reset to actually drop it.",
+		SeeAlso: []string{"reset"},
+	},
+	{
+		Name:    "reset",
+		Summary: "Drop the conversation context and the server's cache.",
+		Usage:   []string{"/reset"},
+		Detail: "Clears the conversation, the agent's tool-call history, the " +
+			"on-screen scrollback, the token-usage counter, and the model " +
+			"server's KV cache.\n\n" +
+			"Use it when the context is full, or when earlier turns are dragging " +
+			"replies off course. Settings, models, and MCP connections are " +
+			"unaffected.",
+		SeeAlso: []string{"clear"},
+	},
+	{
+		Name:    "quit",
+		Aliases: []string{"exit"},
+		Summary: "Leave chat.",
+		Usage:   []string{"/quit", "/exit"},
+		Detail: "Shuts down the model server and any local MCP subprocesses, so " +
+			"nothing outlives the session. Ctrl+C does the same.",
+	},
+}
+
+func findHelpTopic(name string) (helpTopic, bool) {
+	name = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(name), "/"))
+	for _, t := range helpTopics {
+		if t.Name == name {
+			return t, true
+		}
+		for _, a := range t.Aliases {
+			if a == name {
+				return t, true
+			}
+		}
+	}
+	return helpTopic{}, false
+}
+
+func (t helpTopic) findSub(name string) (helpSub, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, s := range t.Subcommands {
+		if strings.ToLower(s.Name) == name {
+			return s, true
+		}
+	}
+	return helpSub{}, false
+}
+
+// helpTopicNames lists every documented command, for tab completion and the
+// "unknown topic" message.
+func helpTopicNames() []string {
+	out := make([]string, 0, len(helpTopics))
+	for _, t := range helpTopics {
+		out = append(out, t.Name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// helpSubNames lists a command's subcommands, for second-level completion.
+func helpSubNames(cmd string) []string {
+	t, ok := findHelpTopic(cmd)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(t.Subcommands))
+	for _, s := range t.Subcommands {
+		// Placeholders like "<model>" aren't literal completions.
+		if strings.HasPrefix(s.Name, "<") {
+			continue
+		}
+		out = append(out, s.Name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// wrapText hard-wraps a paragraph at width, preserving blank-line breaks.
+func wrapText(s string, width int) []string {
+	if width < 20 {
+		width = 20
+	}
+	var out []string
+	for _, para := range strings.Split(s, "\n\n") {
+		var line strings.Builder
+		flush := func() {
+			if line.Len() > 0 {
+				out = append(out, line.String())
+				line.Reset()
+			}
+		}
+		// A leading space marks a line as pre-formatted — command examples
+		// must not be reflowed into the surrounding prose.
+		for _, raw := range strings.Split(para, "\n") {
+			if strings.HasPrefix(raw, " ") || strings.HasPrefix(raw, "\t") {
+				flush()
+				out = append(out, strings.TrimRight(raw, " \t"))
+				continue
+			}
+			for _, word := range strings.Fields(raw) {
+				if line.Len() > 0 && line.Len()+1+len(word) > width {
+					flush()
+				}
+				if line.Len() > 0 {
+					line.WriteByte(' ')
+				}
+				line.WriteString(word)
+			}
+		}
+		flush()
+		out = append(out, "")
+	}
+	// Drop the trailing blank.
+	if n := len(out); n > 0 && out[n-1] == "" {
+		out = out[:n-1]
+	}
+	return out
+}
+
+// renderHelpTopic formats one command's full documentation.
+func renderHelpTopic(t helpTopic, width int) string {
+	body := helpBodyWidth(width)
+	head := lipgloss.NewStyle().Foreground(colDim).Bold(true)
+	cmd := lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(colMuted)
+
+	title := "/" + t.Name
+	if len(t.Aliases) > 0 {
+		for _, a := range t.Aliases {
+			title += ", /" + a
+		}
+	}
+
+	lines := []string{brandStyle.Render(title) + "  " + dim.Render(t.Summary), ""}
+
+	if len(t.Usage) > 0 {
+		lines = append(lines, head.Render("  USAGE"))
+		for _, u := range t.Usage {
+			lines = append(lines, "    "+cmd.Render(u))
+		}
+		lines = append(lines, "")
+	}
+
+	if t.Detail != "" {
+		for _, l := range wrapText(t.Detail, body) {
+			lines = append(lines, "  "+l)
+		}
+		lines = append(lines, "")
+	}
+
+	if len(t.Subcommands) > 0 {
+		lines = append(lines, head.Render("  SUBCOMMANDS"))
+		for _, s := range t.Subcommands {
+			lines = append(lines, "    "+cmd.Render(s.Usage))
+			for _, l := range wrapText(s.Detail, body-4) {
+				if l == "" {
+					lines = append(lines, "")
+					continue
+				}
+				lines = append(lines, "      "+dim.Render(l))
+			}
+			lines = append(lines, "")
+		}
+	}
+
+	if len(t.Examples) > 0 {
+		lines = append(lines, head.Render("  EXAMPLES"))
+		w := 0
+		for _, e := range t.Examples {
+			if lipgloss.Width(e[0]) > w {
+				w = lipgloss.Width(e[0])
+			}
+		}
+		for _, e := range t.Examples {
+			pad := strings.Repeat(" ", w-lipgloss.Width(e[0]))
+			lines = append(lines, "    "+cmd.Render(e[0])+pad+"   "+dim.Render(e[1]))
+		}
+		lines = append(lines, "")
+	}
+
+	if len(t.Notes) > 0 {
+		lines = append(lines, head.Render("  NOTES"))
+		for _, n := range t.Notes {
+			wrapped := wrapText(n, body-2)
+			for i, l := range wrapped {
+				marker := "    • "
+				if i > 0 {
+					marker = "      "
+				}
+				lines = append(lines, marker+dim.Render(l))
+			}
+		}
+		lines = append(lines, "")
+	}
+
+	if len(t.SeeAlso) > 0 {
+		var refs []string
+		for _, r := range t.SeeAlso {
+			refs = append(refs, "/help "+r)
+		}
+		lines = append(lines, head.Render("  SEE ALSO")+"  "+dim.Render(strings.Join(refs, " · ")))
+	}
+
+	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
+}
+
+// renderHelpSub formats a single subcommand.
+func renderHelpSub(t helpTopic, s helpSub, width int) string {
+	body := helpBodyWidth(width)
+	cmd := lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(colMuted)
+
+	lines := []string{
+		brandStyle.Render("/"+t.Name+" "+s.Name) + "  " + dim.Render("subcommand of /"+t.Name),
+		"",
+		"    " + cmd.Render(s.Usage),
+		"",
+	}
+	for _, l := range wrapText(s.Detail, body) {
+		lines = append(lines, "  "+l)
+	}
+	lines = append(lines, "", lipgloss.NewStyle().Foreground(colDim).Bold(true).
+		Render("  SEE ALSO")+"  "+dim.Render("/help "+t.Name))
+	return strings.Join(lines, "\n")
+}
+
+// helpBodyWidth keeps prose readable on very wide terminals.
+func helpBodyWidth(width int) int {
+	body := width - 6
+	if body > 84 {
+		body = 84
+	}
+	if body < 40 {
+		body = 40
+	}
+	return body
+}
+
+// helpIndexText is the "what can I ask about" footer shown under /help.
+func helpIndexText() string {
+	dim := lipgloss.NewStyle().Foreground(colMuted)
+	acc := lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	return dim.Render("  Detailed help: ") + acc.Render("/help <command>") +
+		dim.Render("  e.g. ") + acc.Render("/help mcp") + dim.Render(" · ") +
+		acc.Render("/help set gpu_layers") + "\n" +
+		dim.Render("  Documented: ") + dim.Render(strings.Join(helpTopicNames(), ", "))
+}
+
+// handleHelp implements `/help`, `/help <cmd>`, and `/help <cmd> <sub>`.
+func (m *chatModel) handleHelp(args []string) {
+	if len(args) == 0 {
+		m.rendered = append(m.rendered, welcomeText(), helpIndexText())
+		m.refresh()
+		return
+	}
+	t, ok := findHelpTopic(args[0])
+	if !ok {
+		m.pushError(fmt.Sprintf("no help for %q. Documented commands: %s",
+			args[0], strings.Join(helpTopicNames(), ", ")))
+		return
+	}
+	if len(args) == 1 {
+		m.rendered = append(m.rendered, renderHelpTopic(t, m.width))
+		m.refresh()
+		return
+	}
+	s, ok := t.findSub(args[1])
+	if !ok {
+		subs := helpSubNames(t.Name)
+		if len(subs) == 0 {
+			m.pushError(fmt.Sprintf("/%s has no subcommands — try `/help %s`", t.Name, t.Name))
+			return
+		}
+		m.pushError(fmt.Sprintf("/%s has no subcommand %q. Try: %s",
+			t.Name, args[1], strings.Join(subs, ", ")))
+		return
+	}
+	m.rendered = append(m.rendered, renderHelpSub(t, s, m.width))
+	m.refresh()
+}

@@ -246,7 +246,7 @@ func welcomeText() string {
 			{"/grep <query>", "semantic grep across the current directory"},
 		}},
 		{"Chat", [][2]string{
-			{"/help", "show this help"},
+			{"/help [cmd [sub]]", "this overview, or full detail for one command"},
 			{"/clear", "clear the on-screen scrollback (keeps context)"},
 			{"/reset", "drop conversation context + server KV cache"},
 			{"/set [k [v]]", "settings: max_tokens, gpu_layers, engine_variant"},
@@ -876,8 +876,7 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 
 	switch cmd {
 	case "/help":
-		m.rendered = append(m.rendered, welcomeText())
-		m.refresh()
+		m.handleHelp(args)
 		return nil
 
 	case "/quit", "/exit":
@@ -1031,6 +1030,14 @@ func (m *chatModel) tabComplete() bool {
 	head := strings.ToLower(parts[0])
 	arg := parts[1]
 	if strings.Contains(arg, " ") {
+		// `/help <cmd> <sub>` is the one two-level completion we support,
+		// so `/help mcp tr<Tab>` finishes the subcommand.
+		if head == "/help" {
+			sub := strings.SplitN(arg, " ", 2)
+			if len(sub) == 2 && !strings.Contains(sub[1], " ") {
+				return m.completeToken(head+" "+sub[0]+" ", sub[1], helpSubNames(sub[0]))
+			}
+		}
 		return false
 	}
 	var pool []string
@@ -1039,6 +1046,8 @@ func (m *chatModel) tabComplete() bool {
 		for _, mm := range availableModels {
 			pool = append(pool, mm.Name)
 		}
+	case "/help":
+		pool = helpTopicNames()
 	case "/set":
 		pool = []string{"engine_variant", "gpu_layers", "max_tokens"}
 	case "/tools":

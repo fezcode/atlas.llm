@@ -202,6 +202,23 @@ Still open:
 - Linux GPU is Vulkan-only — llama.cpp publishes no Linux CUDA binary, and
   ROCm (`ubuntu-rocm-*`) is unhandled.
 
+### 11. Long-form help  — SHIPPED (v0.18.0)
+`/help <command>` and `/help <command> <subcommand>` print full
+documentation: every accepted form, what it writes to disk, and the failure
+modes worth knowing. `/help` alone keeps the compact overview and adds an
+index of documented topics.
+
+- Topics live in a `helpTopics` table (help.go) — summary, usage forms,
+  prose detail, per-subcommand detail, examples, notes, cross-references.
+- Tab completes both levels: `/help mc<Tab>` then `/help mcp tr<Tab>`.
+- Tests assert every command in `slashCommands` has a topic, that every
+  implemented subcommand of /mcp, /tools, and /set is documented, and that
+  no cross-reference points at a missing topic — so the docs can't silently
+  drift from the dispatcher.
+- Prose is wrapped at render time against terminal width; lines that begin
+  with whitespace are treated as pre-formatted so command examples aren't
+  reflowed.
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships
