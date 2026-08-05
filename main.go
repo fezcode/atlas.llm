@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -227,7 +228,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "chat: %v\n", err)
 			os.Exit(1)
 		}
-		reply, err := chat(nil, prompt)
+		reply, err := chat(context.Background(), nil, prompt)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "chat: %v\n", err)
 			os.Exit(1)

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -165,6 +167,12 @@ type chatModel struct {
 	// compactSuggested debounces the "context is filling up" hint so it
 	// fires once per crossing rather than after every turn.
 	compactSuggested bool
+
+	// cancelInflight aborts the running generation when Esc is pressed.
+	// canceled marks that the abort was deliberate, so the resulting
+	// context error is reported as "stopped" rather than as a failure.
+	cancelInflight context.CancelFunc
+	canceled       bool
 }
 
 func newChatModel() chatModel {
@@ -268,6 +276,7 @@ func welcomeText() string {
 			{"/quit  /exit", "leave chat (or press ctrl+c)"},
 			{"tab", "complete slash commands and their arguments"},
 			{"↑ / ↓", "recall previous / next input (cursor keys inside multi-line)"},
+			{"esc", "stop generation in progress"},
 		}},
 	}
 
@@ -732,6 +741,10 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			return m, tea.Quit
+		case tea.KeyEsc:
+			if m.stopInflight() {
+				return m, tea.Batch(cmds...)
+			}
 		case tea.KeyTab:
 			if m.tabComplete() {
 				return m, tea.Batch(cmds...)
@@ -780,7 +793,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.busy = true
 				m.busyReason = "thinking"
 				m.busyStart = time.Now()
-				cmds = append(cmds, runAgentStepCmd(m.agentMsgs), m.spinner.Tick)
+				cmds = append(cmds, runAgentStepCmd(m.newInflight(), m.agentMsgs), m.spinner.Tick)
 			} else {
 				m.pushUser(input)
 				m.history = append(m.history, ChatMessage{Role: "user", Content: input})
@@ -788,11 +801,16 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.busyReason = "thinking"
 				m.busyStart = time.Now()
 				hist := append([]ChatMessage(nil), m.history[:len(m.history)-1]...)
-				cmds = append(cmds, runChatCmd(hist, input), m.spinner.Tick)
+				cmds = append(cmds, runChatCmd(m.newInflight(), hist, input), m.spinner.Tick)
 			}
 		}
 
 	case assistantReplyMsg:
+		if m.canceled {
+			// A reply that landed after Esc belongs to an abandoned turn.
+			m.canceled = false
+			break
+		}
 		m.busy = false
 		m.busyReason = ""
 		m.history = append(m.history, ChatMessage{Role: "assistant", Content: msg.content})
@@ -813,6 +831,9 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case inferenceErrMsg:
+		if m.inflightCanceled(msg.err) {
+			break
+		}
 		m.busy = false
 		m.busyReason = ""
 		m.pushError(msg.err.Error())
@@ -1268,9 +1289,21 @@ func (m chatModel) renderFooter(width int) string {
 		return footerStyle.Render(fmt.Sprintf("  %s  %s", m.dlName, formatBytes(m.dlWritten)))
 	}
 
+	// While generating, esc is the only thing most people want, so lead
+	// with it and drop hints that don't apply mid-turn.
+	if m.busy {
+		hints := []string{
+			footerKeyStyle.Render("esc") + footerStyle.Render(" stop generating"),
+			footerKeyStyle.Render("^C") + footerStyle.Render(" quit"),
+		}
+		return "  " + strings.Join(hints, sepStyle.Render("  ·  "))
+	}
+
 	hints := []string{
 		footerKeyStyle.Render("↵") + footerStyle.Render(" send"),
 		footerKeyStyle.Render("⇧↵") + footerStyle.Render(" newline"),
+		footerKeyStyle.Render("↑↓") + footerStyle.Render(" history"),
+		footerKeyStyle.Render("esc") + footerStyle.Render(" stop"),
 		footerKeyStyle.Render("^Y") + footerStyle.Render(" copy reply"),
 		footerKeyStyle.Render("/help") + footerStyle.Render(" commands"),
 		footerKeyStyle.Render("^C") + footerStyle.Render(" quit"),
@@ -1279,9 +1312,9 @@ func (m chatModel) renderFooter(width int) string {
 	return "  " + strings.Join(hints, sep)
 }
 
-func runChatCmd(history []ChatMessage, input string) tea.Cmd {
+func runChatCmd(ctx context.Context, history []ChatMessage, input string) tea.Cmd {
 	return func() tea.Msg {
-		reply, err := chat(history, input)
+		reply, err := chat(ctx, history, input)
 		if err != nil {
 			return inferenceErrMsg{err: err}
 		}
@@ -1292,11 +1325,11 @@ func runChatCmd(history []ChatMessage, input string) tea.Cmd {
 // runAgentStepCmd posts the current agent message list to llama-server with
 // the tool definitions attached, and wraps the response (content + any
 // tool_calls) into an agentStepMsg for the update loop.
-func runAgentStepCmd(msgs []ChatMsg) tea.Cmd {
+func runAgentStepCmd(ctx context.Context, msgs []ChatMsg) tea.Cmd {
 	snapshot := append([]ChatMsg(nil), msgs...)
 	return func() tea.Msg {
 		cfg, _ := loadConfig()
-		content, calls, err := runAgentStep(snapshot, cfg.MaxTokens)
+		content, calls, err := runAgentStep(ctx, snapshot, cfg.MaxTokens)
 		return agentStepMsg{content: content, toolCalls: calls, err: err}
 	}
 }
@@ -1375,6 +1408,14 @@ func (m *chatModel) handleTools(args []string) {
 // it, renders any textual content, and either dispatches the next tool call
 // or ends the turn when no more calls are pending.
 func (m *chatModel) handleAgentStep(msg agentStepMsg) tea.Cmd {
+	if m.inflightCanceled(msg.err) {
+		return nil
+	}
+	if m.canceled {
+		// Result of a turn the user already stopped.
+		m.canceled = false
+		return nil
+	}
 	if msg.err != nil {
 		m.busy = false
 		m.busyReason = ""
@@ -1417,7 +1458,7 @@ func (m *chatModel) handleAgentStep(msg agentStepMsg) tea.Cmd {
 // or fabricates an error result (unknown tool) and recurses.
 func (m *chatModel) dispatchNextTool() tea.Cmd {
 	if len(m.pendingCalls) == 0 {
-		return runAgentStepCmd(m.agentMsgs)
+		return runAgentStepCmd(m.newInflight(), m.agentMsgs)
 	}
 	call := m.pendingCalls[0]
 	m.pendingCalls = m.pendingCalls[1:]
@@ -1442,6 +1483,10 @@ func (m *chatModel) dispatchNextTool() tea.Cmd {
 // the queue: either runs the next pending call or, if the batch is empty,
 // re-invokes the model with the updated message list.
 func (m *chatModel) handleToolRan(msg toolRanMsg) tea.Cmd {
+	if m.canceled {
+		m.canceled = false
+		return nil
+	}
 	result := msg.result
 	if msg.err != nil {
 		result = "Error: " + msg.err.Error()
@@ -1802,4 +1847,53 @@ func (m *chatModel) recallNext() bool {
 func (m *chatModel) setInput(s string) {
 	m.textarea.SetValue(s)
 	m.textarea.CursorEnd()
+}
+
+// newInflight creates the context for a generation and stores its cancel
+// func so Esc can abort. Any previous in-flight context is cancelled first,
+// so a stale generation can't outlive the turn that started it.
+func (m *chatModel) newInflight() context.Context {
+	if m.cancelInflight != nil {
+		m.cancelInflight()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelInflight = cancel
+	m.canceled = false
+	return ctx
+}
+
+// stopInflight aborts a running generation. Reports whether there was
+// anything to stop, so Esc falls through to the textarea when idle.
+func (m *chatModel) stopInflight() bool {
+	if !m.busy || m.cancelInflight == nil {
+		return false
+	}
+	m.canceled = true
+	m.cancelInflight()
+	m.cancelInflight = nil
+	m.busy = false
+	m.busyReason = ""
+	// Abandon any queued tool calls from the interrupted turn.
+	m.pendingCalls = nil
+	m.confirmCall = nil
+	if m.picking == "tool_confirm" {
+		m.picking = ""
+		m.refresh()
+	}
+	m.pushSystem("Stopped. (The partial reply was discarded; the conversation is unchanged.)")
+	return true
+}
+
+// inflightCanceled reports whether an error is the result of the user
+// pressing Esc, in which case it has already been reported.
+func (m *chatModel) inflightCanceled(err error) bool {
+	if !m.canceled {
+		return false
+	}
+	if err == nil || errors.Is(err, context.Canceled) ||
+		strings.Contains(err.Error(), context.Canceled.Error()) {
+		m.canceled = false
+		return true
+	}
+	return false
 }

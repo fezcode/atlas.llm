@@ -270,6 +270,25 @@ never the problem. The cap is now 6KB (~1.5K tokens, ~9% of ctx).
 Follow-ups: automatic compaction at a threshold rather than a prompt, and a
 configurable `-c` context size (currently hardcoded at 16384).
 
+### 14. Stop generation  — SHIPPED (v0.18.0)
+`Esc` aborts an in-flight generation. A `context.Context` is now plumbed
+through `chatCompleteCore` to `http.NewRequestWithContext`, so cancelling
+closes the connection and llama-server stops generating server-side rather
+than the UI merely detaching. Measured: aborts in ~1ms against a live model.
+
+- Queued tool calls from the interrupted turn are abandoned, and an open
+  confirm modal is dismissed.
+- Starting a turn cancels any previous one, so an abandoned generation can't
+  outlive the turn that started it.
+- The resulting `context.Canceled` is recognised and reported as "Stopped"
+  rather than as an error; a genuine failure during a cancelled turn is
+  still surfaced.
+- The footer switches to `esc stop generating` while busy.
+
+Not covered: an MCP tool call already in flight still runs to its own
+timeout — Tool.Run takes no context. Threading one through would let Esc
+interrupt a slow server too.
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships

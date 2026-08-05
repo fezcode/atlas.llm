@@ -50,8 +50,8 @@ they are missing returns an error with the command to run.
 
 Keys: `Enter` sends, `Shift+Enter` newline, `Tab` completes slash commands
 and their arguments (model names, `/set` keys, `/download` targets), `↑`/`↓`
-recall previous and next input, `Ctrl+Y` copies the last assistant reply to
-the clipboard, `Ctrl+C` quits.
+recall previous and next input, `Esc` stops a generation in progress,
+`Ctrl+Y` copies the last assistant reply to the clipboard, `Ctrl+C` quits.
 
 Input recall works like a shell: `↑` walks back through what you've sent,
 `↓` walks forward, and a half-typed line is parked and restored when you

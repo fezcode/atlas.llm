@@ -314,16 +314,16 @@ func ResetUsage() {
 // <start_of_turn>/<end_of_turn> sentinels, ChatML for other families, etc.)
 // and returns only the assistant's reply — so the model stops at the turn
 // boundary instead of spewing fake "User:/Assistant:" continuations.
-func (s *llamaServer) ChatComplete(msgs []ChatMsg, maxTokens int) (string, error) {
-	content, _, err := s.chatCompleteCore(msgs, maxTokens, nil, false)
+func (s *llamaServer) ChatComplete(ctx context.Context, msgs []ChatMsg, maxTokens int) (string, error) {
+	content, _, err := s.chatCompleteCore(ctx, msgs, maxTokens, nil, false)
 	return content, err
 }
 
 // ChatCompleteNoThinking is for one-shot utility calls — summarize, grep,
 // compact — where a reasoning model's <think> block is pure waste: it
 // consumes the entire token budget and can leave the answer empty.
-func (s *llamaServer) ChatCompleteNoThinking(msgs []ChatMsg, maxTokens int) (string, error) {
-	content, _, err := s.chatCompleteCore(msgs, maxTokens, nil, true)
+func (s *llamaServer) ChatCompleteNoThinking(ctx context.Context, msgs []ChatMsg, maxTokens int) (string, error) {
+	content, _, err := s.chatCompleteCore(ctx, msgs, maxTokens, nil, true)
 	return content, err
 }
 
@@ -331,11 +331,11 @@ func (s *llamaServer) ChatCompleteNoThinking(msgs []ChatMsg, maxTokens int) (str
 // the request and returns the (possibly empty) list of tool_calls the model
 // emitted in addition to any assistant content. The caller is responsible
 // for executing the calls and re-invoking with the tool results appended.
-func (s *llamaServer) ChatCompleteWithTools(msgs []ChatMsg, tools []map[string]any, maxTokens int) (string, []ToolCall, error) {
-	return s.chatCompleteCore(msgs, maxTokens, tools, false)
+func (s *llamaServer) ChatCompleteWithTools(ctx context.Context, msgs []ChatMsg, tools []map[string]any, maxTokens int) (string, []ToolCall, error) {
+	return s.chatCompleteCore(ctx, msgs, maxTokens, tools, false)
 }
 
-func (s *llamaServer) chatCompleteCore(msgs []ChatMsg, maxTokens int, tools []map[string]any, noThinking bool) (string, []ToolCall, error) {
+func (s *llamaServer) chatCompleteCore(ctx context.Context, msgs []ChatMsg, maxTokens int, tools []map[string]any, noThinking bool) (string, []ToolCall, error) {
 	var kwargs map[string]any
 	if noThinking {
 		kwargs = map[string]any{"enable_thinking": false}
@@ -356,8 +356,20 @@ func (s *llamaServer) chatCompleteCore(msgs []ChatMsg, maxTokens int, tools []ma
 
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", s.port)
 	start := time.Now()
-	resp, err := s.client.Post(url, "application/json", bytes.NewReader(reqBody))
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
 	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		// Cancellation is a user action, not a failure to report as one.
+		if ctx.Err() != nil {
+			return "", nil, ctx.Err()
+		}
 		return "", nil, fmt.Errorf("POST /v1/chat/completions: %w", err)
 	}
 	defer resp.Body.Close()

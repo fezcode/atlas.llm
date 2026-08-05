@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -101,7 +102,7 @@ func (m *chatModel) handleCompact() tea.Cmd {
 	m.busyReason = "compacting"
 	m.busyStart = time.Now()
 	m.pushSystem(fmt.Sprintf("Compacting %d earlier turns into a summary…", count))
-	return tea.Batch(runCompactCmd(transcript, count, before, m.agentEnabled), m.spinner.Tick)
+	return tea.Batch(runCompactCmd(m.newInflight(), transcript, count, before, m.agentEnabled), m.spinner.Tick)
 }
 
 func (m *chatModel) conversationLen() int {
@@ -116,9 +117,9 @@ func (m *chatModel) conversationLen() int {
 }
 
 // runCompactCmd summarizes off the UI goroutine.
-func runCompactCmd(transcript string, dropped, before int, wasAgent bool) tea.Cmd {
+func runCompactCmd(ctx context.Context, transcript string, dropped, before int, wasAgent bool) tea.Cmd {
 	return func() tea.Msg {
-		summary, err := runSingleUser(compactSystemPrompt,
+		summary, err := runSingleUser(ctx, compactSystemPrompt,
 			"Compress this conversation:\n\n"+transcript, 1024)
 		return compactDoneMsg{
 			summary: summary, before: before, dropped: dropped,

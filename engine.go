@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -428,7 +429,7 @@ func requireModel(m Model) (string, error) {
 // <start_of_turn>/<end_of_turn> sentinels, ChatML, etc. — and stops at the
 // turn boundary. Raw completion with "User:/Assistant:" markers was causing
 // the model to hallucinate additional fake turns after its real answer.
-func runChat(msgs []ChatMsg, maxTokens int) (string, error) {
+func runChat(ctx context.Context, msgs []ChatMsg, maxTokens int) (string, error) {
 	if _, err := requireEngine(); err != nil {
 		return "", err
 	}
@@ -442,7 +443,7 @@ func runChat(msgs []ChatMsg, maxTokens int) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("server: %w", err)
 	}
-	out, err := s.ChatComplete(msgs, maxTokens)
+	out, err := s.ChatComplete(ctx, msgs, maxTokens)
 	if err != nil {
 		return "", fmt.Errorf("inference failed: %w", err)
 	}
@@ -454,18 +455,18 @@ func runChat(msgs []ChatMsg, maxTokens int) (string, error) {
 // Thinking is disabled for these: a reasoning model's <think> block adds
 // nothing to a summarization or extraction task, and on Qwen3.5 it consumed
 // the whole budget and returned an empty answer.
-func runSingleUser(system, user string, maxTokens int) (string, error) {
+func runSingleUser(ctx context.Context, system, user string, maxTokens int) (string, error) {
 	msgs := []ChatMsg{}
 	if system != "" {
 		msgs = append(msgs, ChatMsg{Role: "system", Content: system})
 	}
 	msgs = append(msgs, ChatMsg{Role: "user", Content: user})
-	return runChatNoThinking(msgs, maxTokens)
+	return runChatNoThinking(ctx, msgs, maxTokens)
 }
 
 // runChatNoThinking mirrors runChat but asks the chat template to skip the
 // reasoning block.
-func runChatNoThinking(msgs []ChatMsg, maxTokens int) (string, error) {
+func runChatNoThinking(ctx context.Context, msgs []ChatMsg, maxTokens int) (string, error) {
 	if _, err := requireEngine(); err != nil {
 		return "", err
 	}
@@ -478,7 +479,7 @@ func runChatNoThinking(msgs []ChatMsg, maxTokens int) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("server: %w", err)
 	}
-	out, err := s.ChatCompleteNoThinking(msgs, maxTokens)
+	out, err := s.ChatCompleteNoThinking(ctx, msgs, maxTokens)
 	if err != nil {
 		return "", fmt.Errorf("inference failed: %w", err)
 	}
@@ -497,6 +498,7 @@ func summarizeContent(content string) (string, error) {
 		truncated = truncated[:summarizeMaxChars] + "\n\n... (file truncated for summary)"
 	}
 	return runSingleUser(
+		context.Background(),
 		"You are a concise code summarizer. Respond with only 1-3 plain sentences describing the file's purpose. Do not use markdown, code blocks, or lists.",
 		"Summarize this file:\n\n"+truncated,
 		512,
@@ -512,7 +514,7 @@ type ChatMessage struct {
 // POSTs the current message list (plus tool definitions) and returns the
 // assistant content and any requested tool calls. Callers loop until the
 // returned toolCalls list is empty.
-func runAgentStep(msgs []ChatMsg, maxTokens int) (string, []ToolCall, error) {
+func runAgentStep(ctx context.Context, msgs []ChatMsg, maxTokens int) (string, []ToolCall, error) {
 	if _, err := requireEngine(); err != nil {
 		return "", nil, err
 	}
@@ -525,7 +527,7 @@ func runAgentStep(msgs []ChatMsg, maxTokens int) (string, []ToolCall, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("server: %w", err)
 	}
-	content, calls, err := s.ChatCompleteWithTools(msgs, toolDefsJSON(), maxTokens)
+	content, calls, err := s.ChatCompleteWithTools(ctx, msgs, toolDefsJSON(), maxTokens)
 	if err != nil {
 		return "", nil, fmt.Errorf("inference failed: %w", err)
 	}
@@ -538,7 +540,7 @@ func runAgentStep(msgs []ChatMsg, maxTokens int) (string, []ToolCall, error) {
 // unexpected denials).
 const agentSystemPrompt = `You are atlas, a concise coding assistant with access to the user's local project via tools. Use tools when you need to inspect or change files or run commands — don't guess about file contents. Some of the tools you are given come from connected MCP servers and reach external systems such as Slack or Confluence; prefer calling them over guessing when the user asks about something outside the local project. Some tools require the user to approve each call; if a call is denied, acknowledge and continue without retrying. After gathering what you need, answer plainly in markdown.`
 
-func chat(history []ChatMessage, userInput string) (string, error) {
+func chat(ctx context.Context, history []ChatMessage, userInput string) (string, error) {
 	msgs := []ChatMsg{
 		{Role: "system", Content: "You are a concise, helpful coding assistant. Keep replies under three short paragraphs unless more detail is explicitly requested."},
 	}
@@ -547,7 +549,7 @@ func chat(history []ChatMessage, userInput string) (string, error) {
 	}
 	msgs = append(msgs, ChatMsg{Role: "user", Content: userInput})
 	cfg, _ := loadConfig()
-	return runChat(msgs, cfg.MaxTokens)
+	return runChat(ctx, msgs, cfg.MaxTokens)
 }
 
 func formatBytes(n int64) string {
