@@ -165,12 +165,35 @@ Follow-ups worth doing:
 across invocations. Lets atlas.llm slot into shell pipelines without
 touching the TUI.
 
-### 7. GPU offload
-llama-server already accepts `-ngl N` (number of layers to put on
-GPU). Default we pass is `0`. For users with NVIDIA GPUs, llama.cpp
-needs to be the CUDA build — the one we download is CPU-only.
-Bigger job: detect GPU, download the CUDA asset instead, expose
-`-ngl` as a setting. Punt until someone asks.
+### 7. GPU offload  — SHIPPED
+`-ngl` is now a setting instead of a hardcoded `0`, and the engine archive
+is selectable.
+
+- `/set gpu_layers auto|0|N` -> `-ngl`. `auto` (the default) offloads
+  everything on macOS, where the standard llama.cpp archive already ships
+  the Metal backend, and stays on CPU elsewhere unless a GPU engine is
+  installed. Stored as `*int` so an explicit `0` (force CPU) is
+  distinguishable from "unset".
+- `/set engine_variant auto|cpu|vulkan` picks the release archive.
+  Vulkan is the portable GPU option for Windows/Linux — one archive covers
+  NVIDIA, AMD, and Intel, whereas CUDA also needs a matching `cudart-*`
+  package. A variant switch wipes the engine dir and re-downloads; the
+  installed variant is recorded in `engine/.variant`.
+- `ensureServer` now treats `-ngl` as part of the server's identity, so
+  changing the setting restarts llama-server instead of silently doing
+  nothing until the next model switch.
+
+Measured on an M-series Mac with gemma-3-1b-it Q4_K_M, through atlas's own
+server path: 12.1 tok/s at `-ngl 0` vs 27.0 tok/s on Metal (2.2x). Raw
+llama-bench on the same model shows prompt processing going 208 -> 997 t/s
+(4.8x), which matters most for agent loops with large tool results.
+
+Still open:
+- CUDA on Windows. Needs the `cudart-llama-bin-win-cuda-*.zip` runtime
+  downloaded alongside the engine archive, so it's a two-asset install.
+- No GPU/driver detection: `auto` never picks Vulkan by itself, because a
+  Vulkan build without a working driver fails at load. The user opts in.
+- ROCm (`ubuntu-rocm-*`) unhandled.
 
 ## Non-features (parked)
 

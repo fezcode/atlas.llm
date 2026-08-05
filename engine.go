@@ -69,11 +69,10 @@ type githubRelease struct {
 
 // latestLlamacppAsset resolves the correct llama.cpp release asset URL for
 // this OS/arch by querying GitHub for the latest release.
-func latestLlamacppAsset() (string, string, error) {
-	key := runtime.GOOS + "/" + runtime.GOARCH
-	suffix, ok := llamacppAssetSuffix[key]
-	if !ok {
-		return "", "", fmt.Errorf("no llama.cpp prebuilt available for %s", key)
+func latestLlamacppAsset(variant string) (string, string, error) {
+	suffix, err := engineAssetSuffix(variant)
+	if err != nil {
+		return "", "", err
 	}
 
 	resp, err := http.Get(llamacppLatestURL)
@@ -101,16 +100,26 @@ func latestLlamacppAsset() (string, string, error) {
 // current platform, extracts it into the engine dir, and removes any legacy
 // llamafile binary left over from older atlas.llm versions.
 func downloadEngine(onProgress ProgressFn) error {
-	if isEngineDownloaded() {
+	cfg, _ := loadConfig()
+	variant := resolveEngineVariant(cfg.EngineVariant)
+
+	// An engine from a different variant would leave the wrong binaries
+	// behind, so a variant switch forces a clean re-download.
+	if isEngineDownloaded() && installedEngineVariant() == variant {
 		return nil
 	}
-	url, _, err := latestLlamacppAsset()
+	url, _, err := latestLlamacppAsset(variant)
 	if err != nil {
 		return err
 	}
 	dir, err := engineDir()
 	if err != nil {
 		return err
+	}
+	if isEngineDownloaded() {
+		if err := clearEngineDir(); err != nil {
+			return fmt.Errorf("clear previous engine: %w", err)
+		}
 	}
 
 	archiveName := "llamacpp" + filepath.Ext(url)
@@ -140,6 +149,10 @@ func downloadEngine(onProgress ProgressFn) error {
 		}
 	}
 
+	if err := writeEngineVariant(variant); err != nil {
+		return err
+	}
+
 	// Best-effort cleanup of the old llamafile binary from pre-0.4 installs.
 	if base, err := atlasDir(); err == nil {
 		for _, name := range []string{"llamafile", "llamafile.exe"} {
@@ -147,6 +160,61 @@ func downloadEngine(onProgress ProgressFn) error {
 		}
 	}
 
+	return nil
+}
+
+// engineVariantFile records which build variant is currently extracted, so
+// a later /set engine_variant can tell whether a re-download is needed.
+func engineVariantFile() (string, error) {
+	dir, err := engineDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, ".variant"), nil
+}
+
+// installedEngineVariant reports the extracted engine's variant. Installs
+// predating variant support have no marker; they're CPU builds.
+func installedEngineVariant() string {
+	p, err := engineVariantFile()
+	if err != nil {
+		return engineVariantCPU
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return engineVariantCPU
+	}
+	v := strings.TrimSpace(string(data))
+	if v == "" {
+		return engineVariantCPU
+	}
+	return v
+}
+
+func writeEngineVariant(variant string) error {
+	p, err := engineVariantFile()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, []byte(variant+"\n"), 0644)
+}
+
+// clearEngineDir empties the engine directory ahead of installing a
+// different variant.
+func clearEngineDir() error {
+	dir, err := engineDir()
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

@@ -40,7 +40,7 @@ they are missing returns an error with the command to run.
 | `/download all`   | Download engine + every model in the registry.                      |
 | `/summarize`      | Summarize the current directory into `SUMMARY.md`.                  |
 | `/grep <query>`   | Semantic grep: ask the local model to find lines matching `<query>`.|
-| `/set [k [v]]`    | List or change persistent settings (currently: `max_tokens`).       |
+| `/set [k [v]]`    | List or change settings: `max_tokens`, `gpu_layers`, `engine_variant`. |
 | `/tools [on\|off\|list]` | Toggle agentic tool-use (off by default). See below.         |
 | `/mcp [...]`      | Connect MCP servers (Slack, Confluence, …). See below.              |
 | `/clear`          | Clear on-screen chat history (keeps conversation context).          |
@@ -111,6 +111,40 @@ Caveats:
   open; press Enter to approve, Esc (or select Deny) to reject. Denials
   are fed back to the model as a tool error so it can adapt rather than
   retry.
+
+### GPU offload
+
+Inference runs on the GPU where it can. `/set gpu_layers` controls how many
+model layers are offloaded, mapping to llama.cpp's `-ngl`:
+
+| Value  | Effect                                                              |
+| ------ | -------------------------------------------------------------------- |
+| `auto` | Default. Offload everything if the installed engine has a GPU backend. |
+| `0`    | Force CPU-only.                                                      |
+| `N`    | Offload N layers — useful when a model doesn't fit in VRAM.           |
+
+**macOS needs no setup.** The llama.cpp macOS archives always ship the Metal
+backend, so `auto` offloads by default. Measured on an M-series Mac with
+`gemma-3-1b-it` Q4_K_M: **12.1 tok/s on CPU vs 27.0 tok/s on Metal**, and
+prompt processing goes from 208 to 997 t/s — the latter matters most for
+agentic loops, where each turn re-reads a growing pile of tool output.
+
+**Windows and Linux** get a CPU-only archive by default, so `auto` stays on
+CPU. Switch to the Vulkan build for GPU support:
+
+```
+/set engine_variant vulkan
+/download engine            # replaces the installed engine
+```
+
+Vulkan is one archive that covers NVIDIA, AMD, and Intel. It requires a
+working Vulkan driver — atlas.llm won't select it for you, because a Vulkan
+build without a driver fails at load. CUDA isn't wired up yet; it needs a
+separate `cudart` runtime package alongside the engine.
+
+Changing `gpu_layers` restarts the model server, so it takes effect on your
+next message. `/set` with no arguments shows the current values and which
+engine variant is actually installed.
 
 ### MCP servers
 

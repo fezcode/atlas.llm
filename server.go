@@ -26,6 +26,7 @@ type llamaServer struct {
 	port     int
 	model    Model
 	ctxN     int
+	gpuLayer int
 	client   *http.Client
 	waitOnce sync.Once
 	waitErr  chan error
@@ -47,7 +48,12 @@ func ensureServer() (*llamaServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	if activeServer != nil && activeServer.model.Name == m.Name {
+	// A -ngl change only takes effect at process start, so treat it as
+	// part of the server's identity alongside the model.
+	cfg, _ := loadConfig()
+	wantNGL := resolveGPULayers(cfg)
+	if activeServer != nil && activeServer.model.Name == m.Name &&
+		activeServer.gpuLayer == wantNGL {
 		return activeServer, nil
 	}
 	if activeServer != nil {
@@ -95,13 +101,16 @@ func startLlamaServer(m Model) (*llamaServer, error) {
 		threads = 6
 	}
 
+	cfg, _ := loadConfig()
+	ngl := resolveGPULayers(cfg)
+
 	args := []string{
 		"-m", modelPath,
 		"--host", "127.0.0.1",
 		"--port", fmt.Sprintf("%d", port),
 		"-c", "16384",
 		"-t", fmt.Sprintf("%d", threads),
-		"-ngl", "0",
+		"-ngl", fmt.Sprintf("%d", ngl),
 		"--log-disable",
 	}
 	cmd := exec.Command(bin, args...)
@@ -111,18 +120,19 @@ func startLlamaServer(m Model) (*llamaServer, error) {
 	cmd.Env = append(os.Environ(), "OMP_STACKSIZE=64M")
 	applyEngineSysProcAttr(cmd)
 
-	log.Printf("starting llama-server on :%d (model=%s threads=%d)", port, m.Name, threads)
+	log.Printf("starting llama-server on :%d (model=%s threads=%d ngl=%d)", port, m.Name, threads, ngl)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start llama-server: %w", err)
 	}
 
 	s := &llamaServer{
-		cmd:     cmd,
-		port:    port,
-		model:   m,
-		ctxN:    16384,
-		client:  &http.Client{Timeout: 10 * time.Minute},
-		waitErr: make(chan error, 1),
+		cmd:      cmd,
+		port:     port,
+		model:    m,
+		ctxN:     16384,
+		gpuLayer: ngl,
+		client:   &http.Client{Timeout: 10 * time.Minute},
+		waitErr:  make(chan error, 1),
 	}
 	// Single background Wait(); result is broadcast via waitErr so both
 	// waitReady and stopLocked can observe exit without double-calling Wait.

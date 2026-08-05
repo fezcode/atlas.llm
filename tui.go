@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,8 +83,8 @@ type (
 		result string
 		err    error
 	}
-	sysMsg            struct{ content string }
-	summarizeDoneMsg  struct {
+	sysMsg           struct{ content string }
+	summarizeDoneMsg struct {
 		path string
 		err  error
 	}
@@ -101,8 +102,8 @@ type (
 		err  error
 	}
 	downloadProgressMsg struct {
-		name            string
-		written, total  int64
+		name           string
+		written, total int64
 	}
 )
 
@@ -248,7 +249,7 @@ func welcomeText() string {
 			{"/help", "show this help"},
 			{"/clear", "clear the on-screen scrollback (keeps context)"},
 			{"/reset", "drop conversation context + server KV cache"},
-			{"/set [k [v]]", "show or change settings (max_tokens)"},
+			{"/set [k [v]]", "settings: max_tokens, gpu_layers, engine_variant"},
 			{"/tools [on|off|list]", "agentic tool-use (read/write/grep/run_cmd; off by default)"},
 			{"/mcp [connect|tools]", "connect MCP servers (Slack, Confluence, …); /mcp help for setup"},
 			{"/quit  /exit", "leave chat (or press ctrl+c)"},
@@ -401,12 +402,78 @@ func (m *chatModel) handleSet(args []string) {
 		return
 	}
 	if len(args) == 0 {
-		m.pushSystem(fmt.Sprintf("Settings:\n  max_tokens = %d  (reply-length cap; default %d)",
-			cfg.MaxTokens, defaultMaxTokens))
+		m.pushSystem(fmt.Sprintf("Settings:\n"+
+			"  max_tokens     = %d  (reply-length cap; default %d)\n"+
+			"  gpu_layers     = %s  (layers offloaded to the GPU)\n"+
+			"  engine_variant = %s  (llama.cpp build; installed: %s)",
+			cfg.MaxTokens, defaultMaxTokens,
+			gpuLayersDisplay(cfg),
+			engineVariantDisplay(cfg), installedEngineVariant()))
 		return
 	}
 	key := strings.ToLower(args[0])
 	switch key {
+	case "gpu_layers":
+		if len(args) < 2 {
+			m.pushSystem(fmt.Sprintf("gpu_layers = %s", gpuLayersDisplay(cfg)))
+			return
+		}
+		val := strings.ToLower(args[1])
+		if val == "auto" {
+			cfg.GPULayers = nil
+		} else {
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 0 {
+				m.pushError(fmt.Sprintf("invalid gpu_layers=%q (expected `auto`, 0 for CPU-only, or a layer count)", args[1]))
+				return
+			}
+			cfg.GPULayers = &n
+		}
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		msg := fmt.Sprintf("gpu_layers = %s", gpuLayersDisplay(cfg))
+		if resolveGPULayers(cfg) > 0 && runtime.GOOS != "darwin" &&
+			installedEngineVariant() != engineVariantVulkan {
+			msg += "\n\nNote: the installed engine is a CPU-only build, so this will have no effect.\n" +
+				"Run `/set engine_variant vulkan` then `/download engine` for GPU support."
+		}
+		msg += "\nTakes effect on the next message (the model server restarts)."
+		m.pushSystem(msg)
+
+	case "engine_variant":
+		if len(args) < 2 {
+			m.pushSystem(fmt.Sprintf("engine_variant = %s  (installed: %s)",
+				engineVariantDisplay(cfg), installedEngineVariant()))
+			return
+		}
+		val := strings.ToLower(args[1])
+		switch val {
+		case engineVariantAuto, "":
+			cfg.EngineVariant = ""
+		case engineVariantCPU, engineVariantVulkan:
+			cfg.EngineVariant = val
+		default:
+			m.pushError(fmt.Sprintf("invalid engine_variant=%q (expected auto, cpu, or vulkan)", args[1]))
+			return
+		}
+		want := resolveEngineVariant(cfg.EngineVariant)
+		if _, err := engineAssetSuffix(want); err != nil {
+			m.pushError(err.Error())
+			return
+		}
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		msg := fmt.Sprintf("engine_variant = %s", engineVariantDisplay(cfg))
+		if installedEngineVariant() != want {
+			msg += fmt.Sprintf("\n\nInstalled engine is %q — run `/download engine` to replace it with the %s build.",
+				installedEngineVariant(), want)
+		}
+		m.pushSystem(msg)
+
 	case "max_tokens":
 		if len(args) < 2 {
 			m.pushSystem(fmt.Sprintf("max_tokens = %d", cfg.MaxTokens))
@@ -431,7 +498,7 @@ func (m *chatModel) handleSet(args []string) {
 		}
 		m.pushSystem(fmt.Sprintf("max_tokens = %d", n))
 	default:
-		m.pushError(fmt.Sprintf("unknown setting: %s (supported: max_tokens)", key))
+		m.pushError(fmt.Sprintf("unknown setting: %s (supported: max_tokens, gpu_layers, engine_variant)", key))
 	}
 }
 
@@ -960,7 +1027,7 @@ func (m *chatModel) tabComplete() bool {
 			pool = append(pool, mm.Name)
 		}
 	case "/set":
-		pool = []string{"max_tokens"}
+		pool = []string{"engine_variant", "gpu_layers", "max_tokens"}
 	case "/tools":
 		pool = []string{"on", "off", "list"}
 	case "/mcp":
@@ -1531,10 +1598,11 @@ type downloadTargets struct {
 }
 
 // resolveDownloadTargets parses /download args:
-//   (none)       -> engine + current model
-//   engine       -> engine only
-//   all          -> engine + every registered model
-//   <model-name> -> engine + that specific model
+//
+//	(none)       -> engine + current model
+//	engine       -> engine only
+//	all          -> engine + every registered model
+//	<model-name> -> engine + that specific model
 func resolveDownloadTargets(args []string) (downloadTargets, error) {
 	if len(args) == 0 {
 		cfg, _ := loadConfig()

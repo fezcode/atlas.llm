@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 type Model struct {
@@ -56,22 +57,122 @@ const defaultModel = "gemma-3-1b-it"
 // correct prebuilt archive for the current OS/arch.
 const llamacppLatestURL = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
 
-// llamacppAssetSuffix maps GOOS/GOARCH to the suffix of the release asset
-// filename we want. Assets are named like `llama-b8892-bin-win-cpu-x64.zip`;
-// we match against the tail so the build tag can vary.
-var llamacppAssetSuffix = map[string]string{
-	"windows/amd64": "win-cpu-x64.zip",
-	"windows/arm64": "win-cpu-arm64.zip",
-	"darwin/amd64":  "macos-x64.tar.gz",
-	"darwin/arm64":  "macos-arm64.tar.gz",
-	"linux/amd64":   "ubuntu-x64.tar.gz",
-	"linux/arm64":   "ubuntu-arm64.tar.gz",
+// Engine build variants. The macOS releases always ship the Metal backend,
+// so there is no separate GPU archive for darwin — "cpu" there still gets
+// GPU offload. On Windows/Linux the default archives are CPU-only, and
+// Vulkan is the portable GPU option (works on NVIDIA, AMD, and Intel from
+// one archive, unlike CUDA which also needs a matching runtime package).
+const (
+	engineVariantAuto   = "auto"
+	engineVariantCPU    = "cpu"
+	engineVariantVulkan = "vulkan"
+)
+
+// llamacppAssetSuffix maps variant -> GOOS/GOARCH -> the suffix of the
+// release asset filename we want. Assets are named like
+// `llama-b8892-bin-win-cpu-x64.zip`; we match against the tail so the build
+// tag can vary.
+var llamacppAssetSuffix = map[string]map[string]string{
+	engineVariantCPU: {
+		"windows/amd64": "win-cpu-x64.zip",
+		"windows/arm64": "win-cpu-arm64.zip",
+		"darwin/amd64":  "macos-x64.tar.gz",
+		"darwin/arm64":  "macos-arm64.tar.gz",
+		"linux/amd64":   "ubuntu-x64.tar.gz",
+		"linux/arm64":   "ubuntu-arm64.tar.gz",
+	},
+	engineVariantVulkan: {
+		"windows/amd64": "win-vulkan-x64.zip",
+		"linux/amd64":   "ubuntu-vulkan-x64.tar.gz",
+		"linux/arm64":   "ubuntu-vulkan-arm64.tar.gz",
+	},
+}
+
+// resolveEngineVariant turns "auto"/"" into a concrete variant. macOS gets
+// Metal from the standard archive, so auto stays on "cpu" there; elsewhere
+// auto also means "cpu" because a Vulkan build is useless without a Vulkan
+// driver and we can't reliably detect one.
+func resolveEngineVariant(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case engineVariantVulkan:
+		return engineVariantVulkan
+	default:
+		return engineVariantCPU
+	}
+}
+
+// engineAssetSuffix returns the release-asset suffix for a variant on this
+// platform.
+func engineAssetSuffix(variant string) (string, error) {
+	key := runtime.GOOS + "/" + runtime.GOARCH
+	byPlatform, ok := llamacppAssetSuffix[variant]
+	if !ok {
+		return "", fmt.Errorf("unknown engine variant %q", variant)
+	}
+	suffix, ok := byPlatform[key]
+	if !ok {
+		if variant != engineVariantCPU {
+			return "", fmt.Errorf("no %s llama.cpp build available for %s", variant, key)
+		}
+		return "", fmt.Errorf("no llama.cpp prebuilt available for %s", key)
+	}
+	return suffix, nil
+}
+
+// maxGPULayers is the "offload everything" sentinel. llama.cpp clamps it to
+// the model's actual layer count, so it doesn't need to be exact.
+const maxGPULayers = 999
+
+// autoGPULayers decides the default -ngl when the user hasn't set one.
+// macOS builds always carry Metal, so offloading is free there. On
+// Windows/Linux only a GPU-enabled engine variant can use it.
+func autoGPULayers(variant string) int {
+	if runtime.GOOS == "darwin" || resolveEngineVariant(variant) == engineVariantVulkan {
+		return maxGPULayers
+	}
+	return 0
+}
+
+// resolveGPULayers returns the -ngl value to pass to llama-server.
+func resolveGPULayers(cfg Config) int {
+	if cfg.GPULayers != nil {
+		if *cfg.GPULayers < 0 {
+			return 0
+		}
+		return *cfg.GPULayers
+	}
+	return autoGPULayers(cfg.EngineVariant)
+}
+
+// gpuLayersDisplay renders the setting for `/set`, distinguishing an
+// explicit value from the auto-detected default.
+func gpuLayersDisplay(cfg Config) string {
+	n := resolveGPULayers(cfg)
+	label := "all layers"
+	if n == 0 {
+		label = "CPU only"
+	} else if n < maxGPULayers {
+		label = fmt.Sprintf("%d layers", n)
+	}
+	if cfg.GPULayers == nil {
+		return fmt.Sprintf("auto (%s)", label)
+	}
+	return fmt.Sprintf("%d (%s)", n, label)
 }
 
 type Config struct {
 	CurrentModel string `json:"current_model"`
 	MaxTokens    int    `json:"max_tokens,omitempty"`
 	ToolsEnabled bool   `json:"tools_enabled,omitempty"`
+
+	// GPULayers is the -ngl value handed to llama-server. nil means "auto"
+	// — a pointer rather than an int so an explicit 0 (force CPU) is
+	// distinguishable from an absent setting.
+	GPULayers *int `json:"gpu_layers,omitempty"`
+
+	// EngineVariant selects which llama.cpp release archive to download:
+	// "cpu" (default) or "vulkan". Empty means auto.
+	EngineVariant string `json:"engine_variant,omitempty"`
 }
 
 // defaultMaxTokens is the reply-length cap applied when the config hasn't
@@ -248,4 +349,18 @@ func currentModel() (Model, error) {
 		return Model{}, fmt.Errorf("unknown model in config: %s", cfg.CurrentModel)
 	}
 	return m, nil
+}
+
+// engineVariantDisplay renders the engine_variant setting, showing what
+// "auto" resolves to on this platform.
+func engineVariantDisplay(cfg Config) string {
+	resolved := resolveEngineVariant(cfg.EngineVariant)
+	if strings.TrimSpace(cfg.EngineVariant) == "" ||
+		strings.EqualFold(cfg.EngineVariant, engineVariantAuto) {
+		if runtime.GOOS == "darwin" {
+			return "auto (" + resolved + ", Metal built in)"
+		}
+		return "auto (" + resolved + ")"
+	}
+	return resolved
 }
