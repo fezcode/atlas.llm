@@ -219,6 +219,16 @@ index of documented topics.
   with whitespace are treated as pre-formatted so command examples aren't
   reflowed.
 
+### 12. Input history recall  — SHIPPED (v0.18.0)
+`↑`/`↓` walk back and forward through submitted input, shell style. A
+half-typed line is parked when you start browsing and restored when you come
+back past the newest entry.
+
+Recall only takes over at the first line (for `↑`) and the last line (for
+`↓`), so the arrows still move the cursor inside a multi-line draft. Bounded
+at 200 entries; consecutive duplicates collapse. In-memory only — not
+persisted across sessions, which would be the obvious follow-up.
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships

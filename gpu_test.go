@@ -257,3 +257,44 @@ func TestWelcomeTextIncludesPerformanceBlock(t *testing.T) {
 	}
 	t.Logf("\n%s", out)
 }
+
+// A registry entry with a typo'd URL or filename only fails at download
+// time, after the user has waited. Pin the invariants instead.
+func TestModelRegistryIsWellFormed(t *testing.T) {
+	seenName := map[string]bool{}
+	seenFile := map[string]bool{}
+	for _, m := range availableModels {
+		if m.Name == "" || m.Filename == "" || m.URL == "" || m.Size == "" {
+			t.Errorf("incomplete registry entry: %+v", m)
+			continue
+		}
+		if seenName[m.Name] {
+			t.Errorf("duplicate model name %q", m.Name)
+		}
+		if seenFile[m.Filename] {
+			t.Errorf("duplicate filename %q — models would overwrite each other", m.Filename)
+		}
+		seenName[m.Name] = true
+		seenFile[m.Filename] = true
+
+		if !strings.HasSuffix(m.Filename, ".gguf") {
+			t.Errorf("%s: filename %q is not a .gguf", m.Name, m.Filename)
+		}
+		// The URL's basename must match Filename, or the downloaded file
+		// lands under a name isModelDownloaded() will never find.
+		if !strings.HasSuffix(m.URL, "/"+m.Filename) {
+			t.Errorf("%s: URL does not end in /%s: %s", m.Name, m.Filename, m.URL)
+		}
+		if !strings.HasPrefix(m.URL, "https://") {
+			t.Errorf("%s: URL is not https: %s", m.Name, m.URL)
+		}
+	}
+	// The default must exist, or every fresh install starts broken.
+	if _, ok := findModel(defaultModel); !ok {
+		t.Errorf("defaultModel %q is not in the registry", defaultModel)
+	}
+	// At least one model has to be able to drive /tools and /mcp.
+	if _, ok := findModel("qwen3.5-4b"); !ok {
+		t.Error("registry has no lightweight tool-calling model")
+	}
+}

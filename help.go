@@ -71,12 +71,14 @@ var helpTopics = []helpTopic{
 			"so the first reply after a switch pays the model-load cost.",
 		Examples: [][2]string{
 			{"/model", "open the picker"},
+			{"/model qwen3.5-4b", "lightest model that can drive /tools and /mcp"},
 			{"/model qwen3.5-9b", "switch directly by name"},
 		},
 		Notes: []string{
-			"Tool-calling only works reliably on the larger models. Qwen3.5-9B " +
-				"and Ministral-3-14B handle it; Gemma 3 1B/4B will usually ignore " +
-				"tools or invent a fake call, which makes /tools and /mcp look broken.",
+			"Tool-calling needs a model trained for it. Qwen3.5 (4B and up) and " +
+				"Ministral-3-14B handle it; Gemma 3 will usually ignore tools or " +
+				"invent a fake call, which makes /tools and /mcp look broken. " +
+				"qwen3.5-4b is the lightest option that works.",
 		},
 		SeeAlso: []string{"list", "download", "tools"},
 	},

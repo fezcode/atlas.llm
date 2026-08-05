@@ -48,8 +48,14 @@ they are missing returns an error with the command to run.
 | `/quit`, `/exit`  | Leave chat (Ctrl+C also works).                                     |
 
 Keys: `Enter` sends, `Shift+Enter` newline, `Tab` completes slash commands
-and their arguments (model names, `/set` keys, `/download` targets), `Ctrl+Y`
-copies the last assistant reply to the clipboard, `Ctrl+C` quits.
+and their arguments (model names, `/set` keys, `/download` targets), `↑`/`↓`
+recall previous and next input, `Ctrl+Y` copies the last assistant reply to
+the clipboard, `Ctrl+C` quits.
+
+Input recall works like a shell: `↑` walks back through what you've sent,
+`↓` walks forward, and a half-typed line is parked and restored when you
+come back. Inside a multi-line draft the arrows move the cursor as usual —
+recall only takes over at the first and last line.
 
 ### 2. `--summarize` — project summary to SUMMARY.md
 

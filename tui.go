@@ -136,6 +136,14 @@ type chatModel struct {
 	// pickerItems because that one is typed to the model registry.
 	mcpPickerItems []mcpPreset
 
+	// Input history, shell style. inputHistory holds submitted lines oldest
+	// first; historyIdx == len(inputHistory) means "not browsing", and
+	// historyDraft parks the half-typed line so it survives a round trip
+	// through the history and back.
+	inputHistory []string
+	historyIdx   int
+	historyDraft string
+
 	// Markdown renderer for assistant replies. Rebuilt on resize so word
 	// wrap tracks the viewport width.
 	mdRenderer *glamour.TermRenderer
@@ -254,6 +262,7 @@ func welcomeText() string {
 			{"/mcp [connect|tools]", "connect MCP servers (Slack, Confluence, …); /mcp help for setup"},
 			{"/quit  /exit", "leave chat (or press ctrl+c)"},
 			{"tab", "complete slash commands and their arguments"},
+			{"↑ / ↓", "recall previous / next input (cursor keys inside multi-line)"},
 		}},
 	}
 
@@ -722,6 +731,14 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.tabComplete() {
 				return m, tea.Batch(cmds...)
 			}
+		case tea.KeyUp:
+			if m.recallPrev() {
+				return m, tea.Batch(cmds...)
+			}
+		case tea.KeyDown:
+			if m.recallNext() {
+				return m, tea.Batch(cmds...)
+			}
 		case tea.KeyCtrlY:
 			content := m.lastAssistantContent()
 			if content == "" {
@@ -741,6 +758,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			m.textarea.Reset()
+			m.recordHistory(input)
 
 			if strings.HasPrefix(input, "/") {
 				cmd := m.handleSlash(input)
@@ -1713,4 +1731,61 @@ func startChat() (err error) {
 	autoConnectMCP()
 	_, err = p.Run()
 	return err
+}
+
+// maxInputHistory bounds the recall buffer. Generous enough to cover a
+// working session, small enough to stay irrelevant to memory.
+const maxInputHistory = 200
+
+// recordHistory appends a submitted line to the recall buffer and resets
+// the browse position. Consecutive duplicates are collapsed, so holding
+// Enter on the same command doesn't bury the rest of the history.
+func (m *chatModel) recordHistory(input string) {
+	if n := len(m.inputHistory); n == 0 || m.inputHistory[n-1] != input {
+		m.inputHistory = append(m.inputHistory, input)
+		if len(m.inputHistory) > maxInputHistory {
+			m.inputHistory = m.inputHistory[len(m.inputHistory)-maxInputHistory:]
+		}
+	}
+	m.historyIdx = len(m.inputHistory)
+	m.historyDraft = ""
+}
+
+// recallPrev walks back through submitted input. Reports whether it
+// consumed the key — when it returns false the textarea gets the event and
+// moves the cursor instead, so multi-line editing still works.
+func (m *chatModel) recallPrev() bool {
+	// Only recall from the top line; elsewhere Up means "move up a line".
+	if m.textarea.Line() != 0 || len(m.inputHistory) == 0 || m.historyIdx == 0 {
+		return false
+	}
+	if m.historyIdx == len(m.inputHistory) {
+		m.historyDraft = m.textarea.Value()
+	}
+	m.historyIdx--
+	m.setInput(m.inputHistory[m.historyIdx])
+	return true
+}
+
+// recallNext walks forward, restoring the parked draft past the newest entry.
+func (m *chatModel) recallNext() bool {
+	// Only recall from the last line; elsewhere Down means "move down a line".
+	if m.textarea.Line() != m.textarea.LineCount()-1 || m.historyIdx >= len(m.inputHistory) {
+		return false
+	}
+	m.historyIdx++
+	if m.historyIdx == len(m.inputHistory) {
+		m.setInput(m.historyDraft)
+		m.historyDraft = ""
+		return true
+	}
+	m.setInput(m.inputHistory[m.historyIdx])
+	return true
+}
+
+// setInput replaces the input box contents and parks the cursor at the end,
+// which is where you want it when editing a recalled command.
+func (m *chatModel) setInput(s string) {
+	m.textarea.SetValue(s)
+	m.textarea.CursorEnd()
 }

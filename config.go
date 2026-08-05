@@ -31,6 +31,14 @@ var availableModels = []Model{
 		Size:     "~2.5GB",
 	},
 	{
+		// The lightest model in the registry that reliably emits tool calls,
+		// so /tools and /mcp actually work without pulling the 5.7GB 9B.
+		Name:     "qwen3.5-4b",
+		Filename: "Qwen3.5-4B-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
+		Size:     "~2.7GB",
+	},
+	{
 		Name:     "gemma-4-e2b-it",
 		Filename: "gemma-4-E2B-it-Q4_K_M.gguf",
 		URL:      "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
