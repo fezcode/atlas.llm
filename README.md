@@ -212,6 +212,7 @@ GitHub, a database, or anything else with an MCP server.
 their own, and a quick way to confirm the plumbing works:
 
 ```
+/mcp add duckduckgo           # web search + news, no API key
 /mcp add context7             # up-to-date docs for thousands of libraries
 /mcp add gitmcp               # docs + code search for any public GitHub repo
 /mcp add deepwiki             # ask questions about any public GitHub repo

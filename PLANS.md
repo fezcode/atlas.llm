@@ -328,6 +328,16 @@ arbitrary shell execution: a red marker in both header and footer while
 armed, and every auto-approved call still printed in the trace as
 "(auto-approved by /yesman)". esc remains the escape hatch mid-turn.
 
+### 17. Typing no longer scrolls the transcript  — FIXED (v0.18.0)
+Every message, including tea.KeyMsg, was forwarded to the viewport, whose
+bubbles default keymap is vim-style — so typing h/j/k/l/u/d/f/b or space
+scrolled the transcript instead of entering characters.
+
+Key events are no longer forwarded to the viewport at all, and its KeyMap is
+zeroed so reinstating the forward can't silently bring the bug back. Explicit
+PgUp/PgDn bindings replace the removed scrolling. Non-key messages (mouse
+wheel, resize) still reach it. No vim mode.
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships

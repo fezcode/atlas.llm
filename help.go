@@ -175,17 +175,43 @@ var helpTopics = []helpTopic{
 					"`0` forces CPU-only. A number offloads that many layers, which " +
 					"is how you fit a model that would otherwise exceed VRAM.\n\n" +
 					"Changing this restarts the model server, so it applies on your " +
-					"next message."},
+					"next message.\n\n" +
+					"On Windows and Linux this does nothing until a GPU build is " +
+					"installed — see `/help set engine_variant`."},
 			{Name: "engine_variant", Usage: "/set engine_variant auto|cpu|vulkan|cuda|hip",
-				Detail: "Which llama.cpp build to download. Only variants that " +
-					"llama.cpp actually publishes for your platform are accepted.\n\n" +
-					"macOS needs nothing here: its archive always ships the Metal " +
-					"backend, so the GPU is used by default. Windows and Linux get a " +
-					"CPU-only build unless you pick one of vulkan (small, portable, " +
-					"any vendor), cuda (NVIDIA, largest — includes the CUDA runtime), " +
-					"or hip (AMD Radeon, Windows).\n\n" +
-					"After changing it, run /download engine to actually install the " +
-					"new build."},
+				Detail: "Which llama.cpp build to download. This is what decides " +
+					"whether your GPU can be used at all — gpu_layers only has an " +
+					"effect once a GPU-capable build is installed.\n\n" +
+					"Changing it takes two steps, because the setting selects an " +
+					"archive and the archive still has to be fetched:\n" +
+					"  /set engine_variant cuda\n" +
+					"  /download engine\n" +
+					"The second command replaces the installed engine: the engine " +
+					"directory is wiped and the new build extracted, so the two " +
+					"variants can't leave mixed binaries behind. `/set` with no " +
+					"arguments shows both what you selected and what is actually " +
+					"installed, which is how you confirm the swap happened.\n\n" +
+					"Which one to pick:\n" +
+					"  auto    default; cpu everywhere, which on macOS already\n" +
+					"          includes Metal\n" +
+					"  cpu     no GPU. Smallest download, works anywhere\n" +
+					"  vulkan  NVIDIA, AMD, or Intel on Windows and Linux. ~35MB,\n" +
+					"          the easiest GPU option and usually the right first try\n" +
+					"  cuda    NVIDIA on Windows. Usually the fastest, but ~640MB\n" +
+					"          because the CUDA runtime ships as a second archive\n" +
+					"  hip     AMD Radeon on Windows. ~325MB\n\n" +
+					"macOS needs none of this. The macOS archive has always carried " +
+					"the Metal backend, so `auto` already runs on the GPU and the " +
+					"only GPU-capable value here is cpu.\n\n" +
+					"Only variants llama.cpp actually publishes for your platform " +
+					"are accepted — asking for cuda on macOS is rejected up front " +
+					"with the list of what is available, rather than failing later " +
+					"during the download.\n\n" +
+					"A GPU build needs a working driver. atlas.llm will not pick one " +
+					"for you on Windows or Linux, because a Vulkan or CUDA build " +
+					"without the matching driver fails at load and there is no " +
+					"reliable way to detect one first. If a GPU build misbehaves, " +
+					"`/set engine_variant cpu` then `/download engine` puts you back."},
 		},
 		Notes: []string{
 			"`auto` never selects a GPU build on Windows or Linux. A GPU build " +

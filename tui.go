@@ -195,6 +195,10 @@ func newChatModel() chatModel {
 
 	vp := viewport.New(80, 20)
 	vp.SetContent(welcomeText())
+	// Drop the vim-style default bindings outright. Nothing forwards keys
+	// here any more, but leaving them armed invites the bug back the moment
+	// someone reinstates viewport.Update for key events.
+	vp.KeyMap = viewport.KeyMap{}
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -282,6 +286,7 @@ func welcomeText() string {
 			{"tab", "complete slash commands and their arguments"},
 			{"↑ / ↓", "recall previous / next input (cursor keys inside multi-line)"},
 			{"esc", "stop generation in progress"},
+			{"pgup / pgdn", "scroll the transcript"},
 			{"/yesman", "auto-approve destructive tools for this session only"},
 		}},
 	}
@@ -751,6 +756,12 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.stopInflight() {
 				return m, tea.Batch(cmds...)
 			}
+		case tea.KeyPgUp:
+			m.viewport.ViewUp()
+			return m, tea.Batch(cmds...)
+		case tea.KeyPgDown:
+			m.viewport.ViewDown()
+			return m, tea.Batch(cmds...)
 		case tea.KeyTab:
 			if m.tabComplete() {
 				return m, tea.Batch(cmds...)
@@ -917,8 +928,15 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
 	cmds = append(cmds, cmd)
-	m.viewport, cmd = m.viewport.Update(msg)
-	cmds = append(cmds, cmd)
+	// Deliberately keep key events away from the viewport. Its default
+	// keymap is vim-style (j/k/u/d/f/b/space), so forwarding keystrokes
+	// meant typing "j" scrolled the transcript instead of entering a
+	// character. Scrolling is bound explicitly on PgUp/PgDn instead; other
+	// message types (mouse wheel, resize) still reach it.
+	if _, isKey := msg.(tea.KeyMsg); !isKey {
+		m.viewport, cmd = m.viewport.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 
 	return m, tea.Batch(cmds...)
 }

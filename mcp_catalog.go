@@ -148,6 +148,16 @@ var mcpCatalog = []mcpPreset{
 		Cfg:         MCPServerConfig{URL: "https://gitmcp.io/docs"},
 	},
 	{
+		Key:   "duckduckgo",
+		Label: "DuckDuckGo search (no setup)",
+		Description: "Web search, news, and page fetching. No API key. " +
+			"Ask for a region (e.g. us-en) — it defaults to a China locale.",
+		Cfg: MCPServerConfig{
+			Command: "npx",
+			Args:    []string{"-y", "mcp-duckduckgo"},
+		},
+	},
+	{
 		Key:         "sequential-thinking",
 		Label:       "Sequential Thinking (no setup)",
 		Description: "Lets the model break a hard problem into revisable steps. Local, no auth.",
