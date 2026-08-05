@@ -259,6 +259,11 @@ func welcomeText() string {
 
 	// Pad all command strings to a common width so the description column
 	// lines up across every group, regardless of the longest command.
+	groups = append(groups, struct {
+		heading string
+		rows    [][2]string
+	}{"Performance", gpuHelpRows()})
+
 	cmdWidth := 0
 	for _, g := range groups {
 		for _, r := range g.rows {
@@ -435,9 +440,10 @@ func (m *chatModel) handleSet(args []string) {
 		}
 		msg := fmt.Sprintf("gpu_layers = %s", gpuLayersDisplay(cfg))
 		if resolveGPULayers(cfg) > 0 && runtime.GOOS != "darwin" &&
-			installedEngineVariant() != engineVariantVulkan {
+			!engineVariantIsGPU(installedEngineVariant()) {
 			msg += "\n\nNote: the installed engine is a CPU-only build, so this will have no effect.\n" +
-				"Run `/set engine_variant vulkan` then `/download engine` for GPU support."
+				"Run `/set engine_variant <" + strings.Join(engineVariantNames()[2:], "|") +
+				">` then `/download engine` for GPU support."
 		}
 		msg += "\nTakes effect on the next message (the model server restarts)."
 		m.pushSystem(msg)
@@ -452,14 +458,21 @@ func (m *chatModel) handleSet(args []string) {
 		switch val {
 		case engineVariantAuto, "":
 			cfg.EngineVariant = ""
-		case engineVariantCPU, engineVariantVulkan:
+		case engineVariantCPU, engineVariantVulkan, engineVariantCUDA, engineVariantHIP:
 			cfg.EngineVariant = val
 		default:
-			m.pushError(fmt.Sprintf("invalid engine_variant=%q (expected auto, cpu, or vulkan)", args[1]))
+			m.pushError(fmt.Sprintf("invalid engine_variant=%q (expected %s)",
+				args[1], strings.Join(engineVariantNames(), ", ")))
 			return
 		}
 		want := resolveEngineVariant(cfg.EngineVariant)
-		if _, err := engineAssetSuffix(want); err != nil {
+		if val != engineVariantAuto && val != "" && want != val {
+			m.pushError(fmt.Sprintf("no %s llama.cpp build for %s/%s (available here: %s)",
+				val, runtime.GOOS, runtime.GOARCH, strings.Join(engineVariantNames(), ", ")))
+			return
+		}
+		asset, err := engineAssetSuffix(want)
+		if err != nil {
 			m.pushError(err.Error())
 			return
 		}
@@ -469,8 +482,8 @@ func (m *chatModel) handleSet(args []string) {
 		}
 		msg := fmt.Sprintf("engine_variant = %s", engineVariantDisplay(cfg))
 		if installedEngineVariant() != want {
-			msg += fmt.Sprintf("\n\nInstalled engine is %q — run `/download engine` to replace it with the %s build.",
-				installedEngineVariant(), want)
+			msg += fmt.Sprintf("\n\nInstalled engine is %q — run `/download engine` to replace it with the %s build (%s).",
+				installedEngineVariant(), want, asset.Size)
 		}
 		m.pushSystem(msg)
 

@@ -2,24 +2,32 @@ package main
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 )
 
-func TestResolveEngineVariant(t *testing.T) {
-	tests := []struct{ in, want string }{
-		{"", engineVariantCPU},
-		{"auto", engineVariantCPU},
-		{"cpu", engineVariantCPU},
-		{"vulkan", engineVariantVulkan},
-		{"VULKAN", engineVariantVulkan},
-		{" vulkan ", engineVariantVulkan},
-		// An unrecognised value falls back to the safe build rather than
-		// failing to start.
-		{"nonsense", engineVariantCPU},
+// Non-GPU inputs always normalise to the CPU build. GPU names are
+// platform-dependent, so they're covered by
+// TestResolveEngineVariantFallsBackWhenUnavailable instead.
+func TestResolveEngineVariantNormalisesNonGPU(t *testing.T) {
+	for _, in := range []string{"", "auto", "AUTO", " cpu ", "cpu", "nonsense"} {
+		if got := resolveEngineVariant(in); got != engineVariantCPU {
+			t.Errorf("resolveEngineVariant(%q) = %q, want %q", in, got, engineVariantCPU)
+		}
 	}
-	for _, tt := range tests {
-		if got := resolveEngineVariant(tt.in); got != tt.want {
-			t.Errorf("resolveEngineVariant(%q) = %q, want %q", tt.in, got, tt.want)
+}
+
+// Case and surrounding whitespace must not change which build is selected.
+func TestResolveEngineVariantIgnoresCaseAndSpace(t *testing.T) {
+	for _, v := range engineVariantNames() {
+		if v == engineVariantAuto {
+			continue
+		}
+		want := resolveEngineVariant(v)
+		for _, variant := range []string{strings.ToUpper(v), " " + v + " "} {
+			if got := resolveEngineVariant(variant); got != want {
+				t.Errorf("resolveEngineVariant(%q) = %q, want %q", variant, got, want)
+			}
 		}
 	}
 }
@@ -110,4 +118,142 @@ func TestGPULayersConfigRoundTrip(t *testing.T) {
 	if got.GPULayers != nil {
 		t.Error("unset gpu_layers should stay nil (auto)")
 	}
+}
+
+// The CUDA engine archive and its runtime companion share a filename
+// suffix, so matching on the tail alone picks whichever came first in the
+// release listing. Prefix disambiguation must keep them apart.
+func TestFindReleaseAssetDisambiguatesCUDA(t *testing.T) {
+	rel := githubRelease{
+		TagName: "b10280",
+		Assets: []githubAsset{
+			// Deliberately listed runtime-first, the order that breaks a
+			// naive HasSuffix match.
+			{Name: "cudart-llama-bin-win-cuda-12.4-x64.zip", BrowserDownloadURL: "RUNTIME"},
+			{Name: "llama-b10280-bin-win-cuda-12.4-x64.zip", BrowserDownloadURL: "ENGINE"},
+		},
+	}
+	if got := findReleaseAsset(rel, "win-cuda-12.4-x64.zip", enginePrefix); got != "ENGINE" {
+		t.Errorf("engine lookup returned %q, want ENGINE", got)
+	}
+	if got := findReleaseAsset(rel, "cudart-llama-bin-win-cuda-12.4-x64.zip", ""); got != "RUNTIME" {
+		t.Errorf("runtime lookup returned %q, want RUNTIME", got)
+	}
+	if got := findReleaseAsset(rel, "win-vulkan-x64.zip", enginePrefix); got != "" {
+		t.Errorf("absent asset returned %q, want empty", got)
+	}
+}
+
+// Every advertised variant must name a real asset for the platform it's
+// listed under, and CUDA must always carry its runtime companion.
+func TestEngineAssetTableIsCoherent(t *testing.T) {
+	for variant, byPlatform := range llamacppAssetSuffix {
+		for platform, asset := range byPlatform {
+			if asset.Suffix == "" {
+				t.Errorf("%s/%s has an empty suffix", variant, platform)
+			}
+			if asset.Size == "" {
+				t.Errorf("%s/%s has no download size for the UI", variant, platform)
+			}
+			// CUDA links against DLLs shipped separately; without the
+			// companion llama-server won't start.
+			if variant == engineVariantCUDA && asset.Companion == "" {
+				t.Errorf("%s/%s must declare a cudart companion", variant, platform)
+			}
+			if asset.Companion != "" && !strings.HasPrefix(asset.Companion, "cudart-") {
+				t.Errorf("%s/%s companion %q is not a cudart archive", variant, platform, asset.Companion)
+			}
+		}
+	}
+}
+
+// A GPU variant with no build for this platform must fall back rather than
+// persist a selection that can never download.
+func TestResolveEngineVariantFallsBackWhenUnavailable(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		for _, v := range []string{engineVariantVulkan, engineVariantCUDA, engineVariantHIP} {
+			if got := resolveEngineVariant(v); got != engineVariantCPU {
+				t.Errorf("resolveEngineVariant(%q) on darwin = %q, want cpu", v, got)
+			}
+		}
+	}
+	// Whatever this platform advertises must resolve to itself.
+	for _, v := range engineVariantNames() {
+		if v == engineVariantAuto {
+			continue
+		}
+		if got := resolveEngineVariant(v); got != v {
+			t.Errorf("advertised variant %q resolved to %q", v, got)
+		}
+	}
+}
+
+func TestEngineVariantIsGPU(t *testing.T) {
+	for _, v := range []string{engineVariantVulkan, engineVariantCUDA, engineVariantHIP} {
+		if !engineVariantIsGPU(v) {
+			t.Errorf("%q should be a GPU variant", v)
+		}
+	}
+	for _, v := range []string{engineVariantCPU, engineVariantAuto, ""} {
+		if engineVariantIsGPU(v) {
+			t.Errorf("%q should not be a GPU variant", v)
+		}
+	}
+}
+
+// The help block must render without panicking on any platform and mention
+// the setting it documents.
+func TestGPUHelpRows(t *testing.T) {
+	withTempHome(t)
+	rows := gpuHelpRows()
+	if len(rows) < 2 {
+		t.Fatalf("expected at least 2 help rows, got %d", len(rows))
+	}
+	var joined string
+	for _, r := range rows {
+		joined += r[0] + " " + r[1] + "\n"
+	}
+	if !strings.Contains(joined, "gpu_layers") {
+		t.Errorf("help text never mentions gpu_layers:\n%s", joined)
+	}
+	if runtime.GOOS == "darwin" && !strings.Contains(joined, "Metal") {
+		t.Errorf("macOS help should mention Metal:\n%s", joined)
+	}
+	if runtime.GOOS == "windows" && !strings.Contains(joined, "engine_variant") {
+		t.Errorf("Windows help should point at engine_variant:\n%s", joined)
+	}
+}
+
+// Windows GPU support is the whole point of the cuda/hip/vulkan variants,
+// and it can't be exercised by running the suite on macOS — so pin the
+// table entries directly.
+func TestWindowsHasGPUVariants(t *testing.T) {
+	const win = "windows/amd64"
+	for _, v := range []string{engineVariantVulkan, engineVariantCUDA, engineVariantHIP} {
+		asset, ok := llamacppAssetSuffix[v][win]
+		if !ok {
+			t.Errorf("no %s build registered for %s", v, win)
+			continue
+		}
+		if !strings.HasPrefix(asset.Suffix, "win-") {
+			t.Errorf("%s/%s suffix %q is not a Windows asset", v, win, asset.Suffix)
+		}
+	}
+	// Linux keeps Vulkan; CUDA/HIP aren't published as Linux binaries.
+	if _, ok := llamacppAssetSuffix[engineVariantVulkan]["linux/amd64"]; !ok {
+		t.Error("no vulkan build registered for linux/amd64")
+	}
+}
+
+// The /help block must render end to end without panicking.
+func TestWelcomeTextIncludesPerformanceBlock(t *testing.T) {
+	withTempHome(t)
+	out := welcomeText()
+	if !strings.Contains(out, "Performance") {
+		t.Error("welcome text is missing the Performance block")
+	}
+	if !strings.Contains(out, "gpu_layers") {
+		t.Error("welcome text never mentions gpu_layers")
+	}
+	t.Logf("\n%s", out)
 }

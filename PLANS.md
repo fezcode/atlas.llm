@@ -119,7 +119,7 @@ denies. Max 20 tool-call rounds per user turn. Qwen3.5-9B and
 Ministral-3-14B are the realistic targets; Gemma 3 doesn't reliably
 emit tool calls. No prompted-JSON fallback yet — add if there's demand.
 
-### 10. MCP client  — SHIPPED
+### 10. MCP client  — SHIPPED (v0.18.0)
 Connects to Model Context Protocol servers and folds their tools into the
 same registry, tool-call loop, and confirm modal as the built-ins. Built on
 the official `github.com/modelcontextprotocol/go-sdk` rather than a
@@ -165,7 +165,7 @@ Follow-ups worth doing:
 across invocations. Lets atlas.llm slot into shell pipelines without
 touching the TUI.
 
-### 7. GPU offload  — SHIPPED
+### 7. GPU offload  — SHIPPED (v0.18.0)
 `-ngl` is now a setting instead of a hardcoded `0`, and the engine archive
 is selectable.
 
@@ -174,11 +174,16 @@ is selectable.
   the Metal backend, and stays on CPU elsewhere unless a GPU engine is
   installed. Stored as `*int` so an explicit `0` (force CPU) is
   distinguishable from "unset".
-- `/set engine_variant auto|cpu|vulkan` picks the release archive.
-  Vulkan is the portable GPU option for Windows/Linux — one archive covers
-  NVIDIA, AMD, and Intel, whereas CUDA also needs a matching `cudart-*`
-  package. A variant switch wipes the engine dir and re-downloads; the
-  installed variant is recorded in `engine/.variant`.
+- `/set engine_variant auto|cpu|vulkan|cuda|hip` picks the release archive;
+  the offered list is filtered to what llama.cpp actually publishes for the
+  running platform. Windows x64 gets all four. CUDA downloads the
+  `cudart-llama-bin-*` runtime alongside the engine (two-asset install).
+  A variant switch wipes the engine dir and re-downloads; the installed
+  variant is recorded in `engine/.variant`.
+- Asset matching requires a `llama-` prefix as well as the suffix:
+  `cudart-llama-bin-win-cuda-12.4-x64.zip` and
+  `llama-b10280-bin-win-cuda-12.4-x64.zip` share a suffix, so tail-only
+  matching picked whichever came first in the release listing.
 - `ensureServer` now treats `-ngl` as part of the server's identity, so
   changing the setting restarts llama-server instead of silently doing
   nothing until the next model switch.
@@ -189,11 +194,13 @@ llama-bench on the same model shows prompt processing going 208 -> 997 t/s
 (4.8x), which matters most for agent loops with large tool results.
 
 Still open:
-- CUDA on Windows. Needs the `cudart-llama-bin-win-cuda-*.zip` runtime
-  downloaded alongside the engine archive, so it's a two-asset install.
-- No GPU/driver detection: `auto` never picks Vulkan by itself, because a
-  Vulkan build without a working driver fails at load. The user opts in.
-- ROCm (`ubuntu-rocm-*`) unhandled.
+- No GPU/driver detection: `auto` never picks a GPU build on Windows/Linux,
+  because one without a matching driver fails at load. The user opts in.
+  Probing for `nvidia-smi` would let us at least *suggest* CUDA.
+- CUDA is pinned to the 12.4 archive; 13.3 also ships. No driver-version
+  check to choose between them.
+- Linux GPU is Vulkan-only — llama.cpp publishes no Linux CUDA binary, and
+  ROCm (`ubuntu-rocm-*`) is unhandled.
 
 ## Non-features (parked)
 

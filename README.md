@@ -129,18 +129,31 @@ backend, so `auto` offloads by default. Measured on an M-series Mac with
 prompt processing goes from 208 to 997 t/s — the latter matters most for
 agentic loops, where each turn re-reads a growing pile of tool output.
 
-**Windows and Linux** get a CPU-only archive by default, so `auto` stays on
-CPU. Switch to the Vulkan build for GPU support:
+**Windows and Linux** get a CPU-only archive by default. Pick a GPU build
+with `/set engine_variant`, then re-download the engine:
 
 ```
-/set engine_variant vulkan
+/set engine_variant cuda
 /download engine            # replaces the installed engine
 ```
 
-Vulkan is one archive that covers NVIDIA, AMD, and Intel. It requires a
-working Vulkan driver — atlas.llm won't select it for you, because a Vulkan
-build without a driver fails at load. CUDA isn't wired up yet; it needs a
-separate `cudart` runtime package alongside the engine.
+| Variant  | Platforms         | GPUs                        | Download |
+| -------- | ----------------- | --------------------------- | -------- |
+| `cuda`   | Windows x64       | NVIDIA                      | ~640MB (engine + CUDA runtime) |
+| `hip`    | Windows x64       | AMD Radeon                  | ~325MB   |
+| `vulkan` | Windows, Linux    | NVIDIA, AMD, Intel          | ~35MB    |
+| `cpu`    | all               | none                        | ~30MB    |
+
+`vulkan` is the smallest and most portable; `cuda` is usually fastest on
+NVIDIA. The CUDA build links against runtime DLLs shipped in a separate
+`cudart-*` archive, which atlas.llm downloads and unpacks alongside it —
+that's why it's the largest option.
+
+`auto` never selects a GPU build on Windows or Linux. A GPU build without a
+matching driver fails at load, and there's no reliable way to detect one, so
+the choice is left to you. Selecting a variant with no build for your
+platform (e.g. `cuda` on macOS) is rejected with the list of what's actually
+available.
 
 Changing `gpu_layers` restarts the model server, so it takes effect on your
 next message. `/set` with no arguments shows the current values and which

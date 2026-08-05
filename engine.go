@@ -69,31 +69,59 @@ type githubRelease struct {
 
 // latestLlamacppAsset resolves the correct llama.cpp release asset URL for
 // this OS/arch by querying GitHub for the latest release.
-func latestLlamacppAsset(variant string) (string, string, error) {
-	suffix, err := engineAssetSuffix(variant)
+func latestLlamacppAsset(variant string) (string, string, string, error) {
+	asset, err := engineAssetSuffix(variant)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
 	resp, err := http.Get(llamacppLatestURL)
 	if err != nil {
-		return "", "", fmt.Errorf("fetch latest release: %w", err)
+		return "", "", "", fmt.Errorf("fetch latest release: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("GitHub API returned %s", resp.Status)
+		return "", "", "", fmt.Errorf("GitHub API returned %s", resp.Status)
 	}
 
 	var rel githubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return "", "", fmt.Errorf("decode release JSON: %w", err)
+		return "", "", "", fmt.Errorf("decode release JSON: %w", err)
 	}
-	for _, a := range rel.Assets {
-		if strings.HasSuffix(a.Name, suffix) {
-			return a.BrowserDownloadURL, rel.TagName, nil
+
+	engineURL := findReleaseAsset(rel, asset.Suffix, enginePrefix)
+	if engineURL == "" {
+		return "", "", "", fmt.Errorf("no asset ending in %q in release %s", asset.Suffix, rel.TagName)
+	}
+	var companionURL string
+	if asset.Companion != "" {
+		// The companion filename has no build tag, so match it exactly.
+		companionURL = findReleaseAsset(rel, asset.Companion, "")
+		if companionURL == "" {
+			return "", "", "", fmt.Errorf("release %s has the %s engine but not its runtime %q",
+				rel.TagName, variant, asset.Companion)
 		}
 	}
-	return "", "", fmt.Errorf("no asset ending in %q in release %s", suffix, rel.TagName)
+	return engineURL, companionURL, rel.TagName, nil
+}
+
+// enginePrefix distinguishes the engine archive from its CUDA runtime
+// companion — `llama-b10280-bin-win-cuda-12.4-x64.zip` and
+// `cudart-llama-bin-win-cuda-12.4-x64.zip` share a suffix, so matching on
+// the tail alone would be ambiguous.
+const enginePrefix = "llama-"
+
+func findReleaseAsset(rel githubRelease, suffix, prefix string) string {
+	for _, a := range rel.Assets {
+		if !strings.HasSuffix(a.Name, suffix) {
+			continue
+		}
+		if prefix != "" && !strings.HasPrefix(a.Name, prefix) {
+			continue
+		}
+		return a.BrowserDownloadURL
+	}
+	return ""
 }
 
 // downloadEngine fetches the latest llama.cpp prebuilt archive for the
@@ -108,7 +136,7 @@ func downloadEngine(onProgress ProgressFn) error {
 	if isEngineDownloaded() && installedEngineVariant() == variant {
 		return nil
 	}
-	url, _, err := latestLlamacppAsset(variant)
+	url, companionURL, _, err := latestLlamacppAsset(variant)
 	if err != nil {
 		return err
 	}
@@ -122,24 +150,14 @@ func downloadEngine(onProgress ProgressFn) error {
 		}
 	}
 
-	archiveName := "llamacpp" + filepath.Ext(url)
-	if strings.HasSuffix(url, ".tar.gz") {
-		archiveName = "llamacpp.tar.gz"
-	}
-	archivePath := filepath.Join(dir, archiveName)
-
-	if err := downloadFile(archivePath, url, onProgress); err != nil {
+	if err := fetchAndExtract(url, dir, "llamacpp", onProgress); err != nil {
 		return err
 	}
-	defer os.Remove(archivePath)
-
-	if strings.HasSuffix(archiveName, ".zip") {
-		if err := extractZip(archivePath, dir); err != nil {
-			return fmt.Errorf("extract zip: %w", err)
-		}
-	} else {
-		if err := extractTarGz(archivePath, dir); err != nil {
-			return fmt.Errorf("extract tar.gz: %w", err)
+	// CUDA builds link against runtime DLLs shipped in a second archive;
+	// without it llama-server won't start.
+	if companionURL != "" {
+		if err := fetchAndExtract(companionURL, dir, "cudart", onProgress); err != nil {
+			return fmt.Errorf("CUDA runtime: %w", err)
 		}
 	}
 
@@ -214,6 +232,32 @@ func clearEngineDir() error {
 		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// fetchAndExtract downloads one archive into destDir and unpacks it,
+// removing the archive afterwards. basename only names the temp file.
+func fetchAndExtract(url, destDir, basename string, onProgress ProgressFn) error {
+	archiveName := basename + filepath.Ext(url)
+	if strings.HasSuffix(url, ".tar.gz") {
+		archiveName = basename + ".tar.gz"
+	}
+	archivePath := filepath.Join(destDir, archiveName)
+
+	if err := downloadFile(archivePath, url, onProgress); err != nil {
+		return err
+	}
+	defer os.Remove(archivePath)
+
+	if strings.HasSuffix(archiveName, ".zip") {
+		if err := extractZip(archivePath, destDir); err != nil {
+			return fmt.Errorf("extract zip: %w", err)
+		}
+		return nil
+	}
+	if err := extractTarGz(archivePath, destDir); err != nil {
+		return fmt.Errorf("extract tar.gz: %w", err)
 	}
 	return nil
 }

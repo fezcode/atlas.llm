@@ -66,26 +66,79 @@ const (
 	engineVariantAuto   = "auto"
 	engineVariantCPU    = "cpu"
 	engineVariantVulkan = "vulkan"
+	engineVariantCUDA   = "cuda"
+	engineVariantHIP    = "hip"
 )
 
-// llamacppAssetSuffix maps variant -> GOOS/GOARCH -> the suffix of the
-// release asset filename we want. Assets are named like
-// `llama-b8892-bin-win-cpu-x64.zip`; we match against the tail so the build
-// tag can vary.
-var llamacppAssetSuffix = map[string]map[string]string{
+// engineAsset describes the release archive(s) for one variant on one
+// platform.
+type engineAsset struct {
+	// Suffix matches the tail of the asset filename so the build tag can
+	// vary between releases.
+	Suffix string
+	// Companion is a second archive extracted into the same directory.
+	// CUDA needs one: the engine archive links against CUDA runtime DLLs
+	// that ship separately in `cudart-llama-bin-*`.
+	Companion string
+	// Size is a rough human-readable download size, shown before a large
+	// GPU download starts.
+	Size string
+}
+
+// llamacppAssetSuffix maps variant -> GOOS/GOARCH -> asset. Assets are named
+// like `llama-b8892-bin-win-cpu-x64.zip`.
+//
+// Note the CUDA entries: `cudart-llama-bin-win-cuda-12.4-x64.zip` and
+// `llama-b10280-bin-win-cuda-12.4-x64.zip` share a suffix, which is why
+// asset matching also requires the `llama-` / `cudart-` prefix rather than
+// matching on the tail alone.
+var llamacppAssetSuffix = map[string]map[string]engineAsset{
 	engineVariantCPU: {
-		"windows/amd64": "win-cpu-x64.zip",
-		"windows/arm64": "win-cpu-arm64.zip",
-		"darwin/amd64":  "macos-x64.tar.gz",
-		"darwin/arm64":  "macos-arm64.tar.gz",
-		"linux/amd64":   "ubuntu-x64.tar.gz",
-		"linux/arm64":   "ubuntu-arm64.tar.gz",
+		"windows/amd64": {Suffix: "win-cpu-x64.zip", Size: "~30MB"},
+		"windows/arm64": {Suffix: "win-cpu-arm64.zip", Size: "~30MB"},
+		"darwin/amd64":  {Suffix: "macos-x64.tar.gz", Size: "~15MB"},
+		"darwin/arm64":  {Suffix: "macos-arm64.tar.gz", Size: "~11MB"},
+		"linux/amd64":   {Suffix: "ubuntu-x64.tar.gz", Size: "~30MB"},
+		"linux/arm64":   {Suffix: "ubuntu-arm64.tar.gz", Size: "~30MB"},
 	},
 	engineVariantVulkan: {
-		"windows/amd64": "win-vulkan-x64.zip",
-		"linux/amd64":   "ubuntu-vulkan-x64.tar.gz",
-		"linux/arm64":   "ubuntu-vulkan-arm64.tar.gz",
+		"windows/amd64": {Suffix: "win-vulkan-x64.zip", Size: "~35MB"},
+		"linux/amd64":   {Suffix: "ubuntu-vulkan-x64.tar.gz", Size: "~35MB"},
+		"linux/arm64":   {Suffix: "ubuntu-vulkan-arm64.tar.gz", Size: "~35MB"},
 	},
+	engineVariantCUDA: {
+		"windows/amd64": {
+			Suffix:    "win-cuda-12.4-x64.zip",
+			Companion: "cudart-llama-bin-win-cuda-12.4-x64.zip",
+			Size:      "~640MB (engine + CUDA runtime)",
+		},
+	},
+	engineVariantHIP: {
+		"windows/amd64": {Suffix: "win-hip-radeon-x64.zip", Size: "~325MB"},
+	},
+}
+
+// engineVariantNames lists the selectable variants for this platform, for
+// help text and `/set` validation messages.
+func engineVariantNames() []string {
+	key := runtime.GOOS + "/" + runtime.GOARCH
+	out := []string{engineVariantAuto}
+	for _, v := range []string{engineVariantCPU, engineVariantVulkan, engineVariantCUDA, engineVariantHIP} {
+		if _, ok := llamacppAssetSuffix[v][key]; ok {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// engineVariantIsGPU reports whether a variant's build carries a GPU
+// backend. macOS is special-cased elsewhere: its "cpu" archive ships Metal.
+func engineVariantIsGPU(variant string) bool {
+	switch variant {
+	case engineVariantVulkan, engineVariantCUDA, engineVariantHIP:
+		return true
+	}
+	return false
 }
 
 // resolveEngineVariant turns "auto"/"" into a concrete variant. macOS gets
@@ -93,30 +146,36 @@ var llamacppAssetSuffix = map[string]map[string]string{
 // auto also means "cpu" because a Vulkan build is useless without a Vulkan
 // driver and we can't reliably detect one.
 func resolveEngineVariant(v string) string {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case engineVariantVulkan:
-		return engineVariantVulkan
-	default:
+	name := strings.ToLower(strings.TrimSpace(v))
+	if !engineVariantIsGPU(name) {
 		return engineVariantCPU
 	}
+	// A GPU variant with no build for this platform would fail at download
+	// time; fall back rather than persisting an unusable selection.
+	if _, ok := llamacppAssetSuffix[name][runtime.GOOS+"/"+runtime.GOARCH]; !ok {
+		return engineVariantCPU
+	}
+	return name
 }
 
 // engineAssetSuffix returns the release-asset suffix for a variant on this
 // platform.
-func engineAssetSuffix(variant string) (string, error) {
+func engineAssetSuffix(variant string) (engineAsset, error) {
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	byPlatform, ok := llamacppAssetSuffix[variant]
 	if !ok {
-		return "", fmt.Errorf("unknown engine variant %q", variant)
+		return engineAsset{}, fmt.Errorf("unknown engine variant %q (expected %s)",
+			variant, strings.Join(engineVariantNames(), ", "))
 	}
-	suffix, ok := byPlatform[key]
+	asset, ok := byPlatform[key]
 	if !ok {
 		if variant != engineVariantCPU {
-			return "", fmt.Errorf("no %s llama.cpp build available for %s", variant, key)
+			return engineAsset{}, fmt.Errorf("no %s llama.cpp build available for %s (available here: %s)",
+				variant, key, strings.Join(engineVariantNames(), ", "))
 		}
-		return "", fmt.Errorf("no llama.cpp prebuilt available for %s", key)
+		return engineAsset{}, fmt.Errorf("no llama.cpp prebuilt available for %s", key)
 	}
-	return suffix, nil
+	return asset, nil
 }
 
 // maxGPULayers is the "offload everything" sentinel. llama.cpp clamps it to
@@ -127,7 +186,9 @@ const maxGPULayers = 999
 // macOS builds always carry Metal, so offloading is free there. On
 // Windows/Linux only a GPU-enabled engine variant can use it.
 func autoGPULayers(variant string) int {
-	if runtime.GOOS == "darwin" || resolveEngineVariant(variant) == engineVariantVulkan {
+	// macOS archives always carry Metal, so offloading is free there.
+	// Elsewhere it needs a GPU-enabled engine build.
+	if runtime.GOOS == "darwin" || engineVariantIsGPU(resolveEngineVariant(variant)) {
 		return maxGPULayers
 	}
 	return 0
@@ -363,4 +424,35 @@ func engineVariantDisplay(cfg Config) string {
 		return "auto (" + resolved + ")"
 	}
 	return resolved
+}
+
+// gpuHelpRows builds the "Performance" block of the in-app /help, tailored
+// to what this platform can actually do. There's no point telling a Mac user
+// to install a Vulkan build, or a Windows user that Metal is built in.
+func gpuHelpRows() [][2]string {
+	rows := [][2]string{
+		{"/set gpu_layers", "auto (default) · 0 for CPU-only · N to offload N layers"},
+	}
+	cfg, _ := loadConfig()
+	installed := installedEngineVariant()
+
+	switch {
+	case runtime.GOOS == "darwin":
+		rows = append(rows, [2]string{"", "Metal is built into the macOS engine — GPU is on by default"})
+	case engineVariantIsGPU(installed):
+		rows = append(rows, [2]string{"", fmt.Sprintf("engine: %s build installed — GPU offload active", installed)})
+	default:
+		opts := engineVariantNames()
+		if len(opts) > 2 {
+			rows = append(rows,
+				[2]string{"/set engine_variant", "GPU builds here: " + strings.Join(opts[2:], ", ")},
+				[2]string{"", "then /download engine to install it (CPU-only until you do)"},
+			)
+		} else {
+			rows = append(rows, [2]string{"", "no GPU llama.cpp build published for this platform"})
+		}
+	}
+	rows = append(rows, [2]string{"/set", fmt.Sprintf("current: gpu_layers=%s, engine=%s",
+		gpuLayersDisplay(cfg), installed)})
+	return rows
 }
