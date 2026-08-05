@@ -15,6 +15,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -492,8 +493,8 @@ func mcpStatusLines() string {
 		return "mcp: " + err.Error()
 	}
 	if len(cfg.Servers) == 0 {
-		p, _ := mcpConfigPath()
-		return "No MCP servers configured.\n\nCreate " + p + " — see `/mcp help` for the format."
+		return "No MCP servers configured.\n\nRun `/mcp add` to pick one from the built-in list " +
+			"(Atlassian/Confluence, Slack, GitHub, Linear, Sentry, …), or `/mcp help` for everything else."
 	}
 	names := make([]string, 0, len(cfg.Servers))
 	for n := range cfg.Servers {
@@ -544,6 +545,22 @@ func (m *chatModel) handleMCP(args []string) tea.Cmd {
 	switch strings.ToLower(args[0]) {
 	case "help":
 		m.pushSystem(mcpHelpText())
+		return nil
+
+	case "add":
+		return m.handleMCPAdd(args[1:])
+
+	case "remove", "rm":
+		return m.handleMCPRemove(args[1:])
+
+	case "trust":
+		return m.handleMCPTrust(args[1:])
+
+	case "env":
+		return m.handleMCPEnv(args[1:])
+
+	case "catalog":
+		m.pushSystem(mcpCatalogText())
 		return nil
 
 	case "tools":
@@ -604,9 +621,263 @@ func (m *chatModel) handleMCP(args []string) tea.Cmd {
 		return nil
 
 	default:
-		m.pushError(fmt.Sprintf("unknown /mcp arg: %s (expected connect|disconnect|tools|logout|help)", args[0]))
+		m.pushError(fmt.Sprintf("unknown /mcp arg: %s (expected add|remove|connect|disconnect|trust|env|tools|catalog|logout|help)", args[0]))
 		return nil
 	}
+}
+
+// openMCPPicker shows the built-in catalog so a user can add a server
+// without knowing a package name or touching mcp.json.
+func (m *chatModel) openMCPPicker() {
+	m.mcpPickerItems = append([]mcpPreset(nil), mcpCatalog...)
+	m.pickerIdx = 0
+	m.picking = "mcp_add"
+	m.renderMCPPicker()
+}
+
+func (m *chatModel) mcpPickerCancel() {
+	m.picking = ""
+	m.mcpPickerItems = nil
+	m.pickerIdx = 0
+	m.refresh()
+	m.pushSystem("Cancelled.")
+}
+
+// mcpPickerConfirm adds the highlighted preset. Presets needing a token or
+// a path can't be completed from a list, so those pre-fill the input box
+// with the exact command to finish — still no file editing.
+func (m *chatModel) mcpPickerConfirm() tea.Cmd {
+	if m.pickerIdx < 0 || m.pickerIdx >= len(m.mcpPickerItems) {
+		m.mcpPickerCancel()
+		return nil
+	}
+	p := m.mcpPickerItems[m.pickerIdx]
+	m.picking = ""
+	m.mcpPickerItems = nil
+	m.pickerIdx = 0
+	m.refresh()
+
+	if p.needsInput() {
+		m.textarea.SetValue(presetAddCommand(p))
+		var b strings.Builder
+		fmt.Fprintf(&b, "%s needs a value before it can be added:\n\n", p.Label)
+		for _, f := range p.RequiredEnv {
+			fmt.Fprintf(&b, "  %-30s e.g. %s\n", f.Key, f.Hint)
+		}
+		if p.ArgHint != "" {
+			fmt.Fprintf(&b, "  %-30s a directory to expose\n", p.ArgHint)
+		}
+		b.WriteString("\nThe command is filled in below — replace the placeholders and press Enter.")
+		m.pushSystem(b.String())
+		return nil
+	}
+	return m.addMCPServer(p.Key, p.Cfg, p.Label)
+}
+
+// addMCPServer writes an entry to mcp.json and connects it.
+func (m *chatModel) addMCPServer(name string, sc MCPServerConfig, label string) tea.Cmd {
+	if err := sc.validate(); err != nil {
+		m.pushError(fmt.Sprintf("%s: %v", name, err))
+		return nil
+	}
+	if err := upsertMCPServer(name, sc); err != nil {
+		m.pushError("write mcp.json: " + err.Error())
+		return nil
+	}
+	if label == "" {
+		label = name
+	}
+	trust := "every call will ask for confirmation — `/mcp trust " + name + " on` to skip that"
+	if sc.Trust {
+		trust = "marked trusted; its tools run without confirmation"
+	}
+	m.pushSystem(fmt.Sprintf("Added %s to mcp.json.\n%s\n\nConnecting…", label, trust))
+	return mcpConnectCmd(name)
+}
+
+// renderMCPPicker paints the catalog picker over the viewport, mirroring
+// the model picker's look and key handling.
+func (m *chatModel) renderMCPPicker() {
+	title := brandStyle.Render("Add an MCP server") +
+		sysStyle.Render("  (↑/↓ move · enter select · esc cancel)")
+	rowSelected := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#0B1220")).
+		Background(colAccent).
+		Bold(true).
+		Padding(0, 1)
+	rowNormal := lipgloss.NewStyle().Padding(0, 1)
+
+	configured := map[string]bool{}
+	for _, n := range configuredMCPNames() {
+		configured[n] = true
+	}
+
+	lines := []string{title, ""}
+	for i, p := range m.mcpPickerItems {
+		marker := "  "
+		if configured[p.Key] {
+			marker = brandStyle.Render("● ")
+		}
+		kind := "stdio"
+		if p.Cfg.isRemote() {
+			kind = "oauth"
+			if !p.Cfg.OAuth {
+				kind = "remote"
+			}
+		}
+		row := fmt.Sprintf("%s%-30s %-8s %s", marker, p.Label, kind, p.Description)
+		if i == m.pickerIdx {
+			lines = append(lines, rowSelected.Render(row))
+		} else {
+			lines = append(lines, rowNormal.Render(row))
+		}
+	}
+	lines = append(lines, "", sysStyle.Render("● = already in mcp.json · not listed? /mcp add NAME -- npx -y pkg"))
+	m.viewport.SetContent(strings.Join(lines, "\n"))
+	m.viewport.GotoBottom()
+}
+
+// handleMCPAdd implements `/mcp add`.
+func (m *chatModel) handleMCPAdd(args []string) tea.Cmd {
+	if len(args) == 0 {
+		m.openMCPPicker()
+		return nil
+	}
+	// Custom definitions win over preset lookup so a user can shadow a
+	// catalog key with their own endpoint.
+	name, sc, custom, err := parseCustomAdd(args)
+	if err != nil {
+		m.pushError(err.Error())
+		return nil
+	}
+	if custom {
+		return m.addMCPServer(name, sc, "")
+	}
+
+	p, ok := findMCPPreset(args[0])
+	if !ok {
+		m.pushError(fmt.Sprintf("no built-in server named %q. `/mcp catalog` lists them, or:\n"+
+			"  /mcp add %s -- npx -y some-mcp-package\n"+
+			"  /mcp add %s --url=https://host/mcp --oauth", args[0], args[0], args[0]))
+		return nil
+	}
+	built, err := buildPresetConfig(p, args[1:])
+	if err != nil {
+		m.textarea.SetValue(presetAddCommand(p))
+		m.pushError(fmt.Sprintf("%s — %v\n\nCommand filled in below; replace the placeholders.", p.Label, err))
+		return nil
+	}
+	return m.addMCPServer(p.Key, built, p.Label)
+}
+
+// handleMCPTrust implements `/mcp trust NAME [on|off]`.
+func (m *chatModel) handleMCPTrust(args []string) tea.Cmd {
+	if len(args) == 0 {
+		m.pushError("usage: /mcp trust NAME [on|off]")
+		return nil
+	}
+	cfg, err := loadMCPConfig()
+	if err != nil {
+		m.pushError(err.Error())
+		return nil
+	}
+	name := args[0]
+	sc, ok := cfg.Servers[name]
+	if !ok {
+		m.pushError(fmt.Sprintf("no server named %q in mcp.json", name))
+		return nil
+	}
+	want := true
+	if len(args) > 1 {
+		switch strings.ToLower(args[1]) {
+		case "on", "true", "yes":
+			want = true
+		case "off", "false", "no":
+			want = false
+		default:
+			m.pushError("expected on or off")
+			return nil
+		}
+	}
+	sc.Trust = want
+	if err := upsertMCPServer(name, sc); err != nil {
+		m.pushError("write mcp.json: " + err.Error())
+		return nil
+	}
+	if want {
+		m.pushSystem(fmt.Sprintf("%s is now trusted — its tools run without confirmation. Reconnecting…", name))
+	} else {
+		m.pushSystem(fmt.Sprintf("%s is no longer trusted — every call will ask for confirmation. Reconnecting…", name))
+	}
+	// Trust is baked into each bridged tool at connect time, so reconnect
+	// for the change to take effect on already-registered tools.
+	return mcpConnectCmd(name)
+}
+
+// handleMCPEnv implements `/mcp env NAME KEY=VALUE ...`, for rotating a
+// token without reopening the config file.
+func (m *chatModel) handleMCPEnv(args []string) tea.Cmd {
+	if len(args) < 2 {
+		m.pushError("usage: /mcp env NAME KEY=VALUE [KEY=VALUE ...]")
+		return nil
+	}
+	cfg, err := loadMCPConfig()
+	if err != nil {
+		m.pushError(err.Error())
+		return nil
+	}
+	name := args[0]
+	sc, ok := cfg.Servers[name]
+	if !ok {
+		m.pushError(fmt.Sprintf("no server named %q in mcp.json", name))
+		return nil
+	}
+	kv, err := parseKeyValues(args[1:])
+	if err != nil {
+		m.pushError(err.Error())
+		return nil
+	}
+	if sc.Env == nil {
+		sc.Env = map[string]string{}
+	}
+	keys := make([]string, 0, len(kv))
+	for k, v := range kv {
+		sc.Env[k] = v
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if err := upsertMCPServer(name, sc); err != nil {
+		m.pushError("write mcp.json: " + err.Error())
+		return nil
+	}
+	m.pushSystem(fmt.Sprintf("Updated %s on %s. Reconnecting…", strings.Join(keys, ", "), name))
+	return mcpConnectCmd(name)
+}
+
+// handleMCPRemove implements `/mcp remove NAME`.
+func (m *chatModel) handleMCPRemove(args []string) tea.Cmd {
+	if len(args) == 0 {
+		m.pushError("usage: /mcp remove NAME")
+		return nil
+	}
+	name := args[0]
+	disconnectMCPServer(name)
+	removed, err := removeMCPServer(name)
+	if err != nil {
+		m.pushError("write mcp.json: " + err.Error())
+		return nil
+	}
+	if !removed {
+		m.pushError(fmt.Sprintf("no server named %q in mcp.json", name))
+		return nil
+	}
+	// Stored OAuth credentials would otherwise linger for a server the
+	// user just removed.
+	if _, err := deleteMCPAuth(name); err != nil {
+		log.Printf("mcp: clearing credentials for %q: %v", name, err)
+	}
+	m.pushSystem(fmt.Sprintf("Removed %s from mcp.json and dropped its tools.", name))
+	return nil
 }
 
 func mcpConnectingNotice(name string) string {
@@ -651,8 +922,7 @@ func mcpConnectCmd(name string) tea.Cmd {
 // formatMCPResults renders the outcome of a batch connect.
 func formatMCPResults(results []mcpConnectResult) string {
 	if len(results) == 0 {
-		p, _ := mcpConfigPath()
-		return "mcp: no servers configured — create " + p + " (see `/mcp help`)"
+		return "mcp: no servers configured — run `/mcp add` to pick one"
 	}
 	var b strings.Builder
 	b.WriteString("MCP connect:\n")
@@ -670,30 +940,25 @@ func formatMCPResults(results []mcpConnectResult) string {
 func mcpHelpText() string {
 	p, _ := mcpConfigPath()
 	return "MCP — connect atlas.llm to external tool servers.\n\n" +
-		"Commands:\n" +
+		"Start here:\n" +
+		"  /mcp add             pick a server from the built-in list\n" +
+		"  /tools on            let the model actually call the tools\n\n" +
+		"Managing servers:\n" +
 		"  /mcp                 show configured servers and connection state\n" +
-		"  /mcp connect         (re)connect every enabled server\n" +
-		"  /mcp connect NAME    (re)connect one server\n" +
-		"  /mcp disconnect NAME drop a server and its tools\n" +
+		"  /mcp catalog         list the built-in servers you can add\n" +
+		"  /mcp add NAME        add a built-in by name (e.g. /mcp add slack)\n" +
+		"  /mcp remove NAME     delete a server and drop its tools\n" +
+		"  /mcp trust NAME on   run that server's tools without confirmation\n" +
+		"  /mcp env NAME K=V    set or rotate a token\n\n" +
+		"Connections:\n" +
+		"  /mcp connect [NAME]  (re)connect every enabled server, or one\n" +
+		"  /mcp disconnect NAME drop a server and its tools for this session\n" +
 		"  /mcp tools           list the tools MCP servers are contributing\n" +
 		"  /mcp logout NAME     forget a server's stored OAuth tokens\n\n" +
-		"Config lives at " + p + ":\n\n" +
-		`{
-  "mcpServers": {
-    "slack": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-slack"],
-      "env": { "SLACK_BOT_TOKEN": "xoxb-...", "SLACK_TEAM_ID": "T..." },
-      "trust": false
-    },
-    "confluence": {
-      "url": "https://mcp.atlassian.com/v1/mcp",
-      "oauth": true,
-      "trust": true
-    }
-  }
-}` + "\n\n" +
-		"\"trust\": true runs that server's tools without confirmation.\n" +
-		"Omit it (or set false) and every call opens the confirm modal.\n" +
-		"\"oauth\": true opens a browser to authorize; tokens are stored per server."
+		"Anything not in the catalog:\n" +
+		"  /mcp add NAME -- npx -y some-mcp-package\n" +
+		"  /mcp add NAME --url=https://host/mcp --oauth\n" +
+		"  flags: --oauth (browser authorization), --sse (older protocol),\n" +
+		"         --trust (skip confirmation)\n\n" +
+		"These commands write " + p + " for you; you can also edit it by hand."
 }

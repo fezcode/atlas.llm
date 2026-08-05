@@ -226,6 +226,213 @@ func TestLookupToolPrefersBuiltins(t *testing.T) {
 	}
 }
 
+// --- catalog / config writing ---
+
+// Every preset must produce a config that actually validates, or /mcp add
+// would write an entry that can never connect.
+func TestCatalogPresetsAreValid(t *testing.T) {
+	seen := map[string]bool{}
+	for _, p := range mcpCatalog {
+		if p.Key == "" || p.Label == "" || p.Description == "" {
+			t.Errorf("preset %+v is missing a key, label, or description", p)
+		}
+		if seen[p.Key] {
+			t.Errorf("duplicate preset key %q", p.Key)
+		}
+		seen[p.Key] = true
+
+		// Fill in whatever the preset demands, then it must validate.
+		var args []string
+		for _, f := range p.RequiredEnv {
+			args = append(args, f.Key+"=value")
+		}
+		if p.ArgHint != "" {
+			args = append(args, "/tmp")
+		}
+		sc, err := buildPresetConfig(p, args)
+		if err != nil {
+			t.Errorf("preset %q could not be built with its own placeholders: %v", p.Key, err)
+			continue
+		}
+		if err := sc.validate(); err != nil {
+			t.Errorf("preset %q produces an invalid config: %v", p.Key, err)
+		}
+	}
+}
+
+func TestBuildPresetConfigReportsMissingInput(t *testing.T) {
+	slack, ok := findMCPPreset("slack")
+	if !ok {
+		t.Fatal("slack preset missing from catalog")
+	}
+	if _, err := buildPresetConfig(slack, nil); err == nil {
+		t.Error("expected an error when required env is absent")
+	}
+	sc, err := buildPresetConfig(slack, []string{"SLACK_BOT_TOKEN=xoxb-1", "SLACK_TEAM_ID=T1"})
+	if err != nil {
+		t.Fatalf("buildPresetConfig: %v", err)
+	}
+	if sc.Env["SLACK_BOT_TOKEN"] != "xoxb-1" || sc.Env["SLACK_TEAM_ID"] != "T1" {
+		t.Errorf("env not applied: %+v", sc.Env)
+	}
+}
+
+// Building a preset twice must not accumulate args onto the catalog entry.
+func TestBuildPresetConfigDoesNotMutateCatalog(t *testing.T) {
+	fs, ok := findMCPPreset("filesystem")
+	if !ok {
+		t.Fatal("filesystem preset missing")
+	}
+	before := len(fs.Cfg.Args)
+	for i := 0; i < 3; i++ {
+		sc, err := buildPresetConfig(fs, []string{"/tmp"})
+		if err != nil {
+			t.Fatalf("buildPresetConfig: %v", err)
+		}
+		if len(sc.Args) != before+1 {
+			t.Fatalf("iteration %d: got %d args, want %d", i, len(sc.Args), before+1)
+		}
+	}
+	if got, _ := findMCPPreset("filesystem"); len(got.Cfg.Args) != before {
+		t.Errorf("catalog entry mutated: %d args, want %d", len(got.Cfg.Args), before)
+	}
+}
+
+func TestParseCustomAdd(t *testing.T) {
+	// stdio form
+	name, sc, ok, err := parseCustomAdd([]string{"mine", "--", "npx", "-y", "pkg"})
+	if err != nil || !ok {
+		t.Fatalf("stdio form: ok=%v err=%v", ok, err)
+	}
+	if name != "mine" || sc.Command != "npx" || len(sc.Args) != 2 {
+		t.Errorf("stdio parsed wrong: name=%q %+v", name, sc)
+	}
+
+	// remote form with flags
+	name, sc, ok, err = parseCustomAdd([]string{"remote", "--url=https://h/mcp", "--oauth", "--trust"})
+	if err != nil || !ok {
+		t.Fatalf("remote form: ok=%v err=%v", ok, err)
+	}
+	if sc.URL != "https://h/mcp" || !sc.OAuth || !sc.Trust {
+		t.Errorf("remote parsed wrong: %+v", sc)
+	}
+
+	// A bare preset name is not a custom definition.
+	if _, _, ok, _ = parseCustomAdd([]string{"slack"}); ok {
+		t.Error("bare name should not parse as a custom add")
+	}
+	// Unknown flags should be rejected rather than silently dropped.
+	if _, _, _, err = parseCustomAdd([]string{"x", "--url=https://h", "--bogus"}); err == nil {
+		t.Error("expected unknown flag to error")
+	}
+	// `--` with nothing after it is a user mistake worth reporting.
+	if _, _, _, err = parseCustomAdd([]string{"x", "--"}); err == nil {
+		t.Error("expected empty command after -- to error")
+	}
+}
+
+// /mcp add must create mcp.json from nothing and preserve existing entries.
+func TestUpsertAndRemoveMCPServer(t *testing.T) {
+	withTempHome(t)
+
+	if err := upsertMCPServer("slack", MCPServerConfig{
+		Command: "npx", Args: []string{"-y", "pkg"},
+		Env: map[string]string{"SLACK_BOT_TOKEN": "xoxb-1"},
+	}); err != nil {
+		t.Fatalf("upsert into a nonexistent mcp.json: %v", err)
+	}
+	if err := upsertMCPServer("confluence", MCPServerConfig{
+		URL: "https://mcp.atlassian.com/v1/mcp", OAuth: true, Trust: true,
+	}); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	cfg, err := loadMCPConfig()
+	if err != nil {
+		t.Fatalf("loadMCPConfig: %v", err)
+	}
+	if len(cfg.Servers) != 2 {
+		t.Fatalf("got %d servers, want 2", len(cfg.Servers))
+	}
+	if cfg.Servers["slack"].Env["SLACK_BOT_TOKEN"] != "xoxb-1" {
+		t.Error("first entry lost when the second was added")
+	}
+
+	// Updating one entry must leave the other alone.
+	sc := cfg.Servers["slack"]
+	sc.Trust = true
+	if err := upsertMCPServer("slack", sc); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ = loadMCPConfig()
+	if !cfg.Servers["slack"].Trust || !cfg.Servers["confluence"].Trust {
+		t.Error("trust update clobbered a neighbouring entry")
+	}
+
+	removed, err := removeMCPServer("slack")
+	if err != nil || !removed {
+		t.Fatalf("removeMCPServer = %v, %v", removed, err)
+	}
+	cfg, _ = loadMCPConfig()
+	if _, ok := cfg.Servers["slack"]; ok {
+		t.Error("server still present after remove")
+	}
+	if _, ok := cfg.Servers["confluence"]; !ok {
+		t.Error("remove dropped the wrong entry")
+	}
+	if removed, _ := removeMCPServer("slack"); removed {
+		t.Error("removing a missing server should report false")
+	}
+}
+
+// A config written by /mcp add must be readable by loadMCPConfig — i.e. the
+// round-trip through the same JSON tags actually works.
+func TestSavedConfigRoundTrips(t *testing.T) {
+	withTempHome(t)
+	for _, p := range mcpCatalog {
+		var args []string
+		for _, f := range p.RequiredEnv {
+			args = append(args, f.Key+"=secret")
+		}
+		if p.ArgHint != "" {
+			args = append(args, "/tmp")
+		}
+		sc, err := buildPresetConfig(p, args)
+		if err != nil {
+			t.Fatalf("%s: %v", p.Key, err)
+		}
+		if err := upsertMCPServer(p.Key, sc); err != nil {
+			t.Fatalf("%s: %v", p.Key, err)
+		}
+	}
+	cfg, err := loadMCPConfig()
+	if err != nil {
+		t.Fatalf("loadMCPConfig: %v", err)
+	}
+	if len(cfg.Servers) != len(mcpCatalog) {
+		t.Fatalf("round-tripped %d servers, want %d", len(cfg.Servers), len(mcpCatalog))
+	}
+	for _, p := range mcpCatalog {
+		got := cfg.Servers[p.Key]
+		if err := got.validate(); err != nil {
+			t.Errorf("%s failed to validate after round-trip: %v", p.Key, err)
+		}
+	}
+}
+
+func TestParseKeyValues(t *testing.T) {
+	got, err := parseKeyValues([]string{"A=1", "B=x=y"})
+	if err != nil {
+		t.Fatalf("parseKeyValues: %v", err)
+	}
+	if got["A"] != "1" || got["B"] != "x=y" {
+		t.Errorf("parsed wrong: %+v", got)
+	}
+	if _, err := parseKeyValues([]string{"nope"}); err == nil {
+		t.Error("expected an error for a value without '='")
+	}
+}
+
 // --- live integration ---
 
 // TestLiveStdioMCPServer exercises the real protocol path against
@@ -313,6 +520,67 @@ func TestLiveStdioMCPServer(t *testing.T) {
 	}
 	if _, ok := lookupTool("trusted__echo"); !ok {
 		t.Error("disconnecting one server dropped another server's tools")
+	}
+}
+
+// TestLiveAddPresetAndConnect walks the path a user actually takes: pick a
+// preset, have it written to mcp.json, then connect — no hand-editing.
+func TestLiveAddPresetAndConnect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live MCP server test skipped in -short mode")
+	}
+	if _, err := exec.LookPath("npx"); err != nil {
+		t.Skip("npx not available")
+	}
+	withTempHome(t)
+
+	p, ok := findMCPPreset("everything")
+	if !ok {
+		t.Fatal("everything preset missing from catalog")
+	}
+	sc, err := buildPresetConfig(p, nil)
+	if err != nil {
+		t.Fatalf("buildPresetConfig: %v", err)
+	}
+	if err := upsertMCPServer(p.Key, sc); err != nil {
+		t.Fatalf("upsertMCPServer: %v", err)
+	}
+
+	// mcp.json must now exist and be loadable, having been created for us.
+	cfgPath, _ := mcpConfigPath()
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("mcp.json was not created: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	results, err := connectAllMCP(ctx)
+	if err != nil {
+		t.Fatalf("connectAllMCP: %v", err)
+	}
+	defer shutdownMCP()
+	if len(results) != 1 || results[0].Err != nil || results[0].Tools == 0 {
+		t.Fatalf("preset did not connect: %+v", results)
+	}
+
+	// Untrusted by default; /mcp trust flips it and a reconnect applies it.
+	tool, ok := lookupTool("everything__echo")
+	if !ok {
+		t.Fatalf("tool not registered; have %v", toolNamesOf(mcpToolSnapshot()))
+	}
+	if !tool.Destructive {
+		t.Error("a newly added server should confirm every call")
+	}
+
+	sc.Trust = true
+	if err := upsertMCPServer(p.Key, sc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connectMCPServer(ctx, p.Key, sc); err != nil {
+		t.Fatalf("reconnect after trust change: %v", err)
+	}
+	if tool, _ := lookupTool("everything__echo"); tool.Destructive {
+		t.Error("trust change did not take effect after reconnect")
 	}
 }
 

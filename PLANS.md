@@ -137,7 +137,12 @@ hand-rolled JSON-RPC client.
 - Per-server `"trust"` decides confirmation. Servers' own `readOnlyHint`
   annotations are deliberately ignored — they come from the party being
   gated.
-- `/mcp`, `/mcp connect|disconnect|tools|logout|help`.
+- `/mcp add` opens a picker over a built-in catalog (Atlassian, Slack,
+  GitHub, Linear, Sentry, filesystem, memory, everything) and writes
+  mcp.json for the user — no hand-editing to get started. Presets needing a
+  token or path pre-fill the command in the input box. `/mcp add NAME -- cmd`
+  and `--url=...` cover anything not in the catalog.
+- `/mcp`, `/mcp add|remove|trust|env|catalog|connect|disconnect|tools|logout|help`.
 - Startup auto-connects everything except OAuth servers with no stored
   credentials, so nothing pops a browser unprompted.
 
@@ -149,6 +154,9 @@ Follow-ups worth doing:
   takes the secret through argv, which is why it wasn't used).
 - Per-tool trust overrides, rather than trust being all-or-nothing per
   server.
+- Catalog presets are hardcoded; a refresh mechanism (or pulling from an
+  upstream registry) would keep package names and endpoints from going
+  stale.
 
 ### 8. Non-interactive `-c` mode  — SHIPPED (v0.15.0)
 `atlas.llm -c "prompt"` prints the model reply to stdout and exits;

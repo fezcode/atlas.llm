@@ -128,9 +128,12 @@ type chatModel struct {
 
 	// Model picker state. When picking != "", key events route to the
 	// picker instead of the textarea; ↑/↓ move, Enter selects, Esc cancels.
-	picking     string // "" or "model"
+	picking     string // "", "model", "mcp_add", or "tool_confirm"
 	pickerIdx   int
 	pickerItems []Model
+	// mcpPickerItems backs the "mcp_add" picker. Kept separate from
+	// pickerItems because that one is typed to the model registry.
+	mcpPickerItems []mcpPreset
 
 	// Markdown renderer for assistant replies. Rebuilt on resize so word
 	// wrap tracks the viewport width.
@@ -587,6 +590,27 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 		}
+		if m.picking == "mcp_add" {
+			switch msg.Type {
+			case tea.KeyCtrlC, tea.KeyEsc:
+				m.mcpPickerCancel()
+			case tea.KeyUp:
+				if m.pickerIdx > 0 {
+					m.pickerIdx--
+					m.renderMCPPicker()
+				}
+			case tea.KeyDown:
+				if m.pickerIdx < len(m.mcpPickerItems)-1 {
+					m.pickerIdx++
+					m.renderMCPPicker()
+				}
+			case tea.KeyEnter:
+				if c := m.mcpPickerConfirm(); c != nil {
+					cmds = append(cmds, c)
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
 		if m.picking != "" {
 			// While the picker is open, swallow key events and don't let the
 			// textarea see them. ↑/↓ move, Enter selects, Esc/Ctrl+C cancels.
@@ -940,7 +964,8 @@ func (m *chatModel) tabComplete() bool {
 	case "/tools":
 		pool = []string{"on", "off", "list"}
 	case "/mcp":
-		pool = []string{"connect", "disconnect", "help", "logout", "tools"}
+		pool = []string{"add", "catalog", "connect", "disconnect", "env",
+			"help", "logout", "remove", "tools", "trust"}
 	case "/download":
 		pool = []string{"all", "engine"}
 		for _, mm := range availableModels {

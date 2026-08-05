@@ -119,9 +119,51 @@ and exposes their tools to the model through the same tool-call loop and
 confirm modal as the built-ins. That's how you reach Slack, Confluence,
 GitHub, a database, or anything else with an MCP server.
 
-Configure servers in `~/.atlas/atlas.llm.data/mcp.json`. The format matches
-the usual Claude Desktop / VS Code shape, so an existing config can be pasted
-in as-is:
+**Getting started — no config file to write.** Inside chat:
+
+```
+/mcp add           # pick from a built-in list (↑/↓, enter)
+/tools on          # let the model actually call the tools
+```
+
+`/mcp add` opens a picker of ready-made servers — Atlassian (Confluence +
+Jira), Slack, GitHub, Linear, Sentry, filesystem, memory. Picking one writes
+`mcp.json` for you and connects it. Servers that need a token or a path
+pre-fill the command in the input box so you only replace the placeholder:
+
+```
+/mcp add slack SLACK_BOT_TOKEN=xoxb-... SLACK_TEAM_ID=T01234567
+/mcp add atlassian            # no token — opens a browser to authorize
+/mcp add filesystem ~/code
+```
+
+Anything not in the catalog:
+
+```
+/mcp add NAME -- npx -y some-mcp-package        # stdio
+/mcp add NAME --url=https://host/mcp --oauth    # remote
+```
+
+Flags: `--oauth` (browser authorization), `--sse` (older 2024-11-05
+protocol), `--trust` (skip confirmation).
+
+| Command                 | Purpose                                                  |
+| ----------------------- | -------------------------------------------------------- |
+| `/mcp`                  | Show configured servers, connection state, and trust.    |
+| `/mcp add [NAME ...]`   | Add a server — picker with no args.                      |
+| `/mcp catalog`          | List the built-in servers you can add.                   |
+| `/mcp remove NAME`      | Delete a server and drop its tools.                      |
+| `/mcp trust NAME on`    | Run that server's tools without confirmation.            |
+| `/mcp env NAME K=V`     | Set or rotate a token.                                   |
+| `/mcp connect [NAME]`   | (Re)connect every enabled server, or just one.           |
+| `/mcp disconnect NAME`  | Drop a server and its tools for this session.            |
+| `/mcp tools`            | List the tools MCP servers are currently contributing.   |
+| `/mcp logout NAME`      | Forget a server's stored OAuth credentials.              |
+| `/mcp help`             | Print all of the above.                                  |
+
+**Editing `mcp.json` by hand** still works if you prefer — the commands just
+write this file, and the format matches the usual Claude Desktop / VS Code
+shape, so an existing config pastes in as-is:
 
 ```json
 {
@@ -147,15 +189,6 @@ Two transports are supported:
 - **remote HTTP** — `url` talks to a hosted server over streamable HTTP.
   Add `"transport": "sse"` for servers that only speak the older 2024-11-05
   SSE protocol, and `"oauth": true` for servers behind authorization.
-
-| Command                | Purpose                                                    |
-| ---------------------- | ---------------------------------------------------------- |
-| `/mcp`                 | Show configured servers, connection state, and trust.      |
-| `/mcp connect [NAME]`  | (Re)connect every enabled server, or just one.             |
-| `/mcp disconnect NAME` | Drop a server and remove its tools.                        |
-| `/mcp tools`           | List the tools MCP servers are currently contributing.     |
-| `/mcp logout NAME`     | Forget a server's stored OAuth credentials.                |
-| `/mcp help`            | Print the config format.                                   |
 
 Tools are namespaced as `server__tool` (`slack__post_message`) so two servers
 exposing `search` don't collide. They only reach the model once `/tools on` is
