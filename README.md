@@ -42,6 +42,7 @@ they are missing returns an error with the command to run.
 | `/grep <query>`   | Semantic grep: ask the local model to find lines matching `<query>`.|
 | `/set [k [v]]`    | List or change persistent settings (currently: `max_tokens`).       |
 | `/tools [on\|off\|list]` | Toggle agentic tool-use (off by default). See below.         |
+| `/mcp [...]`      | Connect MCP servers (Slack, Confluence, …). See below.              |
 | `/clear`          | Clear on-screen chat history (keeps conversation context).          |
 | `/reset`          | Drop conversation context and the server KV cache.                  |
 | `/quit`, `/exit`  | Leave chat (Ctrl+C also works).                                     |
@@ -111,6 +112,78 @@ Caveats:
   are fed back to the model as a tool error so it can adapt rather than
   retry.
 
+### MCP servers
+
+atlas.llm is an MCP **client**: it connects to Model Context Protocol servers
+and exposes their tools to the model through the same tool-call loop and
+confirm modal as the built-ins. That's how you reach Slack, Confluence,
+GitHub, a database, or anything else with an MCP server.
+
+Configure servers in `~/.atlas/atlas.llm.data/mcp.json`. The format matches
+the usual Claude Desktop / VS Code shape, so an existing config can be pasted
+in as-is:
+
+```json
+{
+  "mcpServers": {
+    "slack": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-slack"],
+      "env": { "SLACK_BOT_TOKEN": "xoxb-...", "SLACK_TEAM_ID": "T..." }
+    },
+    "confluence": {
+      "url": "https://mcp.atlassian.com/v1/mcp",
+      "oauth": true,
+      "trust": true
+    }
+  }
+}
+```
+
+Two transports are supported:
+
+- **stdio** — `command` + `args` + `env` runs the server as a local
+  subprocess. This is what most published servers (including Slack's) use.
+- **remote HTTP** — `url` talks to a hosted server over streamable HTTP.
+  Add `"transport": "sse"` for servers that only speak the older 2024-11-05
+  SSE protocol, and `"oauth": true` for servers behind authorization.
+
+| Command                | Purpose                                                    |
+| ---------------------- | ---------------------------------------------------------- |
+| `/mcp`                 | Show configured servers, connection state, and trust.      |
+| `/mcp connect [NAME]`  | (Re)connect every enabled server, or just one.             |
+| `/mcp disconnect NAME` | Drop a server and remove its tools.                        |
+| `/mcp tools`           | List the tools MCP servers are currently contributing.     |
+| `/mcp logout NAME`     | Forget a server's stored OAuth credentials.                |
+| `/mcp help`            | Print the config format.                                   |
+
+Tools are namespaced as `server__tool` (`slack__post_message`) so two servers
+exposing `search` don't collide. They only reach the model once `/tools on` is
+set — `/mcp` manages connections, `/tools` controls whether the model can call
+anything at all.
+
+**Trust.** Every MCP tool call opens the confirm modal unless the server is
+marked `"trust": true` in `mcp.json`. Trust is per server, set by you — a
+server's own `readOnlyHint` annotations are deliberately *not* consulted,
+since those come from the third party being gated. Start untrusted; add
+`"trust": true` once you know what a server exposes.
+
+**OAuth.** `"oauth": true` runs the full authorization-code flow with PKCE:
+atlas.llm opens your browser, catches the redirect on a loopback listener, and
+exchanges the code for tokens. Servers that support Dynamic Client
+Registration (Atlassian, Linear, …) need no client id; set `client_id` /
+`client_secret` explicitly for servers that require pre-registration. Tokens
+and the discovered endpoint config are written to
+`~/.atlas/atlas.llm.data/mcp-auth.json` with `0600` permissions, so a refresh
+token carries across restarts. Note this is a permission-protected file, not
+an OS keychain — comparable to `~/.aws/credentials`. Use `/mcp logout NAME` to
+clear it.
+
+At startup atlas.llm auto-connects every enabled server, **except** OAuth
+servers with no stored credentials — those wait for an explicit
+`/mcp connect NAME` rather than launching a browser unprompted. Add
+`"disabled": true` to keep a server in the file without connecting.
+
 ### 5. `-c` / `--chat` — one-shot non-interactive chat
 
 Send a single prompt to the local model, print the reply to stdout, and
@@ -167,6 +240,8 @@ All downloaded artifacts and the config file live under
 ```
 ~/.atlas/atlas.llm.data/
 ├── config.json           # { "current_model": "gemma-3-1b-it" }
+├── mcp.json              # MCP server definitions (you create this)
+├── mcp-auth.json         # stored MCP OAuth tokens, mode 0600
 ├── engine/               # extracted llama.cpp release (llama-cli + libs)
 └── models/
     └── <model>.gguf      # model weights (fetched by /download)

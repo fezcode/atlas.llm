@@ -119,6 +119,37 @@ denies. Max 20 tool-call rounds per user turn. Qwen3.5-9B and
 Ministral-3-14B are the realistic targets; Gemma 3 doesn't reliably
 emit tool calls. No prompted-JSON fallback yet — add if there's demand.
 
+### 10. MCP client  — SHIPPED
+Connects to Model Context Protocol servers and folds their tools into the
+same registry, tool-call loop, and confirm modal as the built-ins. Built on
+the official `github.com/modelcontextprotocol/go-sdk` rather than a
+hand-rolled JSON-RPC client.
+
+- Config at `~/.atlas/atlas.llm.data/mcp.json`, using the standard
+  `mcpServers` shape so existing Claude Desktop / VS Code configs paste in.
+- Transports: stdio (`command`/`args`/`env`) and remote HTTP (`url`), with
+  `"transport": "sse"` for the older 2024-11-05 protocol.
+- OAuth 2.1 + PKCE for hosted servers (`"oauth": true`): loopback redirect
+  listener, browser launch, Dynamic Client Registration by default. Tokens
+  plus the discovered endpoint config persist to `mcp-auth.json` (0600) so
+  refresh tokens survive restarts.
+- Tools namespaced `server__tool`, sanitized and capped at 64 chars.
+- Per-server `"trust"` decides confirmation. Servers' own `readOnlyHint`
+  annotations are deliberately ignored — they come from the party being
+  gated.
+- `/mcp`, `/mcp connect|disconnect|tools|logout|help`.
+- Startup auto-connects everything except OAuth servers with no stored
+  credentials, so nothing pops a browser unprompted.
+
+Follow-ups worth doing:
+- MCP **prompts** and **resources** — only tools are wired up today.
+- `tools/list_changed` notifications: we snapshot tools at connect time and
+  don't yet react when a server's tool list changes mid-session.
+- OS keychain storage instead of the 0600 file (the macOS `security` CLI
+  takes the secret through argv, which is why it wasn't used).
+- Per-tool trust overrides, rather than trust being all-or-nothing per
+  server.
+
 ### 8. Non-interactive `-c` mode  — SHIPPED (v0.15.0)
 `atlas.llm -c "prompt"` prints the model reply to stdout and exits;
 `-c -` (or piping into `-c ""`) reads the prompt from stdin. No history

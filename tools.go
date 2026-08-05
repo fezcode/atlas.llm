@@ -150,8 +150,8 @@ var toolRegistry = map[string]Tool{
 	},
 }
 
-// toolNames returns the registry keys in stable order — used to build the
-// `tools` array for the request and to render status output.
+// toolNames returns the built-in registry keys in stable order — used to
+// render status output.
 func toolNames() []string {
 	names := make([]string, 0, len(toolRegistry))
 	for n := range toolRegistry {
@@ -161,12 +161,23 @@ func toolNames() []string {
 	return names
 }
 
+// activeTools returns every tool the model can call this turn: the built-ins
+// plus whatever the connected MCP servers are contributing. Built-ins sort
+// first so the namespaced MCP tools don't bury them.
+func activeTools() []Tool {
+	out := make([]Tool, 0, len(toolRegistry))
+	for _, n := range toolNames() {
+		out = append(out, toolRegistry[n])
+	}
+	return append(out, mcpToolSnapshot()...)
+}
+
 // toolDefsJSON builds the OpenAI-compatible `tools` payload once per call.
 // Shape: [{"type":"function","function":{"name":...,"description":...,"parameters":{...}}}]
 func toolDefsJSON() []map[string]any {
-	out := make([]map[string]any, 0, len(toolRegistry))
-	for _, n := range toolNames() {
-		t := toolRegistry[n]
+	tools := activeTools()
+	out := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
 		out = append(out, map[string]any{
 			"type": "function",
 			"function": map[string]any{

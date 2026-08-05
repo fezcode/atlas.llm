@@ -247,6 +247,7 @@ func welcomeText() string {
 			{"/reset", "drop conversation context + server KV cache"},
 			{"/set [k [v]]", "show or change settings (max_tokens)"},
 			{"/tools [on|off|list]", "agentic tool-use (read/write/grep/run_cmd; off by default)"},
+			{"/mcp [connect|tools]", "connect MCP servers (Slack, Confluence, …); /mcp help for setup"},
 			{"/quit  /exit", "leave chat (or press ctrl+c)"},
 			{"tab", "complete slash commands and their arguments"},
 		}},
@@ -800,6 +801,9 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 		m.handleTools(args)
 		return nil
 
+	case "/mcp":
+		return m.handleMCP(args)
+
 	case "/list":
 		var b strings.Builder
 		b.WriteString("Available models:\n")
@@ -904,7 +908,7 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 // slashCommands is the canonical list of completable command names.
 var slashCommands = []string{
 	"/clear", "/download", "/exit", "/grep", "/help", "/list",
-	"/model", "/quit", "/reset", "/set", "/summarize", "/tools",
+	"/mcp", "/model", "/quit", "/reset", "/set", "/summarize", "/tools",
 }
 
 // tabComplete handles Tab in the input box. Returns true if it modified
@@ -935,6 +939,8 @@ func (m *chatModel) tabComplete() bool {
 		pool = []string{"max_tokens"}
 	case "/tools":
 		pool = []string{"on", "off", "list"}
+	case "/mcp":
+		pool = []string{"connect", "disconnect", "help", "logout", "tools"}
 	case "/download":
 		pool = []string{"all", "engine"}
 		for _, mm := range availableModels {
@@ -1154,7 +1160,7 @@ func runAgentStepCmd(msgs []ChatMsg) tea.Cmd {
 // slow tools (run_cmd, large reads) don't freeze the TUI.
 func runToolCmd(call ToolCall) tea.Cmd {
 	return func() tea.Msg {
-		t, ok := toolRegistry[call.Function.Name]
+		t, ok := lookupTool(call.Function.Name)
 		if !ok {
 			return toolRanMsg{call: call, err: fmt.Errorf("unknown tool: %s", call.Function.Name)}
 		}
@@ -1269,7 +1275,7 @@ func (m *chatModel) dispatchNextTool() tea.Cmd {
 	}
 	call := m.pendingCalls[0]
 	m.pendingCalls = m.pendingCalls[1:]
-	t, ok := toolRegistry[call.Function.Name]
+	t, ok := lookupTool(call.Function.Name)
 	if !ok {
 		m.renderToolTrace(call, "(unknown tool)", true)
 		m.appendToolResult(call, fmt.Sprintf("unknown tool: %s", call.Function.Name))
@@ -1572,6 +1578,8 @@ func startChat() (err error) {
 	logFile, closeLog, logErr := setupLogging()
 	defer closeLog()
 	defer shutdownServer()
+	// Closes stdio MCP subprocesses so they don't outlive the TUI.
+	defer shutdownMCP()
 	defer func() {
 		if r := recover(); r != nil {
 			logPanicln(r)
@@ -1587,6 +1595,7 @@ func startChat() (err error) {
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	program = p
 	defer func() { program = nil }()
+	autoConnectMCP()
 	_, err = p.Run()
 	return err
 }
