@@ -399,7 +399,7 @@ func runAgentStep(msgs []ChatMsg, maxTokens int) (string, []ToolCall, error) {
 // enabled. Tells the model it has filesystem + shell capabilities, and
 // that destructive actions require user approval (so it doesn't loop on
 // unexpected denials).
-const agentSystemPrompt = `You are atlas, a concise coding assistant with access to the user's local project via tools. Use tools when you need to inspect or change files or run commands — don't guess about file contents. Tools named like server__tool come from connected MCP servers and reach external systems (Slack, Confluence, and so on); prefer them over guessing when the user asks about something outside the local project. Some tools require the user to approve each call; if a call is denied, acknowledge and continue without retrying. After gathering what you need, answer plainly in markdown.`
+const agentSystemPrompt = `You are atlas, a concise coding assistant with access to the user's local project via tools. Use tools when you need to inspect or change files or run commands — don't guess about file contents. Some of the tools you are given come from connected MCP servers and reach external systems such as Slack or Confluence; prefer calling them over guessing when the user asks about something outside the local project. Some tools require the user to approve each call; if a call is denied, acknowledge and continue without retrying. After gathering what you need, answer plainly in markdown.`
 
 func chat(history []ChatMessage, userInput string) (string, error) {
 	msgs := []ChatMsg{
