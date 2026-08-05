@@ -56,6 +56,14 @@ type MCPServerConfig struct {
 	// StandaloneSSE opts a remote server back into the long-lived
 	// server-initiated SSE stream, which is off by default. nil means off.
 	StandaloneSSE *bool `json:"standalone_sse,omitempty"`
+
+	// AuthServer names the OAuth authorization server explicitly, for
+	// servers that publish no protected-resource metadata. Atlassian is one:
+	// discovery falls back to treating the MCP host as the auth server, but
+	// its metadata declares a different issuer (cf.mcp.atlassian.com), and
+	// RFC 8414 requires those to match — so discovery fails with
+	// "failed to get authorization server metadata".
+	AuthServer string `json:"auth_server,omitempty"`
 }
 
 // standaloneSSEEnabled reports whether to open the optional server-initiated
@@ -207,6 +215,9 @@ func buildTransport(ctx context.Context, name string, cfg MCPServerConfig) (mcp.
 	}
 
 	httpClient := mcpHTTPClient(cfg.Headers)
+	if cfg.AuthServer != "" {
+		httpClient = withDeclaredAuthServer(httpClient, cfg.URL, cfg.AuthServer)
+	}
 	if strings.EqualFold(cfg.Transport, "sse") {
 		if cfg.OAuth {
 			return nil, fmt.Errorf("oauth is only supported on the streamable HTTP transport; remove \"transport\": \"sse\"")

@@ -45,6 +45,10 @@ var mcpCatalog = []mcpPreset{
 		Cfg: MCPServerConfig{
 			URL:   "https://mcp.atlassian.com/v1/mcp",
 			OAuth: true,
+			// Atlassian publishes no protected-resource metadata, and the
+			// spec fallback fails its issuer check. Name the real
+			// authorization server so discovery can proceed.
+			AuthServer: "https://cf.mcp.atlassian.com",
 		},
 	},
 	{

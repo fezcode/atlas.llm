@@ -74,7 +74,23 @@ Plan:
 - TUI: autocomplete for `@` — show a picker of matching paths?
   Probably phase 2.
 
-### 3. Reasoning-model support  — BLOCKING for Ministral
+### 3. Reasoning-model support  — PARTIALLY SHIPPED (v0.18.0)
+Qwen3.5 is a reasoning model. One-shot tasks (`/compact`, `/summarize`,
+`/grep`) now send `chat_template_kwargs: {"enable_thinking": false}`, because
+the <think> block adds nothing there and consumed the entire token budget —
+`/compact` on qwen3.5-4b returned `content:""` with 2155 bytes of
+`reasoning_content` and `finish_reason:length`. Note `reasoning_budget: 0`
+does NOT work: it truncates the thinking rather than preventing it.
+
+`reasoning_content` is now parsed, so an empty answer with a full reasoning
+block reports "used its entire N-token budget on internal reasoning" instead
+of surfacing as a blank reply.
+
+Still open: thinking is left enabled for chat and agent turns (it helps tool
+use), so a long think can still exhaust max_tokens there. Displaying
+reasoning in a collapsed block, and a `/thoughts` toggle, are unbuilt.
+
+### 3b. Original notes  — BLOCKING for Ministral
 Reasoning models emit two streams: `reasoning_content` (their
 thinking) and `content` (the final answer). If we route them the
 same way we route Gemma we'll print the thinking as the reply or

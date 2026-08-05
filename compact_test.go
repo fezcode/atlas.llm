@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -135,5 +136,43 @@ func TestToolResultCapIsSaneRelativeToContext(t *testing.T) {
 	if pct := approxTokens * 100 / ctx; pct > 15 {
 		t.Errorf("one tool result can consume %d%% of a %d-token context "+
 			"(%d bytes ≈ %d tokens) — too much", pct, ctx, toolResultSizeLimit, approxTokens)
+	}
+}
+
+// Reasoning models (Qwen3.5) emit a <think> block that llama-server splits
+// into reasoning_content. On a summarization task it added nothing and
+// consumed the whole token budget, leaving content empty and /compact
+// failing with "the model returned an empty summary". One-shot calls must
+// therefore ask the template to skip it.
+func TestNoThinkingRequestShape(t *testing.T) {
+	withKwargs, _ := json.Marshal(chatRequest{
+		Messages:           []ChatMsg{{Role: "user", Content: "hi"}},
+		MaxTokens:          128,
+		ChatTemplateKwargs: map[string]any{"enable_thinking": false},
+	})
+	if !strings.Contains(string(withKwargs), `"chat_template_kwargs":{"enable_thinking":false}`) {
+		t.Errorf("thinking not disabled in request: %s", withKwargs)
+	}
+	// Ordinary chat must not carry the field at all — thinking is useful
+	// there, and an empty object could confuse a template.
+	plain, _ := json.Marshal(chatRequest{
+		Messages:  []ChatMsg{{Role: "user", Content: "hi"}},
+		MaxTokens: 128,
+	})
+	if strings.Contains(string(plain), "chat_template_kwargs") {
+		t.Errorf("chat_template_kwargs leaked into a normal request: %s", plain)
+	}
+}
+
+// An empty answer with a full reasoning block is a specific, actionable
+// failure — it must not surface as a blank reply.
+func TestReasoningContentIsParsed(t *testing.T) {
+	var cr chatResponse
+	body := `{"choices":[{"finish_reason":"length","message":{"role":"assistant","content":"","reasoning_content":"thinking..."}}]}`
+	if err := json.Unmarshal([]byte(body), &cr); err != nil {
+		t.Fatal(err)
+	}
+	if cr.Choices[0].Message.ReasoningContent != "thinking..." {
+		t.Errorf("reasoning_content not parsed: %+v", cr.Choices[0].Message)
 	}
 }

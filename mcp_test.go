@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -674,4 +675,71 @@ func toolNamesOf(tools []Tool) []string {
 		out = append(out, t.Name)
 	}
 	return out
+}
+
+// Atlassian publishes no protected-resource metadata, and the spec fallback
+// fails RFC 8414's issuer check (the document at mcp.atlassian.com declares
+// cf.mcp.atlassian.com). Naming the auth server explicitly has to carry
+// discovery all the way to the authorization URL.
+//
+// Browser consent can't be completed here, so reaching that URL is success —
+// it's precisely the step that used to fail with "failed to get
+// authorization server metadata".
+func TestLiveAtlassianOAuthDiscovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live OAuth discovery skipped in -short mode")
+	}
+	withTempHome(t)
+	p, ok := findMCPPreset("atlassian")
+	if !ok {
+		t.Fatal("atlassian preset missing")
+	}
+	if p.Cfg.AuthServer == "" {
+		t.Fatal("atlassian preset must name its authorization server")
+	}
+
+	authURL := make(chan string, 1)
+	orig := openBrowserHook
+	openBrowserHook = func(u string) error { authURL <- u; return nil }
+	defer func() { openBrowserHook = orig }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	connErr := make(chan error, 1)
+	go func() { _, err := connectMCPServer(ctx, "atlassian", p.Cfg); connErr <- err }()
+
+	select {
+	case u := <-authURL:
+		if !strings.Contains(u, "atlassian.com") {
+			t.Errorf("authorization URL points somewhere unexpected: %s", u)
+		}
+		// Dynamic client registration and PKCE both have to have happened
+		// for these to be present.
+		for _, want := range []string{"client_id=", "code_challenge=", "response_type=code"} {
+			if !strings.Contains(u, want) {
+				t.Errorf("authorization URL missing %q: %s", want, u)
+			}
+		}
+	case err := <-connErr:
+		t.Skipf("could not reach Atlassian (%v)", err)
+	case <-ctx.Done():
+		t.Skip("timed out reaching Atlassian")
+	}
+}
+
+// A server with no protected-resource metadata must still discover its auth
+// server when the config names one.
+func TestSynthesizedProtectedResourceMetadata(t *testing.T) {
+	c := withDeclaredAuthServer(&http.Client{}, "https://example.test/v1/mcp", "https://auth.example.test/")
+	tr, ok := c.Transport.(*prmTransport)
+	if !ok {
+		t.Fatal("transport was not wrapped")
+	}
+	if tr.host != "example.test" {
+		t.Errorf("host = %q, want example.test", tr.host)
+	}
+	// A trailing slash on the auth server would produce a mismatched issuer.
+	if tr.authServer != "https://auth.example.test" {
+		t.Errorf("authServer = %q, trailing slash not trimmed", tr.authServer)
+	}
 }

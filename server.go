@@ -232,6 +232,11 @@ type chatRequest struct {
 	Stream      bool             `json:"stream"`
 	CachePrompt bool             `json:"cache_prompt"`
 	Tools       []map[string]any `json:"tools,omitempty"`
+	// ChatTemplateKwargs is forwarded to the model's Jinja chat template.
+	// {"enable_thinking": false} is how reasoning models (Qwen3.5) are told
+	// to skip the <think> block. Note reasoning_budget does NOT work for
+	// this — it truncates the thinking rather than preventing it.
+	ChatTemplateKwargs map[string]any `json:"chat_template_kwargs,omitempty"`
 }
 
 type chatChoice struct {
@@ -242,9 +247,14 @@ type chatChoice struct {
 // assistantMessage is the response-side shape of an assistant reply. Content
 // can be null when the model chose to emit tool_calls instead.
 type assistantMessage struct {
-	Role      string     `json:"role"`
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// ReasoningContent holds a reasoning model's thinking, which
+	// llama-server separates from the answer. We don't display it, but we
+	// need it to tell "the model said nothing" apart from "the model spent
+	// its whole budget thinking".
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatUsage struct {
@@ -305,7 +315,15 @@ func ResetUsage() {
 // and returns only the assistant's reply — so the model stops at the turn
 // boundary instead of spewing fake "User:/Assistant:" continuations.
 func (s *llamaServer) ChatComplete(msgs []ChatMsg, maxTokens int) (string, error) {
-	content, _, err := s.chatCompleteCore(msgs, maxTokens, nil)
+	content, _, err := s.chatCompleteCore(msgs, maxTokens, nil, false)
+	return content, err
+}
+
+// ChatCompleteNoThinking is for one-shot utility calls — summarize, grep,
+// compact — where a reasoning model's <think> block is pure waste: it
+// consumes the entire token budget and can leave the answer empty.
+func (s *llamaServer) ChatCompleteNoThinking(msgs []ChatMsg, maxTokens int) (string, error) {
+	content, _, err := s.chatCompleteCore(msgs, maxTokens, nil, true)
 	return content, err
 }
 
@@ -314,17 +332,22 @@ func (s *llamaServer) ChatComplete(msgs []ChatMsg, maxTokens int) (string, error
 // emitted in addition to any assistant content. The caller is responsible
 // for executing the calls and re-invoking with the tool results appended.
 func (s *llamaServer) ChatCompleteWithTools(msgs []ChatMsg, tools []map[string]any, maxTokens int) (string, []ToolCall, error) {
-	return s.chatCompleteCore(msgs, maxTokens, tools)
+	return s.chatCompleteCore(msgs, maxTokens, tools, false)
 }
 
-func (s *llamaServer) chatCompleteCore(msgs []ChatMsg, maxTokens int, tools []map[string]any) (string, []ToolCall, error) {
+func (s *llamaServer) chatCompleteCore(msgs []ChatMsg, maxTokens int, tools []map[string]any, noThinking bool) (string, []ToolCall, error) {
+	var kwargs map[string]any
+	if noThinking {
+		kwargs = map[string]any{"enable_thinking": false}
+	}
 	reqBody, _ := json.Marshal(chatRequest{
-		Messages:    msgs,
-		MaxTokens:   maxTokens,
-		Temperature: 0.2,
-		Stream:      false,
-		CachePrompt: true,
-		Tools:       tools,
+		Messages:           msgs,
+		MaxTokens:          maxTokens,
+		Temperature:        0.2,
+		Stream:             false,
+		CachePrompt:        true,
+		Tools:              tools,
+		ChatTemplateKwargs: kwargs,
 	})
 	log.Printf("→ POST /v1/chat/completions port=%d max_tokens=%d msgs=%d", s.port, maxTokens, len(msgs))
 	for i, m := range msgs {
@@ -358,8 +381,19 @@ func (s *llamaServer) chatCompleteCore(msgs []ChatMsg, maxTokens int, tools []ma
 	}
 	msg := cr.Choices[0].Message
 	content := msg.Content
-	if content == "" && len(msg.ToolCalls) == 0 && cr.Choices[0].FinishReason == "length" {
-		log.Printf("  WARNING: reply was empty and finish_reason=length — max_tokens=%d likely too small", maxTokens)
+	if content == "" && len(msg.ToolCalls) == 0 {
+		// A reasoning model that spends its whole budget on <think> returns
+		// an empty answer. Say so, rather than surfacing a blank reply.
+		if msg.ReasoningContent != "" {
+			log.Printf("  reply empty, reasoning_content=%d bytes, finish_reason=%s",
+				len(msg.ReasoningContent), cr.Choices[0].FinishReason)
+			return "", nil, fmt.Errorf(
+				"the model used its entire %d-token budget on internal reasoning and never produced an answer "+
+					"— raise it with `/set max_tokens N`", maxTokens)
+		}
+		if cr.Choices[0].FinishReason == "length" {
+			log.Printf("  WARNING: reply was empty and finish_reason=length — max_tokens=%d likely too small", maxTokens)
+		}
 	}
 	setLastUsage(UsageStats{
 		PromptTokens:     cr.Usage.PromptTokens,

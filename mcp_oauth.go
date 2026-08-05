@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -124,7 +128,7 @@ func (r *loopbackReceiver) fetch(ctx context.Context, args *auth.AuthorizationAr
 	r.waiting = ch
 	r.mu.Unlock()
 
-	if err := openBrowser(args.URL); err != nil {
+	if err := openBrowserHook(args.URL); err != nil {
 		log.Printf("mcp oauth: could not open a browser (%v)", err)
 	}
 	// The URL is also logged so a headless/SSH user can paste it manually.
@@ -256,6 +260,10 @@ func restoreMCPTokenSource(ctx context.Context, name string) oauth2.TokenSource 
 	}
 }
 
+// openBrowserHook is indirection for tests, which need to observe the
+// authorization URL without a browser actually opening.
+var openBrowserHook = openBrowser
+
 // openBrowser launches the platform's default browser at url.
 func openBrowser(url string) error {
 	var cmd *exec.Cmd
@@ -276,3 +284,75 @@ func openBrowser(url string) error {
 // mcpAuthTimeout bounds how long we wait for the user to finish the browser
 // consent flow before giving up on a server.
 const mcpAuthTimeout = 5 * time.Minute
+
+// prmTransport answers protected-resource-metadata probes locally for
+// servers that don't publish any.
+//
+// The MCP auth flow discovers the authorization server from the resource's
+// protected-resource metadata (RFC 9728), falling back to treating the MCP
+// host itself as the authorization server. Atlassian publishes no such
+// metadata, and the fallback then fails RFC 8414's issuer check: the
+// document served at mcp.atlassian.com declares its issuer as
+// cf.mcp.atlassian.com. Discovery gives up with "failed to get
+// authorization server metadata".
+//
+// When a server config names its authorization server, we synthesize the
+// metadata the server should have published. Everything after this point —
+// fetching the authorization-server metadata, dynamic client registration,
+// the code exchange — proceeds normally against the real endpoints.
+type prmTransport struct {
+	base       http.RoundTripper
+	resource   string // the MCP endpoint URL
+	authServer string
+	host       string
+}
+
+func withDeclaredAuthServer(c *http.Client, resourceURL, authServer string) *http.Client {
+	u, err := url.Parse(resourceURL)
+	if err != nil {
+		return c
+	}
+	base := c.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	clone := *c
+	clone.Transport = &prmTransport{
+		base:       base,
+		resource:   resourceURL,
+		authServer: strings.TrimRight(authServer, "/"),
+		host:       u.Host,
+	}
+	return &clone
+}
+
+func (t *prmTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Host != t.host && req.URL.Host != t.host {
+		return t.base.RoundTrip(req)
+	}
+	if !strings.HasPrefix(req.URL.Path, "/.well-known/oauth-protected-resource") {
+		return t.base.RoundTrip(req)
+	}
+	// Let a real document win if the server ever starts publishing one.
+	if resp, err := t.base.RoundTrip(req); err == nil && resp.StatusCode == http.StatusOK {
+		return resp, nil
+	} else if resp != nil {
+		resp.Body.Close()
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"resource":              t.resource,
+		"authorization_servers": []string{t.authServer},
+	})
+	log.Printf("mcp oauth: synthesized protected-resource metadata for %s -> %s",
+		t.resource, t.authServer)
+	return &http.Response{
+		Status:     "200 OK",
+		StatusCode: http.StatusOK,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1, ProtoMinor: 1,
+		Header:  http.Header{"Content-Type": []string{"application/json"}},
+		Body:    io.NopCloser(bytes.NewReader(body)),
+		Request: req,
+	}, nil
+}

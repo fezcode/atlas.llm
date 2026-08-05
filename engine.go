@@ -451,13 +451,38 @@ func runChat(msgs []ChatMsg, maxTokens int) (string, error) {
 
 // runSingleUser is a convenience wrapper for one-shot tasks (summarize,
 // grep) that have no conversational history — just a single user prompt.
+// Thinking is disabled for these: a reasoning model's <think> block adds
+// nothing to a summarization or extraction task, and on Qwen3.5 it consumed
+// the whole budget and returned an empty answer.
 func runSingleUser(system, user string, maxTokens int) (string, error) {
 	msgs := []ChatMsg{}
 	if system != "" {
 		msgs = append(msgs, ChatMsg{Role: "system", Content: system})
 	}
 	msgs = append(msgs, ChatMsg{Role: "user", Content: user})
-	return runChat(msgs, maxTokens)
+	return runChatNoThinking(msgs, maxTokens)
+}
+
+// runChatNoThinking mirrors runChat but asks the chat template to skip the
+// reasoning block.
+func runChatNoThinking(msgs []ChatMsg, maxTokens int) (string, error) {
+	if _, err := requireEngine(); err != nil {
+		return "", err
+	}
+	if m, err := currentModel(); err == nil {
+		if _, err := requireModel(m); err != nil {
+			return "", err
+		}
+	}
+	s, err := ensureServer()
+	if err != nil {
+		return "", fmt.Errorf("server: %w", err)
+	}
+	out, err := s.ChatCompleteNoThinking(msgs, maxTokens)
+	if err != nil {
+		return "", fmt.Errorf("inference failed: %w", err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // summarizeMaxChars caps the amount of file content we send to the model
