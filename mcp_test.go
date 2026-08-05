@@ -584,6 +584,62 @@ func TestLiveAddPresetAndConnect(t *testing.T) {
 	}
 }
 
+// TestLiveRemoteMCPServer covers the remote streamable-HTTP path, which the
+// npx-based tests never touch. Uses the no-auth DeepWiki test server.
+//
+// A connect failure skips rather than fails: this reaches a third-party
+// service, so an outage or a sandboxed network shouldn't redden the suite.
+// Everything after the connection is asserted normally.
+func TestLiveRemoteMCPServer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live MCP server test skipped in -short mode")
+	}
+	withTempHome(t)
+
+	p, ok := findMCPPreset("deepwiki")
+	if !ok {
+		t.Fatal("deepwiki preset missing from catalog")
+	}
+	if p.Cfg.isRemote() == false {
+		t.Fatal("deepwiki preset should be a remote server")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	n, err := connectMCPServer(ctx, p.Key, p.Cfg)
+	if err != nil {
+		t.Skipf("remote test server unreachable (%v)", err)
+	}
+	defer shutdownMCP()
+	if n == 0 {
+		t.Fatal("remote server exposed no tools")
+	}
+
+	tool, ok := lookupTool("deepwiki__ask_question")
+	if !ok {
+		t.Fatalf("expected deepwiki__ask_question; have %v", toolNamesOf(mcpToolSnapshot()))
+	}
+	// No "trust" in the preset, so it must route through the confirm modal.
+	if !tool.Destructive {
+		t.Error("remote server without trust should require confirmation")
+	}
+	if tool.Parameters == nil {
+		t.Error("remote tool has no parameters schema")
+	}
+
+	out, err := tool.Run(map[string]any{
+		"repoName": "modelcontextprotocol/go-sdk",
+		"question": "What transports does the client support?",
+	})
+	if err != nil {
+		t.Fatalf("remote tool call: %v", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		t.Error("remote tool returned empty output")
+	}
+}
+
 // --- helpers ---
 
 // withTempHome points atlasDir() at a throwaway directory so tests never

@@ -138,7 +138,8 @@ hand-rolled JSON-RPC client.
   annotations are deliberately ignored — they come from the party being
   gated.
 - `/mcp add` opens a picker over a built-in catalog (Atlassian, Slack,
-  GitHub, Linear, Sentry, filesystem, memory, everything) and writes
+  GitHub, Linear, Sentry, filesystem, memory, plus everything/deepwiki as
+  stdio and remote smoke-test servers) and writes
   mcp.json for the user — no hand-editing to get started. Presets needing a
   token or path pre-fill the command in the input box. `/mcp add NAME -- cmd`
   and `--url=...` cover anything not in the catalog.

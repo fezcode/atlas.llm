@@ -111,12 +111,19 @@ var mcpCatalog = []mcpPreset{
 	},
 	{
 		Key:         "everything",
-		Label:       "Everything (test server)",
-		Description: "Reference server exposing sample tools. Useful for checking the setup works.",
+		Label:       "Everything (local test server)",
+		Description: "Reference server exposing sample tools. Checks the stdio path works.",
 		Cfg: MCPServerConfig{
 			Command: "npx",
 			Args:    []string{"-y", "@modelcontextprotocol/server-everything"},
 		},
+	},
+	{
+		Key:   "deepwiki",
+		Label: "DeepWiki (remote test server)",
+		Description: "Ask questions about any public GitHub repo. No auth — " +
+			"the quickest way to check the remote path works.",
+		Cfg: MCPServerConfig{URL: "https://mcp.deepwiki.com/mcp"},
 	},
 }
 

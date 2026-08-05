@@ -127,9 +127,19 @@ GitHub, a database, or anything else with an MCP server.
 ```
 
 `/mcp add` opens a picker of ready-made servers — Atlassian (Confluence +
-Jira), Slack, GitHub, Linear, Sentry, filesystem, memory. Picking one writes
-`mcp.json` for you and connects it. Servers that need a token or a path
-pre-fill the command in the input box so you only replace the placeholder:
+Jira), Slack, GitHub, Linear, Sentry, filesystem, memory, plus two test
+servers. Picking one writes `mcp.json` for you and connects it.
+
+Want to check the plumbing before wiring up anything real? Two no-setup
+options:
+
+```
+/mcp add deepwiki     # remote, no auth — asks questions about GitHub repos
+/mcp add everything   # local stdio reference server (needs npx)
+```
+
+Servers that need a token or a path pre-fill the command in the input box so
+you only replace the placeholder:
 
 ```
 /mcp add slack SLACK_BOT_TOKEN=xoxb-... SLACK_TEAM_ID=T01234567
