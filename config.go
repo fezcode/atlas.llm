@@ -45,6 +45,14 @@ var availableModels = []Model{
 		Size:     "~2.9GB",
 	},
 	{
+		// Fills the gap between qwen3.5-4b and qwen3.5-9b. Same family as
+		// the 14B below, which already tool-calls reliably.
+		Name:     "ministral-3-8b-instruct",
+		Filename: "Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/unsloth/Ministral-3-8B-Instruct-2512-GGUF/resolve/main/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
+		Size:     "~5.2GB",
+	},
+	{
 		Name:     "qwen3.5-9b",
 		Filename: "Qwen3.5-9B-Q4_K_M.gguf",
 		URL:      "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",

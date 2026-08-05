@@ -76,9 +76,10 @@ var helpTopics = []helpTopic{
 		},
 		Notes: []string{
 			"Tool-calling needs a model trained for it. Qwen3.5 (4B and up) and " +
-				"Ministral-3-14B handle it; Gemma 3 will usually ignore tools or " +
-				"invent a fake call, which makes /tools and /mcp look broken. " +
-				"qwen3.5-4b is the lightest option that works.",
+				"Ministral-3 (8B and up) handle it; Gemma 3 will usually ignore " +
+				"tools or invent a fake call, which makes /tools and /mcp look " +
+				"broken. qwen3.5-4b is the lightest that works; " +
+				"ministral-3-8b-instruct sits between it and qwen3.5-9b.",
 		},
 		SeeAlso: []string{"list", "download", "tools"},
 	},

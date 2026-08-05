@@ -22,6 +22,20 @@ Candidates to add:
 - Using `unsloth/Qwen3.5-9B-GGUF`, Q4_K_M = 5.68 GB.
 - Not a reasoning model; standard chat template works as-is.
 
+### Ministral-3-8B-Instruct-2512  — SHIPPED (v0.18.0)
+Fills the 4B -> 9B gap: Q4_K_M is 5.20 GB, between qwen3.5-4b (2.74) and
+qwen3.5-9b (5.68). Same family as the 14B below, which already tool-calls
+reliably, so /tools and /mcp work.
+
+Qwen3.5 has no dense size between 4B and 9B (0.8, 2, 4, 9, 27, then MoE), so
+the gap had to be filled from another family. Llama-3.1-8B-Instruct (4.92 GB)
+also exists and would fit, but it is a 2024 model against Ministral-3's
+2512 release.
+
+Worth remembering as an alternative lever: a lighter *quant* of the 9B beats
+a smaller model at a heavier quant. Qwen3.5-9B ships Q3_K_M at 4.67 GB and
+IQ4_XS at 5.17 GB, both under the 9B Q4_K_M we list.
+
 ### Ministral-3-14B-Instruct-2512  — SHIPPED (v0.11.0, non-reasoning variant)
 - Using `unsloth/Ministral-3-14B-Instruct-2512-GGUF`, Q4_K_M = 8.24 GB.
 - Chose the Instruct release (`mistralai/Ministral-3-14B-Instruct-2512`)
