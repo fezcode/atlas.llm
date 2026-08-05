@@ -53,8 +53,8 @@ var mcpCatalog = []mcpPreset{
 	},
 	{
 		Key:         "slack",
-		Label:       "Slack",
-		Description: "Read channels and post messages. Needs a bot token from your Slack app.",
+		Label:       "Slack (bot token)",
+		Description: "Read channels and post messages. Needs a Slack app + bot token, usually admin-approved.",
 		Cfg: MCPServerConfig{
 			Command: "npx",
 			Args:    []string{"-y", "@modelcontextprotocol/server-slack"},
@@ -62,6 +62,19 @@ var mcpCatalog = []mcpPreset{
 		RequiredEnv: []mcpEnvField{
 			{Key: "SLACK_BOT_TOKEN", Hint: "xoxb-..."},
 			{Key: "SLACK_TEAM_ID", Hint: "T01234567"},
+		},
+	},
+	{
+		Key:   "slack-user",
+		Label: "Slack (user token, no app setup)",
+		Description: "Same access you have in Slack, with no app to create and no admin approval. " +
+			"Uses a user OAuth token.",
+		Cfg: MCPServerConfig{
+			Command: "npx",
+			Args:    []string{"-y", "slack-mcp-server@latest", "--transport", "stdio"},
+		},
+		RequiredEnv: []mcpEnvField{
+			{Key: "SLACK_MCP_XOXP_TOKEN", Hint: "xoxp-..."},
 		},
 	},
 	{
@@ -120,6 +133,27 @@ var mcpCatalog = []mcpPreset{
 		Cfg: MCPServerConfig{
 			Command: "npx",
 			Args:    []string{"-y", "@modelcontextprotocol/server-everything"},
+		},
+	},
+	{
+		Key:         "context7",
+		Label:       "Context7 (no setup)",
+		Description: "Up-to-date docs and code examples for thousands of libraries. Remote, no auth.",
+		Cfg:         MCPServerConfig{URL: "https://mcp.context7.com/mcp"},
+	},
+	{
+		Key:         "gitmcp",
+		Label:       "GitMCP (no setup)",
+		Description: "Fetch and search documentation and code for any public GitHub repo. Remote, no auth.",
+		Cfg:         MCPServerConfig{URL: "https://gitmcp.io/docs"},
+	},
+	{
+		Key:         "sequential-thinking",
+		Label:       "Sequential Thinking (no setup)",
+		Description: "Lets the model break a hard problem into revisable steps. Local, no auth.",
+		Cfg: MCPServerConfig{
+			Command: "npx",
+			Args:    []string{"-y", "@modelcontextprotocol/server-sequential-thinking"},
 		},
 	},
 	{

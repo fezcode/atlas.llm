@@ -205,16 +205,36 @@ GitHub, a database, or anything else with an MCP server.
 /tools on          # let the model actually call the tools
 ```
 
-`/mcp add` opens a picker of ready-made servers — Atlassian (Confluence +
-Jira), Slack, GitHub, Linear, Sentry, filesystem, memory, plus two test
-servers. Picking one writes `mcp.json` for you and connects it.
+`/mcp add` opens a picker of ready-made servers. Picking one writes
+`mcp.json` for you and connects it.
 
-Want to check the plumbing before wiring up anything real? Two no-setup
-options:
+**Zero-setup servers.** These need no account, token, or app — useful on
+their own, and a quick way to confirm the plumbing works:
 
 ```
-/mcp add deepwiki     # remote, no auth — asks questions about GitHub repos
-/mcp add everything   # local stdio reference server (needs npx)
+/mcp add context7             # up-to-date docs for thousands of libraries
+/mcp add gitmcp               # docs + code search for any public GitHub repo
+/mcp add deepwiki             # ask questions about any public GitHub repo
+/mcp add sequential-thinking  # step-by-step reasoning helper (local)
+/mcp add everything           # reference server, for testing stdio
+```
+
+**One-click auth.** These open a browser and need nothing else — no app to
+create, no token to copy:
+
+```
+/mcp add atlassian   # Confluence + Jira
+/mcp add linear
+/mcp add sentry
+```
+
+**Slack** is the awkward one: the official server needs a Slack app, scopes,
+and usually workspace-admin approval. `slack-user` avoids all of that by
+using a user OAuth token (`xoxp-…`) instead, giving the server the same
+access you already have:
+
+```
+/mcp add slack-user SLACK_MCP_XOXP_TOKEN=xoxp-...
 ```
 
 Servers that need a token or a path pre-fill the command in the input box so
