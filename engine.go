@@ -230,8 +230,36 @@ func extractTarGz(src, destDir string) error {
 			if err := writeTarEntry(tr, target, os.FileMode(hdr.Mode)); err != nil {
 				return err
 			}
+		case tar.TypeSymlink:
+			// The macOS/Linux llama.cpp tarballs ship versioned dylibs plus a
+			// chain of symlinks (libggml.dylib -> libggml.0.dylib ->
+			// libggml.0.18.1.dylib). Dropping these leaves llama-server with
+			// unresolvable @rpath references, so it dies at exec time.
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			if err := writeTarSymlink(hdr.Linkname, target, cleanDest); err != nil {
+				return err
+			}
 		}
 	}
+}
+
+// writeTarSymlink recreates a symlink entry, rejecting any link that would
+// resolve outside the extraction root.
+func writeTarSymlink(linkname, target, cleanDest string) error {
+	resolved := linkname
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(filepath.Dir(target), resolved)
+	}
+	if !strings.HasPrefix(filepath.Clean(resolved), strings.TrimSuffix(cleanDest, string(os.PathSeparator))) {
+		return fmt.Errorf("symlink escapes archive root: %s -> %s", target, linkname)
+	}
+	// Re-extracting over a previous install must not fail on EEXIST.
+	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.Symlink(linkname, target)
 }
 
 func writeTarEntry(tr *tar.Reader, target string, mode os.FileMode) error {
