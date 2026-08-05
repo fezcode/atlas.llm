@@ -300,6 +300,20 @@ confirmation, and a failure partway left the file half-edited.
 - Any failure means nothing is written, and the error names the failing
   index so a large batch is debuggable.
 
+### 16. /yesman  — SHIPPED (v0.18.0)
+Session-only bypass of the destructive-tool confirmation, for runs where
+approving every call is the bottleneck.
+
+Deliberately not a Config field. Persisting it would mean a session days
+later silently auto-running run_cmd because of a toggle flipped once, so it
+lives on chatModel and dies with the process — a test asserts it never
+reaches config.json.
+
+Kept loud rather than silent, since it removes the only barrier in front of
+arbitrary shell execution: a red marker in both header and footer while
+armed, and every auto-approved call still printed in the trace as
+"(auto-approved by /yesman)". esc remains the escape hatch mid-turn.
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships

@@ -44,6 +44,7 @@ they are missing returns an error with the command to run.
 | `/tools [on\|off\|list]` | Toggle agentic tool-use (off by default). See below.         |
 | `/mcp [...]`      | Connect MCP servers (Slack, Confluence, …). See below.              |
 | `/compact`        | Summarize older turns to free up the context window.                |
+| `/yesman [on\|off]` | Auto-approve destructive tools — session only. See below.          |
 | `/clear`          | Clear on-screen chat history (keeps conversation context).          |
 | `/reset`          | Drop conversation context and the server KV cache.                  |
 | `/quit`, `/exit`  | Leave chat (Ctrl+C also works).                                     |
@@ -123,6 +124,25 @@ Caveats:
   open; press Enter to approve, Esc (or select Deny) to reject. Denials
   are fed back to the model as a tool error so it can adapt rather than
   retry.
+
+#### `/yesman` — skip the prompts
+
+`/yesman` auto-approves every destructive call so an agent turn runs end to
+end without stopping. `/yesman on` and `/yesman off` set it explicitly.
+
+This is dangerous by design: `run_cmd` executes arbitrary shell commands and
+MCP tools reach outside your machine, so one mistaken call can delete files,
+force-push, or post to Slack with nothing asking first.
+
+It is **session-only and never written to `config.json`** — a toggle flipped
+today should not silently arm tomorrow's session. Quitting resets it.
+
+While it's on, a red `⚠ yesman` marker sits in the header and footer, and
+each auto-approved call is still printed as `(auto-approved by /yesman)` —
+it is never silent. `Esc` still stops a turn mid-flight.
+
+For a narrower version, `/mcp trust NAME on` exempts a single MCP server you
+have vetted, and that one does persist.
 
 ### GPU offload
 

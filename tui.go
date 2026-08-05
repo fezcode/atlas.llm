@@ -168,6 +168,11 @@ type chatModel struct {
 	// fires once per crossing rather than after every turn.
 	compactSuggested bool
 
+	// yesman auto-approves destructive tool calls. Deliberately NOT part of
+	// Config: it lives and dies with the session, so a forgotten toggle
+	// can't silently arm the next run.
+	yesman bool
+
 	// cancelInflight aborts the running generation when Esc is pressed.
 	// canceled marks that the abort was deliberate, so the resulting
 	// context error is reported as "stopped" rather than as a failure.
@@ -277,6 +282,7 @@ func welcomeText() string {
 			{"tab", "complete slash commands and their arguments"},
 			{"↑ / ↓", "recall previous / next input (cursor keys inside multi-line)"},
 			{"esc", "stop generation in progress"},
+			{"/yesman", "auto-approve destructive tools for this session only"},
 		}},
 	}
 
@@ -958,6 +964,10 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 	case "/compact":
 		return m.handleCompact()
 
+	case "/yesman":
+		m.handleYesman(args)
+		return nil
+
 	case "/list":
 		var b strings.Builder
 		b.WriteString("Available models:\n")
@@ -1063,7 +1073,7 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 var slashCommands = []string{
 	"/clear", "/download", "/exit", "/grep", "/help", "/list",
 	"/compact", "/mcp", "/model", "/quit", "/reset", "/set", "/summarize",
-	"/tools",
+	"/tools", "/yesman",
 }
 
 // tabComplete handles Tab in the input box. Returns true if it modified
@@ -1104,6 +1114,8 @@ func (m *chatModel) tabComplete() bool {
 		pool = []string{"engine_variant", "gpu_layers", "max_tokens"}
 	case "/tools":
 		pool = []string{"on", "off", "list"}
+	case "/yesman":
+		pool = []string{"on", "off"}
 	case "/mcp":
 		pool = []string{"add", "catalog", "connect", "disconnect", "env",
 			"help", "logout", "remove", "tools", "trust"}
@@ -1217,6 +1229,10 @@ func (m chatModel) renderHeader(width int) string {
 	if ctxSeg != "" {
 		right = ctxSeg + dot + stateSeg
 	}
+	if m.yesman {
+		// Persistent, loud, and impossible to miss while it's armed.
+		right = lipgloss.NewStyle().Foreground(colErr).Bold(true).Render("⚠ yesman") + dot + right
+	}
 
 	dirMax := width - lipgloss.Width(brand) - lipgloss.Width(model) - lipgloss.Width(right) - 12
 	if dirMax < 12 {
@@ -1299,15 +1315,20 @@ func (m chatModel) renderFooter(width int) string {
 		return "  " + strings.Join(hints, sepStyle.Render("  ·  "))
 	}
 
-	hints := []string{
-		footerKeyStyle.Render("↵") + footerStyle.Render(" send"),
-		footerKeyStyle.Render("⇧↵") + footerStyle.Render(" newline"),
-		footerKeyStyle.Render("↑↓") + footerStyle.Render(" history"),
-		footerKeyStyle.Render("esc") + footerStyle.Render(" stop"),
-		footerKeyStyle.Render("^Y") + footerStyle.Render(" copy reply"),
-		footerKeyStyle.Render("/help") + footerStyle.Render(" commands"),
-		footerKeyStyle.Render("^C") + footerStyle.Render(" quit"),
+	hints := []string{}
+	if m.yesman {
+		hints = append(hints, lipgloss.NewStyle().Foreground(colErr).Bold(true).
+			Render("⚠ yesman on")+footerStyle.Render(" (/yesman off)"))
 	}
+	hints = append(hints,
+		footerKeyStyle.Render("↵")+footerStyle.Render(" send"),
+		footerKeyStyle.Render("⇧↵")+footerStyle.Render(" newline"),
+		footerKeyStyle.Render("↑↓")+footerStyle.Render(" history"),
+		footerKeyStyle.Render("esc")+footerStyle.Render(" stop"),
+		footerKeyStyle.Render("^Y")+footerStyle.Render(" copy reply"),
+		footerKeyStyle.Render("/help")+footerStyle.Render(" commands"),
+		footerKeyStyle.Render("^C")+footerStyle.Render(" quit"),
+	)
 	sep := sepStyle.Render("  ·  ")
 	return "  " + strings.Join(hints, sep)
 }
@@ -1468,14 +1489,20 @@ func (m *chatModel) dispatchNextTool() tea.Cmd {
 		m.appendToolResult(call, fmt.Sprintf("unknown tool: %s", call.Function.Name))
 		return m.dispatchNextTool()
 	}
-	if t.Destructive {
+	if t.Destructive && !m.yesman {
 		m.confirmCall = &call
 		m.confirmIdx = 0
 		m.picking = "tool_confirm"
 		m.renderConfirm()
 		return nil
 	}
-	m.renderToolTrace(call, "", false)
+	note := ""
+	if t.Destructive {
+		// Say so every time. A silent destructive call is exactly what the
+		// confirm modal existed to prevent.
+		note = "(auto-approved by /yesman)"
+	}
+	m.renderToolTrace(call, note, false)
 	return runToolCmd(call)
 }
 
@@ -1896,4 +1923,47 @@ func (m *chatModel) inflightCanceled(err error) bool {
 		return true
 	}
 	return false
+}
+
+// handleYesman implements `/yesman`, `/yesman on`, and `/yesman off`.
+//
+// The setting is intentionally session-scoped and never written to
+// config.json. Persisting it would mean a future run silently auto-running
+// run_cmd and file writes because of a toggle flipped days earlier.
+func (m *chatModel) handleYesman(args []string) {
+	want := !m.yesman
+	if len(args) > 0 {
+		switch strings.ToLower(args[0]) {
+		case "on", "true", "yes":
+			want = true
+		case "off", "false", "no":
+			want = false
+		default:
+			m.pushError(fmt.Sprintf("unknown /yesman arg: %s (expected on|off)", args[0]))
+			return
+		}
+	}
+	if want == m.yesman {
+		state := "off"
+		if m.yesman {
+			state = "on"
+		}
+		m.pushSystem("yesman is already " + state + ".")
+		return
+	}
+	m.yesman = want
+	if !want {
+		m.pushSystem("yesman off. Destructive tools will ask for confirmation again.")
+		m.refresh()
+		return
+	}
+	m.pushSystem(
+		"⚠  yesman ON — destructive tools now run WITHOUT asking, for this session only.\n\n" +
+			"That includes run_cmd (arbitrary shell commands), write_file, edit_file, " +
+			"multi_edit, and any MCP tool from a server you haven't marked trusted — " +
+			"so a model mistake can now delete files, push commits, or post to Slack " +
+			"with no prompt.\n\n" +
+			"It is never written to config.json, so it resets when you quit. " +
+			"Turn it off with `/yesman off`, and press esc to stop a turn mid-flight.")
+	m.refresh()
 }

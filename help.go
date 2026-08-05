@@ -220,11 +220,13 @@ var helpTopics = []helpTopic{
 		Notes: []string{
 			"Bounded at 20 tool-call rounds per message, so a confused model " +
 				"can't loop forever.",
+			"/yesman skips every confirmation for the current session if the " +
+				"prompting gets in the way — read `/help yesman` first.",
 			"Needs a model that can emit tool calls — Qwen3.5-9B or " +
 				"Ministral-3-14B. On Gemma 3 the feature will appear broken.",
 			"/reset clears the agent's message list along with the conversation.",
 		},
-		SeeAlso: []string{"mcp", "model"},
+		SeeAlso: []string{"mcp", "model", "yesman"},
 	},
 	{
 		Name:    "mcp",
@@ -306,6 +308,35 @@ var helpTopics = []helpTopic{
 				"protected file, not an OS keychain — comparable to ~/.aws/credentials.",
 		},
 		SeeAlso: []string{"tools", "model"},
+	},
+	{
+		Name:    "yesman",
+		Summary: "Auto-approve destructive tools for this session only.",
+		Usage:   []string{"/yesman", "/yesman on", "/yesman off"},
+		Detail: "Normally write_file, edit_file, multi_edit, run_cmd, and any tool " +
+			"from an untrusted MCP server open a confirmation modal before they " +
+			"run. /yesman skips all of those prompts, so an agent turn proceeds " +
+			"end to end without stopping for you.\n\n" +
+			"With no argument it toggles; `on` and `off` set it explicitly.\n\n" +
+			"This is genuinely dangerous. run_cmd executes arbitrary shell " +
+			"commands, and MCP tools reach outside your machine entirely — a " +
+			"single mistaken call can delete files, force-push, or post to a " +
+			"Slack channel, with nothing asking first. The confirm modal is the " +
+			"only thing standing between a model's misunderstanding and your " +
+			"filesystem.\n\n" +
+			"It is deliberately session-scoped and never written to config.json: " +
+			"a toggle you flipped days ago should not silently arm tomorrow's " +
+			"session. Quitting always resets it to off.",
+		Notes: []string{
+			"While it's on, a red ⚠ yesman marker sits in the header and the " +
+				"footer, and every auto-approved call is still printed in the " +
+				"trace as \"(auto-approved by /yesman)\" — it is never silent.",
+			"esc still stops a turn mid-flight, which is the way out if a run " +
+				"starts doing something you didn't intend.",
+			"For a narrower version of the same idea, `/mcp trust NAME on` " +
+				"exempts one MCP server you've vetted, and that one does persist.",
+		},
+		SeeAlso: []string{"tools", "mcp"},
 	},
 	{
 		Name:    "compact",
