@@ -43,6 +43,7 @@ they are missing returns an error with the command to run.
 | `/set [k [v]]`    | List or change settings: `max_tokens`, `gpu_layers`, `engine_variant`. |
 | `/tools [on\|off\|list]` | Toggle agentic tool-use (off by default). See below.         |
 | `/mcp [...]`      | Connect MCP servers (Slack, Confluence, …). See below.              |
+| `/compact`        | Summarize older turns to free up the context window.                |
 | `/clear`          | Clear on-screen chat history (keeps conversation context).          |
 | `/reset`          | Drop conversation context and the server KV cache.                  |
 | `/quit`, `/exit`  | Leave chat (Ctrl+C also works).                                     |
@@ -252,6 +253,10 @@ Two transports are supported:
 - **remote HTTP** — `url` talks to a hosted server over streamable HTTP.
   Add `"transport": "sse"` for servers that only speak the older 2024-11-05
   SSE protocol, and `"oauth": true` for servers behind authorization.
+
+Tool results are capped at 6KB each (~1.5K tokens) before being fed back to
+the model. A chatty server would otherwise fill the 16K context in a couple
+of calls — run `/compact` if it still fills up.
 
 Tools are namespaced as `server__tool` (`slack__post_message`) so two servers
 exposing `search` don't collide. They only reach the model once `/tools on` is

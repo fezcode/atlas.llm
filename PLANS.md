@@ -229,6 +229,31 @@ Recall only takes over at the first line (for `↑`) and the last line (for
 at 200 entries; consecutive duplicates collapse. In-memory only — not
 persisted across sessions, which would be the obvious follow-up.
 
+### 13. Context compaction  — SHIPPED (v0.18.0)
+`/compact` folds older turns into a dense factual summary and continues from
+it, keeping the last 4 turns verbatim. Less destructive than `/reset`, which
+discards the conversation outright.
+
+Prompted by hitting the context limit almost immediately once MCP was
+connected. Measured cause: `toolResultSizeLimit` was 32KB — roughly 8K
+tokens, half the entire 16K window from a *single* tool call, so two calls
+exhausted it. Tool definitions were only ~927 tokens (7%), so they were
+never the problem. The cap is now 6KB (~1.5K tokens, ~9% of ctx).
+
+- Orphaned `role: tool` turns and `tool_calls` turns are dropped when their
+  counterpart is folded away — llama-server rejects a tool result whose
+  originating call is no longer visible.
+- The summary is re-injected as a user turn plus a short assistant ack,
+  which every chat template handles; a second system message is ignored or
+  mishandled by some models.
+- KV cache is dropped afterwards, since the rewritten history no longer
+  matches the cached prefix.
+- A one-shot hint fires at 75% context fill, chosen so there's still room to
+  run the summarization itself.
+
+Follow-ups: automatic compaction at a threshold rather than a prompt, and a
+configurable `-c` context size (currently hardcoded at 16384).
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships

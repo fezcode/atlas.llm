@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -51,6 +52,18 @@ type MCPServerConfig struct {
 
 	// Disabled keeps a server in the config without connecting to it.
 	Disabled bool `json:"disabled,omitempty"`
+
+	// StandaloneSSE opts a remote server back into the long-lived
+	// server-initiated SSE stream, which is off by default. nil means off.
+	StandaloneSSE *bool `json:"standalone_sse,omitempty"`
+}
+
+// standaloneSSEEnabled reports whether to open the optional server-initiated
+// SSE stream. Off unless explicitly requested: atlas.llm doesn't act on
+// server-initiated messages, and a server that won't hold the stream open
+// takes the whole session down with it.
+func (c MCPServerConfig) standaloneSSEEnabled() bool {
+	return c.StandaloneSSE != nil && *c.StandaloneSSE
 }
 
 // isRemote reports whether this server is reached over HTTP rather than by
@@ -201,7 +214,18 @@ func buildTransport(ctx context.Context, name string, cfg MCPServerConfig) (mcp.
 		return &mcp.SSEClientTransport{Endpoint: cfg.URL, HTTPClient: httpClient}, nil
 	}
 
-	t := &mcp.StreamableClientTransport{Endpoint: cfg.URL, HTTPClient: httpClient}
+	t := &mcp.StreamableClientTransport{
+		Endpoint:   cfg.URL,
+		HTTPClient: httpClient,
+		// By default the SDK opens a long-lived GET stream for
+		// server-initiated messages. atlas.llm never consumes those — tools
+		// are snapshotted at connect time — so the stream is pure liability:
+		// when a server doesn't hold it open (DeepWiki, among others), the
+		// SDK's retries exhaust and it closes the whole session, failing any
+		// in-flight tools/call with "exceeded 5 retries without progress".
+		// Opt back in per server with "standalone_sse": true.
+		DisableStandaloneSSE: !cfg.standaloneSSEEnabled(),
+	}
 	if cfg.OAuth {
 		h, err := newOAuthHandler(ctx, name, cfg, httpClient)
 		if err != nil {
@@ -282,10 +306,86 @@ func bridgeMCPTool(server string, cfg MCPServerConfig, session *mcp.ClientSessio
 		// deliberately do not consult the server's own readOnlyHint here —
 		// annotations come from the third party we're gating.
 		Destructive: !cfg.Trust,
+		// Resolve the session at call time rather than capturing it, so a
+		// reconnect swaps the live session underneath already-registered
+		// tools instead of leaving them pointed at a dead one.
 		Run: func(args map[string]any) (string, error) {
-			return callMCPTool(session, remote, args)
+			return callMCPToolOn(server, remote, args)
 		},
 	}
+}
+
+// currentSession returns the live session for a server, if connected.
+func currentSession(server string) (*mcp.ClientSession, bool) {
+	mcpMu.RLock()
+	defer mcpMu.RUnlock()
+	conn, ok := mcpConns[server]
+	if !ok {
+		return nil, false
+	}
+	return conn.session, true
+}
+
+// callMCPToolOn invokes a tool against whichever session is currently
+// registered for the server.
+//
+// If the session has died — a dropped stream, an idle timeout, a server
+// restart — the call fails once and the connection is re-established in the
+// background so the next call works. The failed call is deliberately not
+// retried automatically: "connection closed" doesn't tell us whether the
+// server already processed the request, and silently re-running a tool that
+// posts a message or edits a page could duplicate the side effect.
+func callMCPToolOn(server, tool string, args map[string]any) (string, error) {
+	session, ok := currentSession(server)
+	if !ok {
+		return "", fmt.Errorf("MCP server %q is not connected — run `/mcp connect %s`", server, server)
+	}
+	out, err := callMCPTool(session, tool, args)
+	if err != nil && isMCPConnectionError(err) {
+		go reconnectMCPServer(server)
+		return "", fmt.Errorf("%w — the connection to %q dropped; it is reconnecting, "+
+			"so try again (not retried automatically in case the server already acted on it)", err, server)
+	}
+	return out, err
+}
+
+// isMCPConnectionError distinguishes a dead transport from an error the tool
+// itself reported.
+func isMCPConnectionError(err error) bool {
+	if errors.Is(err, mcp.ErrConnectionClosed) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, s := range []string{
+		"connection closed", "client is closing", "session not found",
+		"broken pipe", "eof", "use of closed network connection",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// reconnectMCPServer re-establishes a dropped session using its config from
+// mcp.json. Best effort — failures are logged, not surfaced mid-turn.
+func reconnectMCPServer(server string) {
+	cfg, err := loadMCPConfig()
+	if err != nil {
+		log.Printf("mcp: reconnect %q: %v", server, err)
+		return
+	}
+	sc, ok := cfg.Servers[server]
+	if !ok || sc.Disabled {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), mcpConnectTimeout)
+	defer cancel()
+	if _, err := connectMCPServer(ctx, server, sc); err != nil {
+		log.Printf("mcp: reconnect %q failed: %v", server, err)
+		return
+	}
+	log.Printf("mcp: reconnected %q after a dropped connection", server)
 }
 
 func callMCPTool(session *mcp.ClientSession, name string, args map[string]any) (string, error) {

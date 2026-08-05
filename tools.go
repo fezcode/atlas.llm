@@ -32,8 +32,14 @@ type Tool struct {
 }
 
 // toolResultSizeLimit caps the bytes we feed back to the model per tool
-// call. Keeps runaway directory listings / large files from blowing the ctx.
-const toolResultSizeLimit = 32 * 1024
+// call. Keeps runaway directory listings, large files, and chatty MCP
+// servers from blowing the context window.
+//
+// Sized against the context, not picked arbitrarily: at roughly 4 bytes per
+// token this is ~1.5K tokens, about 9% of the default 16K ctx. The previous
+// 32KB was ~8K tokens — half the entire window from a single call, so two
+// tool calls exhausted the context before any real work happened.
+const toolResultSizeLimit = 6 * 1024
 
 // maxAgentSteps bounds how many tool-call rounds a single user prompt can
 // trigger. Stops runaway loops if the model keeps asking for one more read.

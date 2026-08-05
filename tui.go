@@ -161,6 +161,10 @@ type chatModel struct {
 	stepCount    int
 	confirmCall  *ToolCall
 	confirmIdx   int // 0 = approve, 1 = deny
+
+	// compactSuggested debounces the "context is filling up" hint so it
+	// fires once per crossing rather than after every turn.
+	compactSuggested bool
 }
 
 func newChatModel() chatModel {
@@ -257,6 +261,7 @@ func welcomeText() string {
 			{"/help [cmd [sub]]", "this overview, or full detail for one command"},
 			{"/clear", "clear the on-screen scrollback (keeps context)"},
 			{"/reset", "drop conversation context + server KV cache"},
+			{"/compact", "summarize older turns to free up context"},
 			{"/set [k [v]]", "settings: max_tokens, gpu_layers, engine_variant"},
 			{"/tools [on|off|list]", "agentic tool-use (read/write/grep/run_cmd; off by default)"},
 			{"/mcp [connect|tools]", "connect MCP servers (Slack, Confluence, …); /mcp help for setup"},
@@ -792,11 +797,15 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busyReason = ""
 		m.history = append(m.history, ChatMessage{Role: "assistant", Content: msg.content})
 		m.pushAssistant(msg.content)
+		m.maybeSuggestCompact()
 
 	case agentStepMsg:
 		if c := m.handleAgentStep(msg); c != nil {
 			cmds = append(cmds, c)
 		}
+
+	case compactDoneMsg:
+		m.applyCompaction(msg)
 
 	case toolRanMsg:
 		if c := m.handleToolRan(msg); c != nil {
@@ -925,6 +934,9 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 	case "/mcp":
 		return m.handleMCP(args)
 
+	case "/compact":
+		return m.handleCompact()
+
 	case "/list":
 		var b strings.Builder
 		b.WriteString("Available models:\n")
@@ -1029,7 +1041,8 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 // slashCommands is the canonical list of completable command names.
 var slashCommands = []string{
 	"/clear", "/download", "/exit", "/grep", "/help", "/list",
-	"/mcp", "/model", "/quit", "/reset", "/set", "/summarize", "/tools",
+	"/compact", "/mcp", "/model", "/quit", "/reset", "/set", "/summarize",
+	"/tools",
 }
 
 // tabComplete handles Tab in the input box. Returns true if it modified
@@ -1384,6 +1397,7 @@ func (m *chatModel) handleAgentStep(msg agentStepMsg) tea.Cmd {
 	if len(msg.toolCalls) == 0 {
 		m.busy = false
 		m.busyReason = ""
+		m.maybeSuggestCompact()
 		return nil
 	}
 	if m.stepCount >= maxAgentSteps {

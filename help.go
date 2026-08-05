@@ -305,6 +305,32 @@ var helpTopics = []helpTopic{
 		SeeAlso: []string{"tools", "model"},
 	},
 	{
+		Name:    "compact",
+		Summary: "Summarize older turns to free up the context window.",
+		Usage:   []string{"/compact"},
+		Detail: "Folds the earlier part of the conversation into a dense factual " +
+			"summary and continues from there, keeping the most recent turns " +
+			"verbatim. Use it when replies start failing because the context is " +
+			"full, instead of /reset — which throws the conversation away " +
+			"entirely.\n\n" +
+			"The summary is produced by the local model and re-injected as " +
+			"working context, so it keeps decisions, file paths, values, and " +
+			"open threads rather than reading as prose.\n\n" +
+			"Tool results are the usual reason context fills up: a single MCP " +
+			"or file-read result can be thousands of tokens, and they accumulate " +
+			"across a turn. /compact clears that out while keeping what it " +
+			"established.",
+		Notes: []string{
+			"The most recent turns are always kept exactly as they were — " +
+				"compaction never touches what you're actively working on.",
+			"The model server's KV cache is dropped afterwards, since the " +
+				"rewritten history no longer matches the cached prefix.",
+			"Summarizing costs one inference call, so it takes a moment on a " +
+				"large model.",
+		},
+		SeeAlso: []string{"reset", "clear", "set"},
+	},
+	{
 		Name:    "clear",
 		Summary: "Clear the screen, keeping the conversation.",
 		Usage:   []string{"/clear"},
@@ -319,10 +345,11 @@ var helpTopics = []helpTopic{
 		Detail: "Clears the conversation, the agent's tool-call history, the " +
 			"on-screen scrollback, the token-usage counter, and the model " +
 			"server's KV cache.\n\n" +
-			"Use it when the context is full, or when earlier turns are dragging " +
-			"replies off course. Settings, models, and MCP connections are " +
-			"unaffected.",
-		SeeAlso: []string{"clear"},
+			"Use it when earlier turns are dragging replies off course. If you " +
+			"only need room in the context window, /compact keeps the " +
+			"conversation by summarizing it instead of discarding it.\n\n" +
+			"Settings, models, and MCP connections are unaffected.",
+		SeeAlso: []string{"clear", "compact"},
 	},
 	{
 		Name:    "quit",
