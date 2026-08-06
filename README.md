@@ -21,6 +21,10 @@ atlas.llm
 ```
 
 Launches a terminal UI (bubbletea) with the currently selected local model.
+Replies stream as they are generated, so you see the first words in about a
+second rather than waiting for the whole answer. Reasoning models show a
+`thinking…` indicator while they work, and `Esc` stops a reply mid-flight
+while keeping whatever has arrived.
 Assistant replies are rendered with [glamour](https://github.com/charmbracelet/glamour)
 so markdown — code fences, lists, tables — is styled inline. Dependencies
 (engine + model) are **not** downloaded automatically — run `/download`

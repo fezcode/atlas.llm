@@ -46,7 +46,34 @@ IQ4_XS at 5.17 GB, both under the 9B Q4_K_M we list.
 
 Ordered by effect on day-to-day use, not difficulty. Do top-down.
 
-### 1. Streaming replies  — HIGH IMPACT
+### 1. Streaming replies  — SHIPPED (v0.23.0)
+`stream: true` with SSE parsing in `ChatCompleteStream`. Deltas reach the
+TUI through `program.Send` (a tea.Cmd can only return one message), and the
+reply occupies a single line in the transcript that is rewritten in place.
+
+Measured on qwen3.5-4b, "In one sentence, what is a KV cache?": the screen
+used to sit frozen for 214s. First sign of life is now 1.6s.
+
+That measurement also exposed the real problem behind the wait: the model
+spent 65 of 66 seconds on internal reasoning for a one-sentence question and
+produced 4935 bytes of thinking against 172 bytes of answer. Reasoning
+deltas are counted and surfaced as "thinking… (N of reasoning so far)"
+rather than being discarded, so a long think is visible instead of looking
+like a hang — and esc becomes a real option.
+
+Details worth keeping:
+- Rendered as plain text while streaming, markdown only at the end. Running
+  glamour per token is slow and unstable, since a half-written code fence
+  renders as garbage.
+- Cancelling keeps the partial text and drops the cursor; measured 3.0s from
+  cancel to return.
+- Deltas arriving after a stop are ignored, so an abandoned turn cannot
+  write into the next one.
+
+Not done: agent turns still block, because streamed tool_calls arrive
+fragmented and need reassembly. That is the natural follow-up.
+
+### 1b. Original notes
 Biggest UX lift. Right now `chat()` POSTs to `/v1/chat/completions` and
 blocks until the whole generation finishes, so a 20-token reply feels
 the same as a 200-token reply: dead silence, then a wall of text.

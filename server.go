@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -458,4 +459,130 @@ func newLogWriter(tag string) *logWriter { return &logWriter{tag: tag} }
 func (w *logWriter) Write(p []byte) (int, error) {
 	log.Printf("[%s] %s", w.tag, bytes.TrimRight(p, "\r\n "))
 	return len(p), nil
+}
+
+// StreamDelta is one increment from a streaming completion. Reasoning
+// models emit their thinking on a separate channel from the answer, so the
+// two are kept apart: only Content belongs in the reply.
+type StreamDelta struct {
+	Content   string
+	Reasoning string
+}
+
+// streamChunk is the SSE frame shape llama-server emits when stream=true.
+type streamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage chatUsage `json:"usage"`
+	Error struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// ChatCompleteStream runs a completion with stream=true, invoking onDelta as
+// tokens arrive, and returns the assembled answer.
+//
+// onDelta is called from this goroutine, so callers must not block in it;
+// the TUI forwards each delta into the bubbletea event loop instead.
+func (s *llamaServer) ChatCompleteStream(ctx context.Context, msgs []ChatMsg, maxTokens int, onDelta func(StreamDelta)) (string, error) {
+	reqBody, _ := json.Marshal(chatRequest{
+		Messages:    msgs,
+		MaxTokens:   maxTokens,
+		Temperature: 0.2,
+		Stream:      true,
+		CachePrompt: true,
+	})
+	url := fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", s.port)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	log.Printf("→ POST /v1/chat/completions (stream) port=%d max_tokens=%d msgs=%d", s.port, maxTokens, len(msgs))
+	start := time.Now()
+	resp, err := s.client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", fmt.Errorf("POST /v1/chat/completions: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("llama-server HTTP %d: %s", resp.StatusCode, truncateForLog(string(raw), 300))
+	}
+
+	var answer strings.Builder
+	var reasoningLen int
+	var usage chatUsage
+	sc := bufio.NewScanner(resp.Body)
+	// Individual SSE frames can exceed the default 64KB scanner limit.
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "[DONE]" {
+			break
+		}
+		var chunk streamChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			continue // a frame we don't understand shouldn't kill the stream
+		}
+		if chunk.Error.Message != "" {
+			return answer.String(), fmt.Errorf("llama-server: %s", chunk.Error.Message)
+		}
+		if chunk.Usage.TotalTokens > 0 {
+			usage = chunk.Usage
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		d := chunk.Choices[0].Delta
+		if d.Content == "" && d.ReasoningContent == "" {
+			continue
+		}
+		answer.WriteString(d.Content)
+		reasoningLen += len(d.ReasoningContent)
+		if onDelta != nil {
+			onDelta(StreamDelta{Content: d.Content, Reasoning: d.ReasoningContent})
+		}
+	}
+	if err := sc.Err(); err != nil {
+		if ctx.Err() != nil {
+			return answer.String(), ctx.Err()
+		}
+		return answer.String(), fmt.Errorf("read stream: %w", err)
+	}
+
+	log.Printf("← stream complete in %s (%d bytes answer, %d bytes reasoning)",
+		time.Since(start), answer.Len(), reasoningLen)
+	if usage.TotalTokens > 0 {
+		setLastUsage(UsageStats{
+			PromptTokens:     usage.PromptTokens,
+			CompletionTokens: usage.CompletionTokens,
+			TotalTokens:      usage.TotalTokens,
+			ContextSize:      s.ctxN,
+		})
+	}
+	if answer.Len() == 0 && reasoningLen > 0 {
+		return "", fmt.Errorf(
+			"the model used its entire %d-token budget on internal reasoning and never produced an answer "+
+				"— raise it with `/set max_tokens N`", maxTokens)
+	}
+	return answer.String(), nil
 }

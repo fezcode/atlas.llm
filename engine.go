@@ -564,3 +564,38 @@ func formatBytes(n int64) string {
 	}
 	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
+
+// runChatStream is the streaming counterpart to runChat: it forwards each
+// delta to onDelta as it arrives and returns the assembled reply.
+func runChatStream(ctx context.Context, msgs []ChatMsg, maxTokens int, onDelta func(StreamDelta)) (string, error) {
+	if _, err := requireEngine(); err != nil {
+		return "", err
+	}
+	if m, err := currentModel(); err == nil {
+		if _, err := requireModel(m); err != nil {
+			return "", err
+		}
+	}
+	s, err := ensureServer()
+	if err != nil {
+		return "", fmt.Errorf("server: %w", err)
+	}
+	out, err := s.ChatCompleteStream(ctx, msgs, maxTokens, onDelta)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// chatStream mirrors chat() but streams the reply.
+func chatStream(ctx context.Context, history []ChatMessage, userInput string, onDelta func(StreamDelta)) (string, error) {
+	msgs := []ChatMsg{
+		{Role: "system", Content: "You are a concise, helpful coding assistant. Keep replies under three short paragraphs unless more detail is explicitly requested."},
+	}
+	for _, m := range history {
+		msgs = append(msgs, ChatMsg{Role: m.Role, Content: m.Content})
+	}
+	msgs = append(msgs, ChatMsg{Role: "user", Content: userInput})
+	cfg, _ := loadConfig()
+	return runChatStream(ctx, msgs, cfg.MaxTokens, onDelta)
+}

@@ -85,6 +85,13 @@ type (
 		result string
 		err    error
 	}
+	// assistantDeltaMsg carries one streamed increment. reasoningTokens is
+	// non-zero while the model is still thinking and has produced no answer
+	// yet, which is what the "thinking" indicator reports.
+	assistantDeltaMsg struct {
+		content         string
+		reasoningTokens int
+	}
 	sysMsg           struct{ content string }
 	summarizeDoneMsg struct {
 		path string
@@ -177,6 +184,16 @@ type chatModel struct {
 	// Config: it lives and dies with the session, so a forgotten toggle
 	// can't silently arm the next run.
 	yesman bool
+
+	// streaming holds the reply assembled so far. streamIdx is where it
+	// lives in m.rendered so each delta can rewrite that line in place
+	// rather than appending. streamThinking counts reasoning bytes seen
+	// before any answer text, so a long think shows progress instead of a
+	// frozen screen.
+	streaming      bool
+	streamBuf      string
+	streamIdx      int
+	streamThinking int
 
 	// cancelInflight aborts the running generation when Esc is pressed.
 	// canceled marks that the abort was deliberate, so the resulting
@@ -917,9 +934,12 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.busyReason = "thinking"
 				m.busyStart = time.Now()
 				hist := append([]ChatMessage(nil), m.history[:len(m.history)-1]...)
-				cmds = append(cmds, runChatCmd(m.newInflight(), hist, input), m.spinner.Tick)
+				cmds = append(cmds, runChatStreamCmd(m.newInflight(), hist, input), m.spinner.Tick)
 			}
 		}
+
+	case assistantDeltaMsg:
+		m.applyDelta(msg)
 
 	case assistantReplyMsg:
 		if m.canceled {
@@ -930,7 +950,11 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		m.busyReason = ""
 		m.history = append(m.history, ChatMessage{Role: "assistant", Content: msg.content})
-		m.pushAssistant(msg.content)
+		// A streamed reply is already on screen; only re-render it as
+		// markdown. Non-streamed replies still need pushing.
+		if !m.finishStream(msg.content) {
+			m.pushAssistant(msg.content)
+		}
 		m.maybeSuggestCompact()
 
 	case agentStepMsg:
@@ -2060,6 +2084,11 @@ func (m *chatModel) stopInflight() bool {
 	}
 	m.canceled = true
 	m.cancelInflight()
+	if m.streaming {
+		// Keep whatever arrived, minus the cursor, so a stopped reply is
+		// still readable.
+		m.finishStream(m.streamBuf)
+	}
 	m.cancelInflight = nil
 	m.busy = false
 	m.busyReason = ""
@@ -2176,4 +2205,83 @@ func (m *chatModel) noteRepeatedCall(call ToolCall) bool {
 	sig := call.Function.Name + "(" + call.Function.Arguments + ")"
 	m.repeatedCalls[sig]++
 	return m.repeatedCalls[sig] > maxIdenticalCalls
+}
+
+// runChatStreamCmd streams a reply, forwarding each delta into the
+// bubbletea loop. A tea.Cmd can only return one message, so increments go
+// through program.Send and the command's own return value is the final
+// reply.
+func runChatStreamCmd(ctx context.Context, history []ChatMessage, input string) tea.Cmd {
+	snapshot := append([]ChatMessage(nil), history...)
+	return func() tea.Msg {
+		reply, err := chatStream(ctx, snapshot, input, func(d StreamDelta) {
+			if program == nil {
+				return
+			}
+			program.Send(assistantDeltaMsg{
+				content:         d.Content,
+				reasoningTokens: len(d.Reasoning),
+			})
+		})
+		if err != nil {
+			return inferenceErrMsg{err: err}
+		}
+		return assistantReplyMsg{content: reply}
+	}
+}
+
+// applyDelta folds one streamed increment into the transcript.
+//
+// The reply is rendered as plain text while it streams and re-rendered as
+// markdown once complete: running glamour on every token would be both slow
+// and visually unstable, since a half-written code fence renders as garbage.
+func (m *chatModel) applyDelta(msg assistantDeltaMsg) {
+	if m.canceled || !m.busy {
+		return // belongs to a turn that was stopped
+	}
+	if !m.streaming {
+		m.streaming = true
+		m.streamBuf = ""
+		m.streamThinking = 0
+		m.pushBlank()
+		m.rendered = append(m.rendered, assistantPillStyle.Render("ATLAS"))
+		m.rendered = append(m.rendered, "")
+		m.streamIdx = len(m.rendered) - 1
+	}
+	if msg.content == "" && msg.reasoningTokens > 0 {
+		// Still thinking. Show that something is happening rather than
+		// leaving an empty pill for what can be minutes.
+		m.streamThinking += msg.reasoningTokens
+		if m.streamBuf == "" {
+			m.rendered[m.streamIdx] = sysStyle.Render(
+				fmt.Sprintf("thinking… (%s of reasoning so far)", formatBytes(int64(m.streamThinking))))
+			m.refresh()
+		}
+		return
+	}
+	m.streamBuf += msg.content
+	m.rendered[m.streamIdx] = m.streamBuf + streamCursor
+	m.refresh()
+}
+
+// streamCursor marks the tail of an in-flight reply.
+const streamCursor = "▋"
+
+// finishStream replaces the streamed plain text with the markdown render.
+// Reports whether a stream was in progress.
+func (m *chatModel) finishStream(final string) bool {
+	if !m.streaming {
+		return false
+	}
+	m.streaming = false
+	if strings.TrimSpace(final) == "" {
+		final = m.streamBuf
+	}
+	if m.streamIdx >= 0 && m.streamIdx < len(m.rendered) {
+		m.rendered[m.streamIdx] = m.renderMarkdown(final)
+	}
+	m.streamBuf = ""
+	m.streamThinking = 0
+	m.refresh()
+	return true
 }
