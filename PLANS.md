@@ -397,6 +397,30 @@ model shape overestimates ~4x on these models (see memory.go), so the figure
 is an honest floor rather than a wrong total, and the listing says the
 context window adds more on top.
 
+### 21. Tool path jail  — SHIPPED (v0.20.0)
+Tools resolved paths against the process working directory with no root
+concept, so the model could reach anywhere on the filesystem, and a wrong
+relative path produced a bare "no such file or directory".
+
+jail.go now resolves every tool path against the directory atlas.llm was
+started in. At or below the root is allowed; anything above is refused with
+an error that names the root, so the model can correct rather than guess.
+Symlinks are resolved on the deepest existing ancestor, which catches a link
+pointing outside even when the final component doesn't exist yet (the
+write_file case).
+
+run_cmd gained a cwd argument and now sets cmd.Dir. Each call was already a
+fresh shell, so a leading `cd` never persisted — the model had no way to work
+in a subdirectory across calls.
+
+Related: identical repeated tool calls are detected after 4 attempts and stop
+the turn naming the call, and the 20-round message now explains what
+happened and where paths are rooted. Both address turns that hit the cap by
+retrying a failing call rather than doing useful work.
+
+Follow-up: the jail constrains tool *arguments*, not what a shell command
+does once running. Real confinement of run_cmd needs OS sandboxing.
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships

@@ -54,7 +54,7 @@ var toolRegistry = map[string]Tool{
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Path to the file, relative to the working directory or absolute.",
+					"description": "Path relative to the project root (the directory atlas.llm was started in). Paths outside it are refused.",
 				},
 			},
 			"required": []string{"path"},
@@ -69,7 +69,7 @@ var toolRegistry = map[string]Tool{
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Directory path. Defaults to '.' (working directory) if omitted.",
+					"description": "Directory path relative to the project root. Defaults to '.' (the root itself).",
 				},
 			},
 		},
@@ -87,7 +87,7 @@ var toolRegistry = map[string]Tool{
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Directory to search. Defaults to '.'.",
+					"description": "Directory to search, relative to the project root. Defaults to '.'.",
 				},
 			},
 			"required": []string{"pattern"},
@@ -103,7 +103,7 @@ var toolRegistry = map[string]Tool{
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Destination path, relative or absolute.",
+					"description": "Destination path relative to the project root.",
 				},
 				"content": map[string]any{
 					"type":        "string",
@@ -123,7 +123,7 @@ var toolRegistry = map[string]Tool{
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "File to edit.",
+					"description": "File to edit, relative to the project root.",
 				},
 				"old_string": map[string]any{
 					"type":        "string",
@@ -151,7 +151,7 @@ var toolRegistry = map[string]Tool{
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "File to edit.",
+					"description": "File to edit, relative to the project root.",
 				},
 				"edits": map[string]any{
 					"type":        "array",
@@ -178,7 +178,7 @@ var toolRegistry = map[string]Tool{
 	},
 	"run_cmd": {
 		Name:        "run_cmd",
-		Description: "Execute a shell command in the working directory and return combined stdout+stderr. 30s timeout. Confirmation required.",
+		Description: "Execute a shell command and return combined stdout+stderr. Runs in the project root unless cwd is given. Each call is a fresh shell, so use cwd rather than a leading 'cd'. 30s timeout. Confirmation required.",
 		Destructive: true,
 		Parameters: map[string]any{
 			"type": "object",
@@ -186,6 +186,12 @@ var toolRegistry = map[string]Tool{
 				"command": map[string]any{
 					"type":        "string",
 					"description": "Shell command. Runs via 'cmd /C' on Windows and 'sh -c' elsewhere.",
+				},
+				"cwd": map[string]any{
+					"type": "string",
+					"description": "Directory to run in, relative to the project root. " +
+						"Use this instead of a leading 'cd' — each call is a fresh shell, " +
+						"so a 'cd' does not carry over to later calls.",
 				},
 			},
 			"required": []string{"command"},
@@ -263,7 +269,11 @@ func toolReadFile(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	b, err := os.ReadFile(path)
+	abs, err := resolveInRoot(path)
+	if err != nil {
+		return "", err
+	}
+	b, err := os.ReadFile(abs)
 	if err != nil {
 		return "", err
 	}
@@ -275,7 +285,11 @@ func toolListDir(args map[string]any) (string, error) {
 	if path == "" {
 		path = "."
 	}
-	entries, err := os.ReadDir(path)
+	abs, err := resolveInRoot(path)
+	if err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(abs)
 	if err != nil {
 		return "", err
 	}
@@ -296,9 +310,13 @@ func toolGrep(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	root, _ := argString(args, "path", false)
-	if root == "" {
-		root = "."
+	rootArg, _ := argString(args, "path", false)
+	if rootArg == "" {
+		rootArg = "."
+	}
+	root, err := resolveInRoot(rootArg)
+	if err != nil {
+		return "", err
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
@@ -334,7 +352,7 @@ func toolGrep(args map[string]any) (string, error) {
 				if len(snippet) > 200 {
 					snippet = snippet[:200] + "…"
 				}
-				fmt.Fprintf(&b, "%s:%d: %s\n", path, i+1, snippet)
+				fmt.Fprintf(&b, "%s:%d: %s\n", displayPath(path), i+1, snippet)
 				hits++
 				if hits >= maxHits {
 					return filepath.SkipAll
@@ -376,15 +394,19 @@ func toolWriteFile(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if dir := filepath.Dir(path); dir != "" && dir != "." {
+	abs, err := resolveInRoot(path)
+	if err != nil {
+		return "", err
+	}
+	if dir := filepath.Dir(abs); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return "", err
 		}
 	}
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(abs, []byte(content), 0644); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Wrote %d bytes to %s", len(content), path), nil
+	return fmt.Sprintf("Wrote %d bytes to %s", len(content), displayPath(abs)), nil
 }
 
 func toolEditFile(args map[string]any) (string, error) {
@@ -403,22 +425,26 @@ func toolEditFile(args map[string]any) (string, error) {
 	if oldStr == "" {
 		return "", fmt.Errorf("old_string must not be empty")
 	}
-	data, err := os.ReadFile(path)
+	abs, err := resolveInRoot(path)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(abs)
 	if err != nil {
 		return "", err
 	}
 	count := strings.Count(string(data), oldStr)
 	if count == 0 {
-		return "", fmt.Errorf("old_string not found in %s", path)
+		return "", fmt.Errorf("old_string not found in %s", displayPath(abs))
 	}
 	if count > 1 {
-		return "", fmt.Errorf("old_string matches %d times in %s — needs to be unique; include more surrounding context", count, path)
+		return "", fmt.Errorf("old_string matches %d times in %s — needs to be unique; include more surrounding context", count, displayPath(abs))
 	}
 	updated := strings.Replace(string(data), oldStr, newStr, 1)
-	if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
+	if err := os.WriteFile(abs, []byte(updated), 0644); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Replaced 1 occurrence in %s (%d bytes → %d bytes)", path, len(data), len(updated)), nil
+	return fmt.Sprintf("Replaced 1 occurrence in %s (%d bytes → %d bytes)", displayPath(abs), len(data), len(updated)), nil
 }
 
 func toolRunCmd(args map[string]any) (string, error) {
@@ -426,12 +452,24 @@ func toolRunCmd(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	cwdArg, _ := argString(args, "cwd", false)
+	dir, err := resolveInRoot(cwdArg)
+	if err != nil {
+		return "", err
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("cwd %q is not a directory under the project root", cwdArg)
+	}
+
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command("cmd", "/C", command)
 	} else {
 		cmd = exec.Command("sh", "-c", command)
 	}
+	// Each call is a fresh shell, so `cd` never persists. Anchoring here is
+	// what makes a working directory meaningful across calls.
+	cmd.Dir = dir
 	done := make(chan error, 1)
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -527,7 +565,11 @@ func toolMultiEdit(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(path)
+	abs, err := resolveInRoot(path)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(abs)
 	if err != nil {
 		return "", err
 	}
@@ -538,22 +580,22 @@ func toolMultiEdit(args map[string]any) (string, error) {
 		// may legitimately target text an earlier edit introduced.
 		switch strings.Count(updated, e.oldStr) {
 		case 0:
-			return "", fmt.Errorf("edits[%d]: old_string not found in %s. No edits were applied", i, path)
+			return "", fmt.Errorf("edits[%d]: old_string not found in %s. No edits were applied", i, displayPath(abs))
 		case 1:
 		default:
 			return "", fmt.Errorf("edits[%d]: old_string matches %d times in %s — needs to be unique; "+
 				"include more surrounding context. No edits were applied",
-				i, strings.Count(updated, e.oldStr), path)
+				i, strings.Count(updated, e.oldStr), displayPath(abs))
 		}
 		updated = strings.Replace(updated, e.oldStr, e.newStr, 1)
 	}
 
 	if updated == string(data) {
-		return fmt.Sprintf("No change: the %d edits left %s byte-identical", len(edits), path), nil
+		return fmt.Sprintf("No change: the %d edits left %s byte-identical", len(edits), displayPath(abs)), nil
 	}
-	if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
+	if err := os.WriteFile(abs, []byte(updated), 0644); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Applied %d edits to %s (%d bytes → %d bytes)",
-		len(edits), path, len(data), len(updated)), nil
+		len(edits), displayPath(abs), len(data), len(updated)), nil
 }

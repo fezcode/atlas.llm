@@ -132,12 +132,25 @@ whole file.
 | `multi_edit` | ✓           | Apply several edits to one file atomically — all or nothing.    |
 | `run_cmd`    | ✓           | Execute a shell command (30s timeout).                          |
 
+**Tools are confined to the working directory.** Every path is resolved
+against the directory atlas.llm was started in, and anything at or below it
+is fair game — subdirectories included. Paths that escape (`../`, absolute
+paths elsewhere, symlinks pointing out) are refused with an error naming the
+root. `run_cmd` runs in that root and takes a `cwd` argument for
+subdirectories, because each call is a fresh shell and a `cd` never carried
+over between calls.
+
 Caveats:
 - **Model capability matters.** Qwen3.5-9B and Ministral-3-14B handle
   tool-calling reliably. Gemma 3 (1B/4B) often ignores or hallucinates
   tool shapes — the feature will feel broken on those models.
 - **No persistent tool loop across sessions.** `/reset` clears the agent
   message list alongside the regular conversation.
+- **Rounds are capped.** A single message may trigger at most 20 tool-call
+  rounds. Hitting that usually means the model got stuck retrying something
+  that failed rather than doing 20 useful things. Identical repeated calls
+  are now detected after 4 attempts and the turn is stopped with the offending
+  call named, instead of quietly burning the budget.
 - **The confirm modal is synchronous.** The agent loop pauses while it's
   open; press Enter to approve, Esc (or select Deny) to reject. Denials
   are fed back to the model as a tool error so it can adapt rather than

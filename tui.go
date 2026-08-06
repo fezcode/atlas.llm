@@ -164,6 +164,11 @@ type chatModel struct {
 	confirmCall  *ToolCall
 	confirmIdx   int // 0 = approve, 1 = deny
 
+	// repeatedCalls counts identical tool calls within the current turn, so
+	// a model stuck retrying the same failing call is caught early instead
+	// of silently burning the whole round budget.
+	repeatedCalls map[string]int
+
 	// compactSuggested debounces the "context is filling up" hint so it
 	// fires once per crossing rather than after every turn.
 	compactSuggested bool
@@ -839,6 +844,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.agentMsgs = append(m.agentMsgs, ChatMsg{Role: "user", Content: input})
 				m.stepCount = 0
+				m.repeatedCalls = map[string]int{}
 				m.busy = true
 				m.busyReason = "thinking"
 				m.busyStart = time.Now()
@@ -1528,7 +1534,14 @@ func (m *chatModel) handleAgentStep(msg agentStepMsg) tea.Cmd {
 		return nil
 	}
 	if m.stepCount >= maxAgentSteps {
-		m.pushError(fmt.Sprintf("agent stopped after %d tool-call rounds", m.stepCount))
+		m.pushError(fmt.Sprintf(
+			"Agent stopped after %d tool-call rounds — the limit for one message.\n\n"+
+				"This usually means the model kept calling tools without reaching an "+
+				"answer, often retrying something that failed. The trace above shows "+
+				"what it tried.\n\n"+
+				"Worth checking: is the model big enough for tool use (qwen3.5-4b and "+
+				"up), and were the paths it used correct? Paths are relative to %s.",
+			m.stepCount, displayRoot()))
 		m.busy = false
 		m.busyReason = ""
 		m.pendingCalls = nil
@@ -1548,6 +1561,22 @@ func (m *chatModel) dispatchNextTool() tea.Cmd {
 	}
 	call := m.pendingCalls[0]
 	m.pendingCalls = m.pendingCalls[1:]
+	// A model that keeps issuing the identical call is stuck; feeding the
+	// same result back again would just spend the remaining rounds.
+	if m.noteRepeatedCall(call) {
+		m.renderToolTrace(call, "(repeated — stopping)", true)
+		m.appendToolResult(call, fmt.Sprintf(
+			"This exact call has already been made %d times with the same result. "+
+				"Do not repeat it. Either try a different approach or answer with "+
+				"what you already know.", maxIdenticalCalls))
+		m.pendingCalls = nil
+		m.busy = false
+		m.busyReason = ""
+		m.pushError(fmt.Sprintf(
+			"Agent stopped: it called %s with identical arguments %d times in a row "+
+				"without making progress.", call.Function.Name, maxIdenticalCalls+1))
+		return nil
+	}
 	t, ok := lookupTool(call.Function.Name)
 	if !ok {
 		m.renderToolTrace(call, "(unknown tool)", true)
@@ -2048,4 +2077,34 @@ func (m *chatModel) configState() configState {
 		mcpConnected: connected,
 		mcpTools:     tools,
 	}
+}
+
+// displayRoot renders the jail root for user-facing messages, shortened to
+// ~ when it sits under the home directory.
+func displayRoot() string {
+	root := sessionRoot()
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, root); err == nil && !strings.HasPrefix(rel, "..") {
+			if rel == "." {
+				return "~"
+			}
+			return "~" + string(filepath.Separator) + rel
+		}
+	}
+	return root
+}
+
+// maxIdenticalCalls is how many times the same tool call may repeat inside
+// one turn before the loop is treated as stuck.
+const maxIdenticalCalls = 3
+
+// noteRepeatedCall records a call signature and reports whether the model
+// has now repeated it too many times.
+func (m *chatModel) noteRepeatedCall(call ToolCall) bool {
+	if m.repeatedCalls == nil {
+		m.repeatedCalls = map[string]int{}
+	}
+	sig := call.Function.Name + "(" + call.Function.Arguments + ")"
+	m.repeatedCalls[sig]++
+	return m.repeatedCalls[sig] > maxIdenticalCalls
 }

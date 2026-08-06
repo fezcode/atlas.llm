@@ -61,7 +61,7 @@ func TestTruncateForModel(t *testing.T) {
 }
 
 func TestToolReadFile(t *testing.T) {
-	dir := t.TempDir()
+	dir := jailedTempDir(t)
 	path := filepath.Join(dir, "hello.txt")
 	want := "hello world\n"
 	if err := os.WriteFile(path, []byte(want), 0644); err != nil {
@@ -81,7 +81,7 @@ func TestToolReadFile(t *testing.T) {
 }
 
 func TestToolListDir(t *testing.T) {
-	dir := t.TempDir()
+	dir := jailedTempDir(t)
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestToolListDir(t *testing.T) {
 }
 
 func TestToolGrep(t *testing.T) {
-	dir := t.TempDir()
+	dir := jailedTempDir(t)
 	mustWrite(t, filepath.Join(dir, "a.go"), "package main\nfunc foo() {}\nfunc bar() {}\n")
 	mustWrite(t, filepath.Join(dir, "b.go"), "package main\nfunc baz() {}\n")
 
@@ -130,7 +130,7 @@ func TestToolGrep(t *testing.T) {
 }
 
 func TestToolGrepSkipsBinary(t *testing.T) {
-	dir := t.TempDir()
+	dir := jailedTempDir(t)
 	mustWrite(t, filepath.Join(dir, "bin.dat"), "needle\x00\x00\x00\x00needle")
 	mustWrite(t, filepath.Join(dir, "ok.txt"), "needle here")
 
@@ -147,7 +147,7 @@ func TestToolGrepSkipsBinary(t *testing.T) {
 }
 
 func TestToolWriteFile(t *testing.T) {
-	dir := t.TempDir()
+	dir := jailedTempDir(t)
 	path := filepath.Join(dir, "nested", "out.txt")
 	_, err := toolWriteFile(map[string]any{"path": path, "content": "hello"})
 	if err != nil {
@@ -169,7 +169,7 @@ func TestToolWriteFile(t *testing.T) {
 }
 
 func TestToolEditFile(t *testing.T) {
-	dir := t.TempDir()
+	dir := jailedTempDir(t)
 	path := filepath.Join(dir, "code.go")
 	mustWrite(t, path, "package main\nfunc oldName() {}\n")
 
@@ -312,4 +312,16 @@ func mustWrite(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+// jailedTempDir returns a temp directory that is also the tool jail root,
+// since tools now refuse paths outside the directory atlas.llm started in.
+func jailedTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	t.Cleanup(setSessionRootForTest(dir))
+	return dir
 }

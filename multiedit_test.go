@@ -7,9 +7,16 @@ import (
 	"testing"
 )
 
+// writeTemp creates a file inside a jailed root, since tools now refuse
+// paths outside the directory atlas.llm was started in.
 func writeTemp(t *testing.T, body string) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "f.go")
+	root := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	t.Cleanup(setSessionRootForTest(root))
+	p := filepath.Join(root, "f.go")
 	if err := os.WriteFile(p, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
