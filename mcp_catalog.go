@@ -99,6 +99,16 @@ var mcpCatalog = []mcpPreset{
 		},
 	},
 	{
+		Key:   "datadog",
+		Label: "Datadog",
+		Description: "Metrics, logs, monitors, traces, and incidents. " +
+			"Opens a browser to authorize — no API keys to create.",
+		Cfg: MCPServerConfig{
+			URL:   "https://mcp.datadoghq.com/api/unstable/mcp-server/mcp",
+			OAuth: true,
+		},
+	},
+	{
 		Key:         "sentry",
 		Label:       "Sentry",
 		Description: "Errors, issues, and releases. Opens a browser to authorize.",

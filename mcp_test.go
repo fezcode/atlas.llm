@@ -743,3 +743,44 @@ func TestSynthesizedProtectedResourceMetadata(t *testing.T) {
 		t.Errorf("authServer = %q, trailing slash not trimmed", tr.authServer)
 	}
 }
+
+// Datadog, unlike Atlassian, publishes correct protected-resource metadata
+// and an authorization server whose issuer matches. It should therefore need
+// no auth_server override — a regression there would show up as discovery
+// failing before the browser step.
+func TestLiveDatadogOAuthDiscovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live OAuth discovery skipped in -short mode")
+	}
+	withTempHome(t)
+	p, ok := findMCPPreset("datadog")
+	if !ok {
+		t.Fatal("datadog preset missing")
+	}
+	if p.Cfg.AuthServer != "" {
+		t.Errorf("datadog should not need an auth_server override, got %q", p.Cfg.AuthServer)
+	}
+
+	authURL := make(chan string, 1)
+	orig := openBrowserHook
+	openBrowserHook = func(u string) error { authURL <- u; return nil }
+	defer func() { openBrowserHook = orig }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	errc := make(chan error, 1)
+	go func() { _, err := connectMCPServer(ctx, "datadog", p.Cfg); errc <- err }()
+
+	select {
+	case u := <-authURL:
+		for _, want := range []string{"datadoghq.com", "client_id=", "code_challenge=", "response_type=code"} {
+			if !strings.Contains(u, want) {
+				t.Errorf("authorization URL missing %q: %s", want, u)
+			}
+		}
+	case err := <-errc:
+		t.Skipf("could not reach Datadog (%v)", err)
+	case <-ctx.Done():
+		t.Skip("timed out reaching Datadog")
+	}
+}

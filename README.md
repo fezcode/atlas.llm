@@ -328,6 +328,7 @@ create, no token to copy:
 
 ```
 /mcp add atlassian   # Confluence + Jira
+/mcp add datadog     # metrics, logs, monitors, traces
 /mcp add linear
 /mcp add sentry
 ```
