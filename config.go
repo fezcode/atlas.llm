@@ -250,6 +250,70 @@ type Config struct {
 	// EngineVariant selects which llama.cpp release archive to download:
 	// "cpu" (default) or "vulkan". Empty means auto.
 	EngineVariant string `json:"engine_variant,omitempty"`
+
+	// CtxSize is the context window llama-server is started with (-c).
+	// 0 means the default. The ceiling is whatever the model was trained
+	// for, which is read from its GGUF metadata.
+	CtxSize int `json:"ctx_size,omitempty"`
+}
+
+// defaultCtxSize is the context window used when nothing is configured.
+// Modest on purpose: KV cache memory scales linearly with it, and most
+// models here are run on laptops.
+const defaultCtxSize = 16384
+
+// maxConfigurableCtx caps what /set will accept even when a model claims a
+// larger trained context. Qwen3.5 advertises 262144, whose KV cache would
+// be tens of gigabytes — allowing it silently would just OOM the machine.
+const maxConfigurableCtx = 131072
+
+// minConfigurableCtx keeps a value from being set so small that the system
+// prompt and tool definitions alone won't fit.
+const minConfigurableCtx = 2048
+
+// resolveCtxSize returns the context size to start llama-server with,
+// clamped to what the current model was trained for when that is known.
+func resolveCtxSize(cfg Config) int {
+	n := cfg.CtxSize
+	if n <= 0 {
+		n = defaultCtxSize
+	}
+	if trained := currentModelTrainedContext(); trained > 0 && n > trained {
+		n = trained
+	}
+	if n > maxConfigurableCtx {
+		n = maxConfigurableCtx
+	}
+	if n < minConfigurableCtx {
+		n = minConfigurableCtx
+	}
+	return n
+}
+
+// maxTokensCeiling is the largest reply length that still leaves room for
+// the prompt and history. Derived from the context window rather than fixed,
+// so raising ctx_size raises this too.
+func maxTokensCeiling(cfg Config) int {
+	n := resolveCtxSize(cfg) * 3 / 4
+	if n < 512 {
+		n = 512
+	}
+	return n
+}
+
+// ctxSizeDisplay renders the setting for `/set`, including the model's
+// trained ceiling so the headroom is visible.
+func ctxSizeDisplay(cfg Config) string {
+	eff := resolveCtxSize(cfg)
+	set := "auto"
+	if cfg.CtxSize > 0 {
+		set = fmt.Sprintf("%d", cfg.CtxSize)
+	}
+	trained := currentModelTrainedContext()
+	if trained == 0 {
+		return fmt.Sprintf("%s (using %d)", set, eff)
+	}
+	return fmt.Sprintf("%s (using %d; this model was trained for %d)", set, eff, trained)
 }
 
 // defaultMaxTokens is the reply-length cap applied when the config hasn't

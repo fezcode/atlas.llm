@@ -279,7 +279,7 @@ func welcomeText() string {
 			{"/clear", "clear the on-screen scrollback (keeps context)"},
 			{"/reset", "drop conversation context + server KV cache"},
 			{"/compact", "summarize older turns to free up context"},
-			{"/set [k [v]]", "settings: max_tokens, gpu_layers, engine_variant"},
+			{"/set [k [v]]", "settings: max_tokens, ctx_size, gpu_layers, engine_variant"},
 			{"/tools [on|off|list]", "agentic tool-use (read/write/grep/run_cmd; off by default)"},
 			{"/mcp [connect|tools]", "connect MCP servers (Slack, Confluence, …); /mcp help for setup"},
 			{"/quit  /exit", "leave chat (or press ctrl+c)"},
@@ -443,15 +443,57 @@ func (m *chatModel) handleSet(args []string) {
 	if len(args) == 0 {
 		m.pushSystem(fmt.Sprintf("Settings:\n"+
 			"  max_tokens     = %d  (reply-length cap; default %d)\n"+
+			"  ctx_size       = %s\n"+
 			"  gpu_layers     = %s  (layers offloaded to the GPU)\n"+
 			"  engine_variant = %s  (llama.cpp build; installed: %s)",
 			cfg.MaxTokens, defaultMaxTokens,
+			ctxSizeDisplay(cfg),
 			gpuLayersDisplay(cfg),
 			engineVariantDisplay(cfg), installedEngineVariant()))
 		return
 	}
 	key := strings.ToLower(args[0])
 	switch key {
+	case "ctx_size":
+		if len(args) < 2 {
+			m.pushSystem(fmt.Sprintf("ctx_size = %s", ctxSizeDisplay(cfg)))
+			return
+		}
+		val := strings.ToLower(args[1])
+		if val == "auto" || val == "default" {
+			cfg.CtxSize = 0
+		} else {
+			n, err := strconv.Atoi(val)
+			if err != nil || n <= 0 {
+				m.pushError(fmt.Sprintf("invalid ctx_size=%q (expected `auto` or a token count)", args[1]))
+				return
+			}
+			if n < minConfigurableCtx {
+				m.pushError(fmt.Sprintf("ctx_size=%d is too small — the system prompt and tool "+
+					"definitions alone need more than that (minimum %d)", n, minConfigurableCtx))
+				return
+			}
+			if n > maxConfigurableCtx {
+				m.pushError(fmt.Sprintf("ctx_size=%d exceeds the %d ceiling atlas.llm allows — "+
+					"the KV cache for that would be tens of gigabytes", n, maxConfigurableCtx))
+				return
+			}
+			if trained := currentModelTrainedContext(); trained > 0 && n > trained {
+				m.pushError(fmt.Sprintf("ctx_size=%d exceeds what %s was trained for (%d). "+
+					"Going beyond it degrades quality rather than extending memory.",
+					n, cfg.CurrentModel, trained))
+				return
+			}
+			cfg.CtxSize = n
+		}
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		m.pushSystem(fmt.Sprintf("ctx_size = %s\nTakes effect on the next message (the model server restarts). "+
+			"A larger window uses proportionally more memory for the KV cache.",
+			ctxSizeDisplay(cfg)))
+
 	case "gpu_layers":
 		if len(args) < 2 {
 			m.pushSystem(fmt.Sprintf("gpu_layers = %s", gpuLayersDisplay(cfg)))
@@ -531,11 +573,14 @@ func (m *chatModel) handleSet(args []string) {
 			m.pushError(fmt.Sprintf("invalid max_tokens=%q (expected positive integer)", args[1]))
 			return
 		}
-		// llama-server's context is 16384; a reply that large would leave zero
-		// room for prompt + history. Cap at a value that still admits a
-		// non-trivial conversation.
-		if n > 12000 {
-			m.pushError(fmt.Sprintf("max_tokens=%d exceeds safe ceiling of 12000 (16K ctx - headroom for prompt/history)", n))
+		// A reply longer than most of the context window would leave no room
+		// for the prompt and history, so the ceiling tracks ctx_size.
+		if ceiling := maxTokensCeiling(cfg); n > ceiling {
+			m.pushError(fmt.Sprintf(
+				"max_tokens=%d exceeds the ceiling of %d for a %d-token context "+
+					"(the rest is needed for the prompt and history). "+
+					"Raise it with `/set ctx_size N` first.",
+				n, ceiling, resolveCtxSize(cfg)))
 			return
 		}
 		cfg.MaxTokens = n
@@ -545,7 +590,7 @@ func (m *chatModel) handleSet(args []string) {
 		}
 		m.pushSystem(fmt.Sprintf("max_tokens = %d", n))
 	default:
-		m.pushError(fmt.Sprintf("unknown setting: %s (supported: max_tokens, gpu_layers, engine_variant)", key))
+		m.pushError(fmt.Sprintf("unknown setting: %s (supported: max_tokens, ctx_size, gpu_layers, engine_variant)", key))
 	}
 }
 
@@ -1129,7 +1174,7 @@ func (m *chatModel) tabComplete() bool {
 	case "/help":
 		pool = helpTopicNames()
 	case "/set":
-		pool = []string{"engine_variant", "gpu_layers", "max_tokens"}
+		pool = []string{"ctx_size", "engine_variant", "gpu_layers", "max_tokens"}
 	case "/tools":
 		pool = []string{"on", "off", "list"}
 	case "/yesman":

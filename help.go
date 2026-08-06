@@ -164,10 +164,34 @@ var helpTopics = []helpTopic{
 			"Settings survive restarts.",
 		Subcommands: []helpSub{
 			{Name: "max_tokens", Usage: "/set max_tokens 4096",
-				Detail: "Cap on reply length in tokens. Default 4096, ceiling 12000 — " +
-					"the context window is 16K, and a reply that large would leave no " +
-					"room for the prompt and history. If replies are being cut off " +
-					"mid-sentence, raise this."},
+				Detail: "Cap on reply length in tokens. Default 4096. The ceiling is " +
+					"three quarters of ctx_size, since the rest of the window is " +
+					"needed for the prompt and history — so raising ctx_size raises " +
+					"this too.\n\n" +
+					"If replies are being cut off mid-sentence, raise this. If a " +
+					"reasoning model returns nothing at all, this is usually why: " +
+					"the whole budget went on internal thinking."},
+			{Name: "ctx_size", Usage: "/set ctx_size auto|N",
+				Detail: "The context window, in tokens — how much conversation, tool " +
+					"output, and file content the model can see at once. Default " +
+					"16384.\n\n" +
+					"This is not fixed by the model, but it is capped by it. Every " +
+					"GGUF records the context length it was trained for, and going " +
+					"beyond that degrades quality rather than extending memory, so " +
+					"/set reads that number and refuses anything larger. `/set` with " +
+					"no arguments shows both the value in use and the model's " +
+					"ceiling.\n\n" +
+					"The ceilings differ a lot. Qwen3.5 was trained for 262144 " +
+					"tokens; Gemma 3 for 32768. atlas.llm also imposes its own " +
+					"131072 limit, because the KV cache at the top of Qwen's range " +
+					"would be tens of gigabytes.\n\n" +
+					"Cost is memory: the KV cache grows roughly linearly with this, " +
+					"so doubling the window roughly doubles what the model server " +
+					"holds beyond the weights. Raise it when tool output or long " +
+					"files keep filling the window; leave it alone if memory is " +
+					"tight — /compact is the cheaper answer to a full context.\n\n" +
+					"Changing it restarts the model server, so it applies from your " +
+					"next message."},
 			{Name: "gpu_layers", Usage: "/set gpu_layers auto|0|N",
 				Detail: "How many model layers to offload to the GPU (llama.cpp's " +
 					"-ngl). `auto` (the default) offloads everything when the " +

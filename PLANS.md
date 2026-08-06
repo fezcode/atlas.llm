@@ -338,6 +338,25 @@ zeroed so reinstating the forward can't silently bring the bug back. Explicit
 PgUp/PgDn bindings replace the removed scrolling. Non-key messages (mouse
 wheel, resize) still reach it. No vim mode.
 
+### 18. Configurable context size  — SHIPPED (v0.18.0)
+`-c` was hardcoded at 16384. `/set ctx_size auto|N` now sets it.
+
+The ceiling is the model's own trained context length, read from the GGUF
+header by a minimal metadata parser in gguf.go — so the limit is the real
+one rather than a guess. Measured on the shipped models: Qwen3.5 (4B and 9B)
+report 262144, Gemma 3 1B reports 32768, meaning the old hardcoded 16384 was
+using 6% of what Qwen supports.
+
+atlas.llm caps at 131072 regardless, since the KV cache at Qwen's full range
+would be tens of gigabytes, with a 2048 floor so the system prompt and tool
+definitions always fit.
+
+max_tokens now derives its ceiling from ctx_size (three quarters) instead of
+the old fixed 12000, which assumed a 16K window.
+
+ctx is part of the server's identity alongside -ngl, so a change restarts
+llama-server rather than silently taking effect on the next model switch.
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships

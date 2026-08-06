@@ -52,8 +52,9 @@ func ensureServer() (*llamaServer, error) {
 	// part of the server's identity alongside the model.
 	cfg, _ := loadConfig()
 	wantNGL := resolveGPULayers(cfg)
+	wantCtx := resolveCtxSize(cfg)
 	if activeServer != nil && activeServer.model.Name == m.Name &&
-		activeServer.gpuLayer == wantNGL {
+		activeServer.gpuLayer == wantNGL && activeServer.ctxN == wantCtx {
 		return activeServer, nil
 	}
 	if activeServer != nil {
@@ -103,12 +104,13 @@ func startLlamaServer(m Model) (*llamaServer, error) {
 
 	cfg, _ := loadConfig()
 	ngl := resolveGPULayers(cfg)
+	ctxN := resolveCtxSize(cfg)
 
 	args := []string{
 		"-m", modelPath,
 		"--host", "127.0.0.1",
 		"--port", fmt.Sprintf("%d", port),
-		"-c", "16384",
+		"-c", fmt.Sprintf("%d", ctxN),
 		"-t", fmt.Sprintf("%d", threads),
 		"-ngl", fmt.Sprintf("%d", ngl),
 		"--log-disable",
@@ -120,7 +122,7 @@ func startLlamaServer(m Model) (*llamaServer, error) {
 	cmd.Env = append(os.Environ(), "OMP_STACKSIZE=64M")
 	applyEngineSysProcAttr(cmd)
 
-	log.Printf("starting llama-server on :%d (model=%s threads=%d ngl=%d)", port, m.Name, threads, ngl)
+	log.Printf("starting llama-server on :%d (model=%s threads=%d ngl=%d ctx=%d)", port, m.Name, threads, ngl, ctxN)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start llama-server: %w", err)
 	}
@@ -129,7 +131,7 @@ func startLlamaServer(m Model) (*llamaServer, error) {
 		cmd:      cmd,
 		port:     port,
 		model:    m,
-		ctxN:     16384,
+		ctxN:     ctxN,
 		gpuLayer: ngl,
 		client:   &http.Client{Timeout: 10 * time.Minute},
 		waitErr:  make(chan error, 1),

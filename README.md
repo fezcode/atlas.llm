@@ -40,7 +40,7 @@ they are missing returns an error with the command to run.
 | `/download all`   | Download engine + every model in the registry.                      |
 | `/summarize`      | Summarize the current directory into `SUMMARY.md`.                  |
 | `/grep <query>`   | Semantic grep: ask the local model to find lines matching `<query>`.|
-| `/set [k [v]]`    | List or change settings: `max_tokens`, `gpu_layers`, `engine_variant`. |
+| `/set [k [v]]`    | Settings: `max_tokens`, `ctx_size`, `gpu_layers`, `engine_variant`. |
 | `/tools [on\|off\|list]` | Toggle agentic tool-use (off by default). See below.         |
 | `/mcp [...]`      | Connect MCP servers (Slack, Confluence, …). See below.              |
 | `/compact`        | Summarize older turns to free up the context window.                |
@@ -143,6 +143,31 @@ it is never silent. `Esc` still stops a turn mid-flight.
 
 For a narrower version, `/mcp trust NAME on` exempts a single MCP server you
 have vetted, and that one does persist.
+
+### Context size
+
+The context window — how much conversation, tool output, and file content
+the model sees at once — defaults to 16384 tokens and is set with
+`/set ctx_size N` (or `auto`).
+
+It is not fixed by the model, but it is capped by it. Every GGUF records the
+context length it was trained for, and atlas.llm reads that from the file
+and refuses anything larger, since exceeding it degrades quality rather than
+extending memory. The ceilings vary widely — Qwen3.5 was trained for 262144
+tokens, Gemma 3 for 32768. `/set` with no arguments shows the value in use
+alongside the model's ceiling.
+
+atlas.llm imposes its own 131072 limit on top, because a KV cache at the top
+of Qwen's range would be tens of gigabytes. Memory is the real cost: the KV
+cache grows roughly linearly with the window, so doubling it roughly doubles
+what the server holds beyond the weights.
+
+`max_tokens` (reply length) is capped at three quarters of `ctx_size`, so
+raising the window raises that too. Changing either restarts the model
+server, applying from the next message.
+
+If the context is filling up rather than being too small, `/compact` is the
+cheaper fix.
 
 ### GPU offload
 
