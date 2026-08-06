@@ -22,7 +22,7 @@ Candidates to add:
 - Using `unsloth/Qwen3.5-9B-GGUF`, Q4_K_M = 5.68 GB.
 - Not a reasoning model; standard chat template works as-is.
 
-### Ministral-3-8B-Instruct-2512  — SHIPPED (v0.18.0)
+### Ministral-3-8B-Instruct-2512  — SHIPPED (v0.19.0)
 Fills the 4B -> 9B gap: Q4_K_M is 5.20 GB, between qwen3.5-4b (2.74) and
 qwen3.5-9b (5.68). Same family as the 14B below, which already tool-calls
 reliably, so /tools and /mcp work.
@@ -88,7 +88,7 @@ Plan:
 - TUI: autocomplete for `@` — show a picker of matching paths?
   Probably phase 2.
 
-### 3. Reasoning-model support  — PARTIALLY SHIPPED (v0.18.0)
+### 3. Reasoning-model support  — PARTIALLY SHIPPED (v0.19.0)
 Qwen3.5 is a reasoning model. One-shot tasks (`/compact`, `/summarize`,
 `/grep`) now send `chat_template_kwargs: {"enable_thinking": false}`, because
 the <think> block adds nothing there and consumed the entire token budget —
@@ -232,7 +232,7 @@ Still open:
 - Linux GPU is Vulkan-only — llama.cpp publishes no Linux CUDA binary, and
   ROCm (`ubuntu-rocm-*`) is unhandled.
 
-### 11. Long-form help  — SHIPPED (v0.18.0)
+### 11. Long-form help  — SHIPPED (v0.19.0)
 `/help <command>` and `/help <command> <subcommand>` print full
 documentation: every accepted form, what it writes to disk, and the failure
 modes worth knowing. `/help` alone keeps the compact overview and adds an
@@ -249,7 +249,7 @@ index of documented topics.
   with whitespace are treated as pre-formatted so command examples aren't
   reflowed.
 
-### 12. Input history recall  — SHIPPED (v0.18.0)
+### 12. Input history recall  — SHIPPED (v0.19.0)
 `↑`/`↓` walk back and forward through submitted input, shell style. A
 half-typed line is parked when you start browsing and restored when you come
 back past the newest entry.
@@ -259,7 +259,7 @@ Recall only takes over at the first line (for `↑`) and the last line (for
 at 200 entries; consecutive duplicates collapse. In-memory only — not
 persisted across sessions, which would be the obvious follow-up.
 
-### 13. Context compaction  — SHIPPED (v0.18.0)
+### 13. Context compaction  — SHIPPED (v0.19.0)
 `/compact` folds older turns into a dense factual summary and continues from
 it, keeping the last 4 turns verbatim. Less destructive than `/reset`, which
 discards the conversation outright.
@@ -284,7 +284,7 @@ never the problem. The cap is now 6KB (~1.5K tokens, ~9% of ctx).
 Follow-ups: automatic compaction at a threshold rather than a prompt, and a
 configurable `-c` context size (currently hardcoded at 16384).
 
-### 14. Stop generation  — SHIPPED (v0.18.0)
+### 14. Stop generation  — SHIPPED (v0.19.0)
 `Esc` aborts an in-flight generation. A `context.Context` is now plumbed
 through `chatCompleteCore` to `http.NewRequestWithContext`, so cancelling
 closes the connection and llama-server stops generating server-side rather
@@ -303,7 +303,7 @@ Not covered: an MCP tool call already in flight still runs to its own
 timeout — Tool.Run takes no context. Threading one through would let Esc
 interrupt a slow server too.
 
-### 15. multi_edit tool  — SHIPPED (v0.18.0)
+### 15. multi_edit tool  — SHIPPED (v0.19.0)
 `multi_edit` applies a batch of find/replace edits to one file atomically.
 Previously N changes to one file meant N `edit_file` calls, each with its own
 confirmation, and a failure partway left the file half-edited.
@@ -314,7 +314,7 @@ confirmation, and a failure partway left the file half-edited.
 - Any failure means nothing is written, and the error names the failing
   index so a large batch is debuggable.
 
-### 16. /yesman  — SHIPPED (v0.18.0)
+### 16. /yesman  — SHIPPED (v0.19.0)
 Session-only bypass of the destructive-tool confirmation, for runs where
 approving every call is the bottleneck.
 
@@ -328,7 +328,7 @@ arbitrary shell execution: a red marker in both header and footer while
 armed, and every auto-approved call still printed in the trace as
 "(auto-approved by /yesman)". esc remains the escape hatch mid-turn.
 
-### 17. Typing no longer scrolls the transcript  — FIXED (v0.18.0)
+### 17. Typing no longer scrolls the transcript  — FIXED (v0.19.0)
 Every message, including tea.KeyMsg, was forwarded to the viewport, whose
 bubbles default keymap is vim-style — so typing h/j/k/l/u/d/f/b or space
 scrolled the transcript instead of entering characters.
@@ -338,7 +338,7 @@ zeroed so reinstating the forward can't silently bring the bug back. Explicit
 PgUp/PgDn bindings replace the removed scrolling. Non-key messages (mouse
 wheel, resize) still reach it. No vim mode.
 
-### 18. Configurable context size  — SHIPPED (v0.18.0)
+### 18. Configurable context size  — SHIPPED (v0.19.0)
 `-c` was hardcoded at 16384. `/set ctx_size auto|N` now sets it.
 
 The ceiling is the model's own trained context length, read from the GGUF
@@ -357,7 +357,7 @@ the old fixed 12000, which assumed a 16K window.
 ctx is part of the server's identity alongside -ngl, so a change restarts
 llama-server rather than silently taking effect on the next model switch.
 
-### 19. /config and per-setting help  — SHIPPED (v0.18.0)
+### 19. /config and per-setting help  — SHIPPED (v0.19.0)
 Settings information lived in three places — handleSet, help.go, and the
 README — and kept drifting. settings.go is now the single source: each entry
 carries its key, usage, how to render the current value, and its guidance,
