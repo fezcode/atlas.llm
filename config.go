@@ -267,6 +267,10 @@ type Config struct {
 	// "cpu" (default) or "vulkan". Empty means auto.
 	EngineVariant string `json:"engine_variant,omitempty"`
 
+	// Reasoning controls the model's internal <think> block: "on", "off",
+	// or "" / "auto" for the default. Only affects models that have one.
+	Reasoning string `json:"reasoning,omitempty"`
+
 	// MaxToolRounds caps tool-call rounds per message. 0 means the default;
 	// a negative value means no cap.
 	MaxToolRounds int `json:"max_tool_rounds,omitempty"`
@@ -275,6 +279,50 @@ type Config struct {
 	// 0 means the default. The ceiling is whatever the model was trained
 	// for, which is read from its GGUF metadata.
 	CtxSize int `json:"ctx_size,omitempty"`
+}
+
+// Reasoning settings.
+const (
+	reasoningAuto = "auto"
+	reasoningOn   = "on"
+	reasoningOff  = "off"
+)
+
+// reasoningEnabledFor reports whether to let the model think, given whether
+// this is an agentic turn.
+//
+// auto splits the two, because the cost differs enormously by task. Measured
+// on qwen3.5-4b with "in one sentence, what is a KV cache?": thinking gave a
+// first token at 62.1s and finished at 63.9s; without it, 0.3s and 3.2s. A
+// twentyfold difference for a question that needed none of it.
+//
+// So auto turns thinking off for plain chat and leaves it on for tool-driven
+// turns, where it measurably improves which tool gets called. `on` and `off`
+// override both. One-shot commands never think either way.
+func reasoningEnabledFor(cfg Config, agentic bool) bool {
+	switch strings.ToLower(strings.TrimSpace(cfg.Reasoning)) {
+	case reasoningOff:
+		return false
+	case reasoningOn:
+		return true
+	default:
+		return agentic
+	}
+}
+
+// reasoningEnabled is the conversational-turn case.
+func reasoningEnabled(cfg Config) bool { return reasoningEnabledFor(cfg, false) }
+
+// reasoningDisplay renders the setting for /set and /config.
+func reasoningDisplay(cfg Config) string {
+	switch strings.ToLower(strings.TrimSpace(cfg.Reasoning)) {
+	case reasoningOff:
+		return "off (faster replies; may reduce tool-use accuracy)"
+	case reasoningOn:
+		return "on (always; slower but best at multi-step work)"
+	default:
+		return "auto (off for chat, on for tool-driven turns)"
+	}
 }
 
 // defaultMaxToolRounds is the tool-call round budget for one message when

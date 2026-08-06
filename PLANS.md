@@ -503,6 +503,25 @@ Both now scroll only as far as needed to keep the selection visible, and
 snap to the top near the first row so the title stays on screen. The bug got
 worse with every model added, and the registry is now nine.
 
+### 25. Reasoning toggle and cwd hints  — SHIPPED (v0.24.0)
+`/set reasoning auto|on|off`. auto is not a single switch: it disables
+thinking for chat and keeps it for tool-driven turns, because the cost
+differs enormously by task. Measured on qwen3.5-4b, "in one sentence, what is
+a KV cache?": 63.9s with thinking against 3.2s without, first word at 62.1s
+against 0.3s. Twenty times slower for a question that needed none of it,
+while thinking still earns its keep on tool selection.
+
+Separately, agents kept trying to cd into the project. Two fixes:
+
+The agent system prompt is now built per turn and carries the real project
+root plus its top-level entries (dotfiles excluded), so the model can see the
+layout instead of guessing names and burning tool-call rounds on the retries.
+
+run_cmd lifts a leading `cd` — `cd sub && ls` runs in `sub` — and says so in
+the result, pointing at the cwd argument. Each call is a fresh shell, so a
+`cd` never survived to the next call and models assumed otherwise. An
+explicit cwd wins, and `cd ..` is still refused by the jail.
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships

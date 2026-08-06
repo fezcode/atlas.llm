@@ -443,7 +443,8 @@ func runChat(ctx context.Context, msgs []ChatMsg, maxTokens int) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("server: %w", err)
 	}
-	out, err := s.ChatComplete(ctx, msgs, maxTokens)
+	cfg, _ := loadConfig()
+	out, err := s.chatCompleteRespectingReasoning(ctx, msgs, maxTokens, cfg)
 	if err != nil {
 		return "", fmt.Errorf("inference failed: %w", err)
 	}
@@ -527,7 +528,11 @@ func runAgentStep(ctx context.Context, msgs []ChatMsg, maxTokens int) (string, [
 	if err != nil {
 		return "", nil, fmt.Errorf("server: %w", err)
 	}
-	content, calls, err := s.ChatCompleteWithTools(ctx, msgs, toolDefsJSON(), maxTokens)
+	cfgTools, _ := loadConfig()
+	// An agentic turn: thinking earns its cost here by improving which tool
+	// gets chosen.
+	content, calls, err := s.ChatCompleteWithToolsOpt(ctx, msgs, toolDefsJSON(), maxTokens,
+		!reasoningEnabledFor(cfgTools, true))
 	if err != nil {
 		return "", nil, fmt.Errorf("inference failed: %w", err)
 	}
@@ -539,6 +544,23 @@ func runAgentStep(ctx context.Context, msgs []ChatMsg, maxTokens int) (string, [
 // that destructive actions require user approval (so it doesn't loop on
 // unexpected denials).
 const agentSystemPrompt = `You are atlas, a concise coding assistant with access to the user's local project via tools. All paths are relative to the project root — the directory atlas.llm was started in — and tools cannot read or write outside it. Start with list_dir on "." if you are unsure of the layout, rather than guessing directory names. run_cmd starts a fresh shell each call, so pass cwd to work in a subdirectory instead of using "cd". Use tools when you need to inspect or change files or run commands — don't guess about file contents. Some of the tools you are given come from connected MCP servers and reach external systems such as Slack or Confluence; prefer calling them over guessing when the user asks about something outside the local project. Some tools require the user to approve each call; if a call is denied, acknowledge and continue without retrying. After gathering what you need, answer plainly in markdown.`
+
+// agentSystemPromptNow is the system prompt with the current project root
+// and its top-level layout filled in. Built per turn rather than baked in as
+// a constant, because a model that cannot see the layout guesses directory
+// names and then burns its tool-call budget retrying the guesses.
+func agentSystemPromptNow() string {
+	var b strings.Builder
+	b.WriteString(agentSystemPrompt)
+	b.WriteString("\n\nProject root: ")
+	b.WriteString(sessionRoot())
+	if overview := projectOverview(40); overview != "" {
+		b.WriteString("\nTop level: ")
+		b.WriteString(overview)
+	}
+	b.WriteString("\nYou are already in the project root. There is no need to cd into it.")
+	return b.String()
+}
 
 func chat(ctx context.Context, history []ChatMessage, userInput string) (string, error) {
 	msgs := []ChatMsg{
@@ -580,7 +602,8 @@ func runChatStream(ctx context.Context, msgs []ChatMsg, maxTokens int, onDelta f
 	if err != nil {
 		return "", fmt.Errorf("server: %w", err)
 	}
-	out, err := s.ChatCompleteStream(ctx, msgs, maxTokens, onDelta)
+	cfg, _ := loadConfig()
+	out, err := s.ChatCompleteStreamOpt(ctx, msgs, maxTokens, !reasoningEnabled(cfg), onDelta)
 	if err != nil {
 		return "", err
 	}

@@ -449,6 +449,11 @@ func toolRunCmd(args map[string]any) (string, error) {
 		return "", err
 	}
 	cwdArg, _ := argString(args, "cwd", false)
+	// Models reach for `cd` out of habit, and a fresh shell per call means it
+	// silently does nothing for the calls that follow. Rather than fail, lift
+	// a leading `cd` into the working directory and say so, so the model
+	// learns the right shape.
+	command, cwdArg, lifted := liftLeadingCd(command, cwdArg)
 	dir, err := resolveInRoot(cwdArg)
 	if err != nil {
 		return "", err
@@ -474,6 +479,11 @@ func toolRunCmd(args map[string]any) (string, error) {
 		return "", err
 	}
 	go func() { done <- cmd.Wait() }()
+	note := ""
+	if lifted != "" {
+		note = fmt.Sprintf("(ran in %q — `cd` does not persist between run_cmd calls, "+
+			"pass cwd instead)\n", lifted)
+	}
 	select {
 	case werr := <-done:
 		exitCode := 0
@@ -484,7 +494,7 @@ func toolRunCmd(args map[string]any) (string, error) {
 				return "", werr
 			}
 		}
-		return fmt.Sprintf("exit=%d\n%s", exitCode, truncateForModel(out.String())), nil
+		return note + fmt.Sprintf("exit=%d\n%s", exitCode, truncateForModel(out.String())), nil
 	case <-time.After(30 * time.Second):
 		_ = cmd.Process.Kill()
 		<-done
@@ -594,4 +604,40 @@ func toolMultiEdit(args map[string]any) (string, error) {
 	}
 	return fmt.Sprintf("Applied %d edits to %s (%d bytes → %d bytes)",
 		len(edits), displayPath(abs), len(data), len(updated)), nil
+}
+
+// liftLeadingCd rewrites `cd DIR && rest` (or `cd DIR; rest`) into a
+// working directory plus the remaining command.
+//
+// Each run_cmd call is a fresh shell, so a `cd` affects only that one
+// invocation — models routinely assume otherwise and then wonder why the
+// next call is back at the root. Lifting it makes the intent work and lets
+// the result explain the correct form. Returns the directory that was
+// lifted, or "" when nothing changed.
+func liftLeadingCd(command, cwd string) (newCommand, newCwd, lifted string) {
+	trimmed := strings.TrimSpace(command)
+	if !strings.HasPrefix(trimmed, "cd ") {
+		return command, cwd, ""
+	}
+	rest := strings.TrimSpace(trimmed[len("cd "):])
+
+	var dir, remainder string
+	if i := strings.Index(rest, "&&"); i >= 0 {
+		dir, remainder = strings.TrimSpace(rest[:i]), strings.TrimSpace(rest[i+2:])
+	} else if i := strings.Index(rest, ";"); i >= 0 {
+		dir, remainder = strings.TrimSpace(rest[:i]), strings.TrimSpace(rest[i+1:])
+	} else {
+		// A bare `cd` changes nothing that outlives the call. Treat it as
+		// selecting the directory so the model at least gets a listing.
+		dir, remainder = rest, "pwd"
+	}
+	dir = strings.Trim(dir, `"'`)
+	if dir == "" || remainder == "" {
+		return command, cwd, ""
+	}
+	// An explicit cwd argument wins; combining both would be ambiguous.
+	if strings.TrimSpace(cwd) != "" {
+		return command, cwd, ""
+	}
+	return remainder, dir, dir
 }

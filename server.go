@@ -490,12 +490,23 @@ type streamChunk struct {
 // onDelta is called from this goroutine, so callers must not block in it;
 // the TUI forwards each delta into the bubbletea event loop instead.
 func (s *llamaServer) ChatCompleteStream(ctx context.Context, msgs []ChatMsg, maxTokens int, onDelta func(StreamDelta)) (string, error) {
+	return s.ChatCompleteStreamOpt(ctx, msgs, maxTokens, false, onDelta)
+}
+
+// ChatCompleteStreamOpt is ChatCompleteStream with explicit control over the
+// reasoning block.
+func (s *llamaServer) ChatCompleteStreamOpt(ctx context.Context, msgs []ChatMsg, maxTokens int, noThinking bool, onDelta func(StreamDelta)) (string, error) {
+	var kwargs map[string]any
+	if noThinking {
+		kwargs = map[string]any{"enable_thinking": false}
+	}
 	reqBody, _ := json.Marshal(chatRequest{
-		Messages:    msgs,
-		MaxTokens:   maxTokens,
-		Temperature: 0.2,
-		Stream:      true,
-		CachePrompt: true,
+		Messages:           msgs,
+		MaxTokens:          maxTokens,
+		Temperature:        0.2,
+		Stream:             true,
+		CachePrompt:        true,
+		ChatTemplateKwargs: kwargs,
 	})
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", s.port)
 	if ctx == nil {
@@ -585,4 +596,17 @@ func (s *llamaServer) ChatCompleteStream(ctx context.Context, msgs []ChatMsg, ma
 				"— raise it with `/set max_tokens N`", maxTokens)
 	}
 	return answer.String(), nil
+}
+
+// chatCompleteRespectingReasoning is ChatComplete with the reasoning
+// setting applied.
+func (s *llamaServer) chatCompleteRespectingReasoning(ctx context.Context, msgs []ChatMsg, maxTokens int, cfg Config) (string, error) {
+	content, _, err := s.chatCompleteCore(ctx, msgs, maxTokens, nil, !reasoningEnabled(cfg))
+	return content, err
+}
+
+// ChatCompleteWithToolsOpt is ChatCompleteWithTools with explicit control
+// over the reasoning block.
+func (s *llamaServer) ChatCompleteWithToolsOpt(ctx context.Context, msgs []ChatMsg, tools []map[string]any, maxTokens int, noThinking bool) (string, []ToolCall, error) {
+	return s.chatCompleteCore(ctx, msgs, maxTokens, tools, noThinking)
 }

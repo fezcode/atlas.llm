@@ -120,3 +120,44 @@ func displayPath(abs string) string {
 	}
 	return rel
 }
+
+// projectOverview lists the root's top-level entries, for the agent system
+// prompt.
+//
+// Models were guessing directory names — asking for "internal" in a project
+// that has no such directory, getting an error, and retrying variations
+// until they exhausted their tool-call budget. Showing the actual layout up
+// front removes the guesswork, and costs one directory read per turn.
+func projectOverview(maxEntries int) string {
+	root := sessionRoot()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+	var dirs, files []string
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			continue // .git and friends are noise here
+		}
+		if e.IsDir() {
+			dirs = append(dirs, name+"/")
+		} else {
+			files = append(files, name)
+		}
+	}
+	all := append(dirs, files...)
+	truncated := false
+	if len(all) > maxEntries {
+		all = all[:maxEntries]
+		truncated = true
+	}
+	if len(all) == 0 {
+		return ""
+	}
+	out := strings.Join(all, "  ")
+	if truncated {
+		out += "  …"
+	}
+	return out
+}

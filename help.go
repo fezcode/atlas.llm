@@ -171,6 +171,20 @@ var helpTopics = []helpTopic{
 					"If replies are being cut off mid-sentence, raise this. If a " +
 					"reasoning model returns nothing at all, this is usually why: " +
 					"the whole budget went on internal thinking."},
+			{Name: "reasoning", Usage: "/set reasoning on|off",
+				Detail: "Reasoning models such as Qwen3.5 write an internal <think> " +
+					"block before answering. You never see it, but you wait for it.\n\n" +
+					"Measured on qwen3.5-4b, \"in one sentence, what is a KV cache?\": " +
+					"with thinking the first word appeared at 62.1s and the reply " +
+					"finished at 63.9s. Without it, 0.3s and 3.2s — a twentyfold " +
+					"difference on a question that needed none of it.\n\n" +
+					"The default is auto, which splits the two: off for chat, on for " +
+					"tool-driven turns, where thinking measurably improves which tool " +
+					"gets called. `on` and `off` apply to everything.\n\n" +
+					"One-shot commands — /compact, /summarize, /grep — never think " +
+					"regardless, because a think there is pure latency. On qwen3.5-4b " +
+					"it once consumed the whole token budget and returned nothing.\n\n" +
+					"Models without a reasoning mode, such as Gemma, are unaffected."},
 			{Name: "max_tool_rounds", Usage: "/set max_tool_rounds N|off",
 				Detail: "How many times the model may call tools while answering a " +
 					"single message. Default 40; `off` removes the cap entirely.\n\n" +

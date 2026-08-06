@@ -513,6 +513,29 @@ func (m *chatModel) handleSet(args []string) {
 			"A larger window uses proportionally more memory for the KV cache.",
 			ctxSizeDisplay(cfg)))
 
+	case "reasoning":
+		switch strings.ToLower(args[1]) {
+		case reasoningOn, "true", "yes":
+			cfg.Reasoning = reasoningOn
+		case reasoningOff, "false", "no":
+			cfg.Reasoning = reasoningOff
+		case reasoningAuto, "default":
+			cfg.Reasoning = ""
+		default:
+			m.pushError(fmt.Sprintf("invalid reasoning=%q (expected on, off, or auto)", args[1]))
+			return
+		}
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		msg := fmt.Sprintf("reasoning = %s", reasoningDisplay(cfg))
+		if !reasoningEnabled(cfg) {
+			msg += "\n\nReplies will be markedly faster. Tool-use and multi-step " +
+				"reasoning may get less reliable — turn it back on with `/set reasoning on`."
+		}
+		m.pushSystem(msg)
+
 	case "max_tool_rounds":
 		val := strings.ToLower(args[1])
 		switch val {
@@ -918,7 +941,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.agentEnabled {
 				m.pushUser(input)
 				if len(m.agentMsgs) == 0 {
-					m.agentMsgs = append(m.agentMsgs, ChatMsg{Role: "system", Content: agentSystemPrompt})
+					m.agentMsgs = append(m.agentMsgs, ChatMsg{Role: "system", Content: agentSystemPromptNow()})
 				}
 				m.agentMsgs = append(m.agentMsgs, ChatMsg{Role: "user", Content: input})
 				m.stepCount = 0

@@ -44,7 +44,7 @@ they are missing returns an error with the command to run.
 | `/download all`   | Download engine + every model in the registry.                      |
 | `/summarize`      | Summarize the current directory into `SUMMARY.md`.                  |
 | `/grep <query>`   | Semantic grep: ask the local model to find lines matching `<query>`.|
-| `/set [k [v]]`    | Settings: `max_tokens`, `max_tool_rounds`, `ctx_size`, `gpu_layers`, `engine_variant`. |
+| `/set [k [v]]`    | Settings: `max_tokens`, `reasoning`, `max_tool_rounds`, `ctx_size`, `gpu_layers`, `engine_variant`. |
 | `/config`         | Everything at once: settings, session state, memory, paths.         |
 | `/tools [on\|off\|list]` | Toggle agentic tool-use (off by default). See below.         |
 | `/mcp [...]`      | Connect MCP servers (Slack, Confluence, …). See below.              |
@@ -136,6 +136,11 @@ whole file.
 | `multi_edit` | ✓           | Apply several edits to one file atomically — all or nothing.    |
 | `run_cmd`    | ✓           | Execute a shell command (30s timeout).                          |
 
+The agent is told the project root and its top-level layout at the start of
+each turn, so it doesn't guess directory names. `run_cmd` also lifts a
+leading `cd` into its working directory — each call is a fresh shell, so
+`cd foo && ls` runs in `foo` and the result explains the `cwd` argument.
+
 **Tools are confined to the working directory.** Every path is resolved
 against the directory atlas.llm was started in, and anything at or below it
 is fair game — subdirectories included. Paths that escape (`../`, absolute
@@ -204,6 +209,18 @@ out to overestimate by ~4× on the models shipped here (Qwen3.5 reports
 dimensions implying 128 KB/token, but measures ~31 KB/token — consistent
 with hybrid attention where only some layers keep a full-context cache), so
 atlas.llm reports what is actually in use rather than a formula.
+
+### Reasoning
+
+Reasoning models such as Qwen3.5 write an internal `<think>` block before
+answering. You never see it, but you wait for it — measured on `qwen3.5-4b`
+with *"in one sentence, what is a KV cache?"*: **63.9s with thinking, 3.2s
+without**, and time-to-first-word 62.1s versus 0.3s.
+
+`/set reasoning auto|on|off`. The default `auto` splits the two: off for
+chat, on for tool-driven turns where thinking measurably improves which tool
+gets called. `/compact`, `/summarize` and `/grep` never think either way.
+Models without a reasoning mode, such as Gemma, are unaffected.
 
 ### Context size
 

@@ -68,6 +68,24 @@ var settingsRegistry = []setting{
 		},
 	},
 	{
+		Key:     "reasoning",
+		Usage:   "/set reasoning on|off",
+		Summary: "Whether the model may think before answering.",
+		Value:   func(c Config) string { return reasoningDisplay(c) },
+		Detail: func(c Config) string {
+			return "Reasoning models (Qwen3.5) write an internal <think> block before " +
+				"answering. You never see it, but you wait for it.\n" +
+				"Measured on qwen3.5-4b, \"in one sentence, what is a KV cache?\": with " +
+				"thinking, the first word arrived at 62.1s and it finished at 63.9s. " +
+				"Without, 0.3s and 3.2s.\n" +
+				"auto splits the difference — off for chat, on for tool-driven turns " +
+				"where it improves which tool gets called. on and off apply to " +
+				"everything.\n" +
+				"One-shot commands (/compact, /summarize, /grep) never think either " +
+				"way. No effect on models without a reasoning mode, such as Gemma."
+		},
+	},
+	{
 		Key:     "max_tool_rounds",
 		Usage:   "/set max_tool_rounds N|off",
 		Summary: "Tool-call rounds allowed for a single message.",
