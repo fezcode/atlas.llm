@@ -41,10 +41,6 @@ type Tool struct {
 // tool calls exhausted the context before any real work happened.
 const toolResultSizeLimit = 6 * 1024
 
-// maxAgentSteps bounds how many tool-call rounds a single user prompt can
-// trigger. Stops runaway loops if the model keeps asking for one more read.
-const maxAgentSteps = 20
-
 var toolRegistry = map[string]Tool{
 	"read_file": {
 		Name:        "read_file",

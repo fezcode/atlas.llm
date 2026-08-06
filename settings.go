@@ -68,6 +68,23 @@ var settingsRegistry = []setting{
 		},
 	},
 	{
+		Key:     "max_tool_rounds",
+		Usage:   "/set max_tool_rounds N|off",
+		Summary: "Tool-call rounds allowed for a single message.",
+		Value:   func(c Config) string { return maxToolRoundsDisplay(c) },
+		Detail: func(c Config) string {
+			return fmt.Sprintf(
+				"How many times the model may call tools while answering one message. "+
+					"Default %d. `off` removes the cap.\n"+
+					"Raise it for work that genuinely needs many steps — reading a dozen "+
+					"files, or a long MCP chain. Hitting the cap often means the model is "+
+					"stuck retrying something instead, so check the trace before raising it.\n"+
+					"Turning it off is safe enough in practice: identical repeated calls "+
+					"still stop the turn after %d attempts, and esc stops it at any time.",
+				defaultMaxToolRounds, maxIdenticalCalls+1)
+		},
+	},
+	{
 		Key:     "gpu_layers",
 		Usage:   "/set gpu_layers auto|0|N",
 		Summary: "Model layers offloaded to the GPU (llama.cpp -ngl).",

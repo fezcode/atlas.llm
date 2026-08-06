@@ -253,10 +253,51 @@ type Config struct {
 	// "cpu" (default) or "vulkan". Empty means auto.
 	EngineVariant string `json:"engine_variant,omitempty"`
 
+	// MaxToolRounds caps tool-call rounds per message. 0 means the default;
+	// a negative value means no cap.
+	MaxToolRounds int `json:"max_tool_rounds,omitempty"`
+
 	// CtxSize is the context window llama-server is started with (-c).
 	// 0 means the default. The ceiling is whatever the model was trained
 	// for, which is read from its GGUF metadata.
 	CtxSize int `json:"ctx_size,omitempty"`
+}
+
+// defaultMaxToolRounds is the tool-call round budget for one message when
+// nothing is configured.
+//
+// Raised from 20 once identical-call detection landed: that catches a stuck
+// model directly, so this no longer has to double as the runaway guard and
+// can be generous enough for work that legitimately needs many steps.
+const defaultMaxToolRounds = 40
+
+// unlimitedToolRounds is what resolveMaxToolRounds returns when the cap is
+// switched off. The repeated-call detector and Esc remain as backstops.
+const unlimitedToolRounds = 0
+
+// resolveMaxToolRounds returns the per-message tool-call budget, or
+// unlimitedToolRounds when the user has turned the cap off.
+func resolveMaxToolRounds(cfg Config) int {
+	switch {
+	case cfg.MaxToolRounds < 0:
+		return unlimitedToolRounds
+	case cfg.MaxToolRounds == 0:
+		return defaultMaxToolRounds
+	default:
+		return cfg.MaxToolRounds
+	}
+}
+
+// maxToolRoundsDisplay renders the setting for `/set` and `/config`.
+func maxToolRoundsDisplay(cfg Config) string {
+	n := resolveMaxToolRounds(cfg)
+	if n == unlimitedToolRounds {
+		return "off (no cap)"
+	}
+	if cfg.MaxToolRounds == 0 {
+		return fmt.Sprintf("%d (default)", n)
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 // defaultCtxSize is the context window used when nothing is configured.

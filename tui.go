@@ -156,7 +156,7 @@ type chatModel struct {
 	// including system prompt, user turns, assistant tool_calls, and tool
 	// results. pendingCalls holds tool calls from the latest assistant
 	// step that haven't been executed yet. stepCount guards against loops
-	// (see maxAgentSteps).
+	// (see /set max_tool_rounds).
 	agentEnabled bool
 	agentMsgs    []ChatMsg
 	pendingCalls []ToolCall
@@ -495,6 +495,34 @@ func (m *chatModel) handleSet(args []string) {
 		m.pushSystem(fmt.Sprintf("ctx_size = %s\nTakes effect on the next message (the model server restarts). "+
 			"A larger window uses proportionally more memory for the KV cache.",
 			ctxSizeDisplay(cfg)))
+
+	case "max_tool_rounds":
+		val := strings.ToLower(args[1])
+		switch val {
+		case "off", "none", "unlimited":
+			cfg.MaxToolRounds = -1
+		case "auto", "default":
+			cfg.MaxToolRounds = 0
+		default:
+			n, err := strconv.Atoi(val)
+			if err != nil || n <= 0 {
+				m.pushError(fmt.Sprintf(
+					"invalid max_tool_rounds=%q (expected a positive number, `off`, or `default`)", args[1]))
+				return
+			}
+			cfg.MaxToolRounds = n
+		}
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		msg := fmt.Sprintf("max_tool_rounds = %s", maxToolRoundsDisplay(cfg))
+		if resolveMaxToolRounds(cfg) == unlimitedToolRounds {
+			msg += fmt.Sprintf("\n\nNo round limit. A stuck model is still caught: identical "+
+				"repeated calls stop the turn after %d attempts, and esc stops it at any time.",
+				maxIdenticalCalls+1)
+		}
+		m.pushSystem(msg)
 
 	case "gpu_layers":
 		val := strings.ToLower(args[1])
@@ -1533,14 +1561,17 @@ func (m *chatModel) handleAgentStep(msg agentStepMsg) tea.Cmd {
 		m.maybeSuggestCompact()
 		return nil
 	}
-	if m.stepCount >= maxAgentSteps {
+	cfgRounds, _ := loadConfig()
+	limit := resolveMaxToolRounds(cfgRounds)
+	if limit != unlimitedToolRounds && m.stepCount >= limit {
 		m.pushError(fmt.Sprintf(
-			"Agent stopped after %d tool-call rounds — the limit for one message.\n\n"+
+			"Agent stopped after %d tool-call rounds — the current limit for one message.\n\n"+
 				"This usually means the model kept calling tools without reaching an "+
 				"answer, often retrying something that failed. The trace above shows "+
 				"what it tried.\n\n"+
 				"Worth checking: is the model big enough for tool use (qwen3.5-4b and "+
-				"up), and were the paths it used correct? Paths are relative to %s.",
+				"up), and were the paths it used correct? Paths are relative to %s.\n\n"+
+				"Raise the limit with `/set max_tool_rounds N`, or `off` to remove it.",
 			m.stepCount, displayRoot()))
 		m.busy = false
 		m.busyReason = ""

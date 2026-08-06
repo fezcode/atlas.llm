@@ -126,3 +126,53 @@ func TestProcessRSSRejectsBadPID(t *testing.T) {
 		t.Errorf("could not read own RSS (got %d, ok=%v)", rss, ok)
 	}
 }
+
+func TestResolveMaxToolRounds(t *testing.T) {
+	if got := resolveMaxToolRounds(Config{}); got != defaultMaxToolRounds {
+		t.Errorf("unset = %d, want the default %d", got, defaultMaxToolRounds)
+	}
+	if got := resolveMaxToolRounds(Config{MaxToolRounds: 100}); got != 100 {
+		t.Errorf("explicit = %d, want 100", got)
+	}
+	// Negative is the "off" sentinel, and must not leak through as a
+	// negative comparison target in the agent loop.
+	if got := resolveMaxToolRounds(Config{MaxToolRounds: -1}); got != unlimitedToolRounds {
+		t.Errorf("off = %d, want %d", got, unlimitedToolRounds)
+	}
+}
+
+func TestMaxToolRoundsRoundTrips(t *testing.T) {
+	withTempHome(t)
+	for _, v := range []int{100, -1} {
+		if err := saveConfig(Config{CurrentModel: defaultModel, MaxToolRounds: v}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := loadConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.MaxToolRounds != v {
+			t.Errorf("max_tool_rounds = %d, want %d", got.MaxToolRounds, v)
+		}
+	}
+	// Unset must stay 0 so it keeps tracking the default.
+	if err := saveConfig(Config{CurrentModel: defaultModel}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := loadConfig()
+	if got.MaxToolRounds != 0 {
+		t.Errorf("unset = %d, want 0", got.MaxToolRounds)
+	}
+}
+
+func TestMaxToolRoundsDisplay(t *testing.T) {
+	if s := maxToolRoundsDisplay(Config{}); !strings.Contains(s, "default") {
+		t.Errorf("unset display %q should say it is the default", s)
+	}
+	if s := maxToolRoundsDisplay(Config{MaxToolRounds: -1}); !strings.Contains(s, "off") {
+		t.Errorf("off display = %q", s)
+	}
+	if s := maxToolRoundsDisplay(Config{MaxToolRounds: 99}); s != "99" {
+		t.Errorf("explicit display = %q, want 99", s)
+	}
+}

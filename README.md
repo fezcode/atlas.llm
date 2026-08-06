@@ -40,7 +40,7 @@ they are missing returns an error with the command to run.
 | `/download all`   | Download engine + every model in the registry.                      |
 | `/summarize`      | Summarize the current directory into `SUMMARY.md`.                  |
 | `/grep <query>`   | Semantic grep: ask the local model to find lines matching `<query>`.|
-| `/set [k [v]]`    | Settings: `max_tokens`, `ctx_size`, `gpu_layers`, `engine_variant`. |
+| `/set [k [v]]`    | Settings: `max_tokens`, `max_tool_rounds`, `ctx_size`, `gpu_layers`, `engine_variant`. |
 | `/config`         | Everything at once: settings, session state, memory, paths.         |
 | `/tools [on\|off\|list]` | Toggle agentic tool-use (off by default). See below.         |
 | `/mcp [...]`      | Connect MCP servers (Slack, Confluence, …). See below.              |
@@ -146,11 +146,12 @@ Caveats:
   tool shapes — the feature will feel broken on those models.
 - **No persistent tool loop across sessions.** `/reset` clears the agent
   message list alongside the regular conversation.
-- **Rounds are capped.** A single message may trigger at most 20 tool-call
-  rounds. Hitting that usually means the model got stuck retrying something
-  that failed rather than doing 20 useful things. Identical repeated calls
-  are now detected after 4 attempts and the turn is stopped with the offending
-  call named, instead of quietly burning the budget.
+- **Rounds are capped**, at 40 per message by default. Change it with
+  `/set max_tool_rounds N`, or `off` to remove the cap. Hitting the limit
+  usually means the model got stuck retrying something that failed rather
+  than doing 40 useful things, so check the trace before raising it.
+  Identical repeated calls are stopped after 4 attempts with the offending
+  call named, which is what makes an unlimited setting reasonable.
 - **The confirm modal is synchronous.** The agent loop pauses while it's
   open; press Enter to approve, Esc (or select Deny) to reject. Denials
   are fed back to the model as a tool error so it can adapt rather than

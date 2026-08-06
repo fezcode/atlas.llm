@@ -171,6 +171,19 @@ var helpTopics = []helpTopic{
 					"If replies are being cut off mid-sentence, raise this. If a " +
 					"reasoning model returns nothing at all, this is usually why: " +
 					"the whole budget went on internal thinking."},
+			{Name: "max_tool_rounds", Usage: "/set max_tool_rounds N|off",
+				Detail: "How many times the model may call tools while answering a " +
+					"single message. Default 40; `off` removes the cap entirely.\n\n" +
+					"Work that reads a dozen files or chains several MCP calls can " +
+					"legitimately need more than the default. Raise it, or switch it " +
+					"off, when the agent is stopping mid-task on real work.\n\n" +
+					"Before raising it, look at the trace. Hitting the cap usually " +
+					"means the model got stuck retrying something that failed — a " +
+					"wrong path being the classic case — rather than doing many " +
+					"useful things. Raising the limit then just buys more retries.\n\n" +
+					"Turning it off is safer than it sounds: a model repeating the " +
+					"identical call is stopped after 4 attempts regardless, and esc " +
+					"stops a turn at any point."},
 			{Name: "ctx_size", Usage: "/set ctx_size auto|N",
 				Detail: "The context window, in tokens — how much conversation, tool " +
 					"output, and file content the model can see at once. Default " +
