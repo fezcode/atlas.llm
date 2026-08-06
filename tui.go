@@ -1328,6 +1328,11 @@ func (m chatModel) renderHeader(width int) string {
 	if ctxSeg != "" {
 		right = ctxSeg + dot + stateSeg
 	}
+	// Memory sits next to the context gauge: both answer "how much room is
+	// left", one in tokens and one in bytes.
+	if memSeg := renderMemSegment(); memSeg != "" {
+		right = memSeg + dot + right
+	}
 	if m.yesman {
 		// Persistent, loud, and impossible to miss while it's armed.
 		right = lipgloss.NewStyle().Foreground(colErr).Bold(true).Render("⚠ yesman") + dot + right

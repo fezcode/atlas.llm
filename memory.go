@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // Reporting memory for the model server is done by measuring the running
@@ -183,22 +185,23 @@ func (f Fit) String() string {
 	return ""
 }
 
-// modelFit judges a model's weights against total RAM.
+// modelFit judges a model's total footprint — weights plus the KV cache at
+// the current ctx_size — against system RAM.
 //
-// Only the weights are counted. The KV cache adds to this and grows with
-// ctx_size, but predicting it from model shape proved unreliable (see the
-// note at the top of this file), so the figure here is the floor rather
-// than a total — deliberately, since an honest floor beats a wrong total.
+// The KV term only appears for models already downloaded, since it needs the
+// GGUF shape metadata. For anything not yet fetched this reports weights
+// alone, which understates a large context.
 func modelFit(m Model) (share float64, fit Fit) {
 	total, ok := systemRAM()
 	if !ok || total <= 0 {
 		return 0, FitUnknown
 	}
-	weights := parseModelSize(m.Size)
+	cfg, _ := loadConfig()
+	weights, kv, _ := modelMemoryEstimate(m, resolveCtxSize(cfg))
 	if weights <= 0 {
 		return 0, FitUnknown
 	}
-	share = float64(weights) / float64(total)
+	share = float64(weights+kv) / float64(total)
 	switch {
 	case share < 0.25:
 		return share, FitComfortable
@@ -217,5 +220,66 @@ func modelResourceNote(m Model) string {
 	if fit == FitUnknown {
 		return ""
 	}
+	cfg, _ := loadConfig()
+	if _, kv, ok := modelMemoryEstimate(m, resolveCtxSize(cfg)); ok && kv > 0 {
+		return fmt.Sprintf("%.0f%% RAM (+%s ctx), %s", share*100, formatBytes(kv), fit)
+	}
 	return fmt.Sprintf("%.0f%% RAM, %s", share*100, fit)
+}
+
+// modelSizeBytes returns a model's weight size. The real file is used when
+// it's on disk; the registry string is only a fallback for models not yet
+// downloaded, and it is approximate (gemma-4-e2b declares ~2.9GB and is
+// actually 3.11GB).
+func modelSizeBytes(m Model) int64 {
+	if p, err := modelPath(m); err == nil {
+		if size, err := statSize(p); err == nil && size > 0 {
+			return size
+		}
+	}
+	return parseModelSize(m.Size)
+}
+
+// modelMemoryEstimate returns weights plus the KV cache at the given context
+// size, for a model that may or may not be downloaded. ok=false when the
+// shape metadata isn't readable, which is the case before download.
+func modelMemoryEstimate(m Model, ctx int) (weights, kv int64, ok bool) {
+	weights = modelSizeBytes(m)
+	if weights <= 0 {
+		return 0, 0, false
+	}
+	p, err := modelPath(m)
+	if err != nil {
+		return weights, 0, false
+	}
+	meta, err := readGGUFMeta(p)
+	if err != nil || !meta.complete() {
+		return weights, 0, false
+	}
+	return weights, meta.kvCacheBytes(ctx), true
+}
+
+// renderMemSegment formats the model server's resident memory for the
+// header. Empty until a server is running, so the header stays quiet before
+// the first message.
+func renderMemSegment() string {
+	rss, ok := serverMemory()
+	if !ok || rss <= 0 {
+		return ""
+	}
+	label := metaLabelStyle.Render("mem ")
+	value := metaValueStyle.Render(formatBytes(rss))
+	total, haveTotal := systemRAM()
+	if !haveTotal || total <= 0 {
+		return label + value
+	}
+	pct := int(float64(rss) / float64(total) * 100)
+	style := sysStyle
+	switch {
+	case pct >= 80:
+		style = lipgloss.NewStyle().Foreground(colErr).Bold(true)
+	case pct >= 60:
+		style = lipgloss.NewStyle().Foreground(colBusy).Bold(true)
+	}
+	return label + value + " " + style.Render(fmt.Sprintf("(%d%%)", pct))
 }

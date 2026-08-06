@@ -421,6 +421,30 @@ retrying a failing call rather than doing useful work.
 Follow-up: the jail constrains tool *arguments*, not what a shell command
 does once running. Real confinement of run_cmd needs OS sandboxing.
 
+### 22. Dynamic memory estimates  — SHIPPED (v0.21.0)
+The RAM figure in /list was half-dynamic: system RAM was read from the OS,
+but model size came from the hardcoded registry string and the context cost
+was ignored entirely.
+
+Both are now computed. Downloaded models are sized from the file rather than
+the declared string, which is approximate (gemma-4-e2b declares ~2.9GB and
+is 3.11GB), and the KV cache at the current ctx_size is added.
+
+The earlier 4x overestimate is solved, not worked around. The GGUF metadata
+says why: Qwen3.5 reports `full_attention_interval = 4`, meaning it is a
+hybrid SSM/attention model where only 8 of its 32 layers keep a KV cache —
+the rest are state-space layers with a fixed-size recurrent state. Counting
+only the attending layers brings the estimate to within about 11% of
+measurement (predicted 1.61 GB growth from ctx 16384 to 65536 against 1.45 GB
+measured), and a test pins that against the recorded hardware numbers.
+
+Gemma 3 reports `attention.sliding_window = 512` but no pattern for how many
+layers stay global, so the window is deliberately not applied: erring high is
+the right direction for a "will this fit" number.
+
+The header gained a `mem` segment next to the context gauge, showing the
+model server's measured resident memory and its share of system RAM.
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships

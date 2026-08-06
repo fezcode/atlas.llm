@@ -176,3 +176,68 @@ func TestMaxToolRoundsDisplay(t *testing.T) {
 		t.Errorf("explicit display = %q, want 99", s)
 	}
 }
+
+// Hybrid models keep a KV cache on only some layers. Assuming all of them
+// overestimated Qwen3.5 by about 4x, which is why full_attention_interval
+// is read from the GGUF.
+func TestKVLayersRespectsHybridInterval(t *testing.T) {
+	hybrid := ggufMeta{BlockCount: 32, FullAttentionInterval: 4, HeadCountKV: 4, KeyLength: 256}
+	if got := hybrid.kvLayers(); got != 8 {
+		t.Errorf("kvLayers = %d, want 8 (32 blocks, interval 4)", got)
+	}
+	dense := ggufMeta{BlockCount: 32, HeadCountKV: 4, KeyLength: 256}
+	if got := dense.kvLayers(); got != 32 {
+		t.Errorf("dense kvLayers = %d, want 32", got)
+	}
+	// The hybrid cache must be proportionally smaller.
+	if h, d := hybrid.kvCacheBytes(16384), dense.kvCacheBytes(16384); h*4 != d {
+		t.Errorf("hybrid KV %d should be a quarter of dense %d", h, d)
+	}
+}
+
+// The estimate is checked against a real measurement, so a regression in
+// the formula shows up as a number that no longer matches the hardware.
+func TestKVEstimateMatchesMeasuredQwen(t *testing.T) {
+	m := ggufMeta{BlockCount: 32, FullAttentionInterval: 4, HeadCountKV: 4, KeyLength: 256}
+	// llama-server holding Qwen3.5-4B measured 0.91 GB resident at ctx
+	// 16384 and 2.36 GB at 65536 — a 1.45 GB delta.
+	delta := m.kvCacheBytes(65536) - m.kvCacheBytes(16384)
+	const measured = 1.45e9
+	if ratio := float64(delta) / measured; ratio < 0.7 || ratio > 1.4 {
+		t.Errorf("predicted KV growth %s is %.1fx the measured 1.45 GB — formula drifted",
+			formatBytes(delta), ratio)
+	}
+}
+
+func TestKVCacheGrowsWithContext(t *testing.T) {
+	m := ggufMeta{BlockCount: 32, FullAttentionInterval: 4, HeadCountKV: 4, KeyLength: 256}
+	if a, b := m.kvCacheBytes(16384), m.kvCacheBytes(32768); b != a*2 {
+		t.Errorf("doubling ctx gave %d vs %d — expected linear growth", b, a)
+	}
+	if m.kvCacheBytes(0) != 0 {
+		t.Error("zero context should cost nothing")
+	}
+	if (ggufMeta{}).kvCacheBytes(16384) != 0 {
+		t.Error("empty metadata should not produce an estimate")
+	}
+}
+
+// A downloaded model must be sized from the file, not the registry string —
+// the strings are approximate (gemma-4-e2b declares ~2.9GB, is 3.11GB).
+func TestModelSizeBytesPrefersRealFile(t *testing.T) {
+	withTempHome(t)
+	m := Model{Name: "x", Filename: "x.gguf", Size: "~1GB"}
+	if got := modelSizeBytes(m); got != int64(1e9) {
+		t.Errorf("undownloaded model = %d, want the declared 1e9", got)
+	}
+	p, err := modelPath(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, make([]byte, 4096), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := modelSizeBytes(m); got != 4096 {
+		t.Errorf("downloaded model = %d, want the real 4096", got)
+	}
+}

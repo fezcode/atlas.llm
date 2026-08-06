@@ -188,7 +188,12 @@ that `config.json` doesn't record.
 what it does, its limits for the current model, and what it costs — and
 `/help set <key>` has the long form.
 
-**Memory is measured, not predicted.** The figure comes from the running
+`/list` and the `/model` picker show each model's estimated footprint —
+weights plus the KV cache at the current `ctx_size` — as a share of system
+RAM. Downloaded models are sized from the file; models not yet fetched fall
+back to the declared size and omit the context term.
+
+**The header's `mem` figure is measured, not predicted.** The figure comes from the running
 model server process, and reads "not running" until the first message since
 the server starts lazily. Predicting the KV cache from model shape turned
 out to overestimate by ~4× on the models shipped here (Qwen3.5 reports

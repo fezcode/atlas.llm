@@ -121,6 +121,69 @@ type ggufMeta struct {
 	HeadCount       int
 	EmbeddingLength int
 	KeyLength       int // head dim, when stated explicitly
+
+	// FullAttentionInterval marks a hybrid model where only every Nth layer
+	// is full attention and the rest are state-space (SSM) layers holding a
+	// fixed-size recurrent state. Qwen3.5 reports 4: 8 of its 32 layers keep
+	// a KV cache, not all 32.
+	FullAttentionInterval int
+	// SlidingWindow caps how many tokens most layers attend over, so their
+	// KV stops growing past it. Gemma 3 reports 512.
+	SlidingWindow int
+}
+
+// kvLayers returns how many layers actually hold a full-context KV cache.
+//
+// Assuming every layer does overestimates badly on hybrid models: measured
+// against Qwen3.5-4B, treating all 32 layers as attention predicted about 4x
+// the memory that llama-server actually used, which matches its
+// full_attention_interval of 4.
+func (m ggufMeta) kvLayers() int {
+	if m.BlockCount <= 0 {
+		return 0
+	}
+	if m.FullAttentionInterval > 1 {
+		n := m.BlockCount / m.FullAttentionInterval
+		if n < 1 {
+			n = 1
+		}
+		return n
+	}
+	return m.BlockCount
+}
+
+// kvCacheBytes estimates the KV cache at a given context size.
+//
+// Two tensors (K and V) per attending layer, each holding tokens *
+// n_kv_heads * head_dim elements at 2 bytes for the default f16 cache.
+//
+// This is an estimate. It ignores the fixed state of SSM layers and runtime
+// overhead, and a model whose metadata omits these hints is treated as plain
+// attention. Both choices err high, which is the right direction for a
+// figure someone uses to decide whether a model will fit.
+//
+// Checked against llama-server holding Qwen3.5-4B: predicted 0.54 GB at ctx
+// 16384 and 2.15 GB at 65536, a 1.61 GB delta against 1.45 GB measured.
+func (m ggufMeta) kvCacheBytes(ctx int) int64 {
+	hd := m.headDim()
+	layers := m.kvLayers()
+	if layers <= 0 || m.HeadCountKV <= 0 || hd <= 0 || ctx <= 0 {
+		return 0
+	}
+	// Sliding-window models (Gemma 3) cap most layers at the window but keep
+	// a few global layers at full context, and the metadata does not say how
+	// many. Applying the window to every layer would understate the cache
+	// several times over, so it is deliberately not applied at all: for a
+	// "will this fit" figure, erring high is the safe direction.
+	tokens := ctx
+	const bytesPerElem = 2 // f16
+	return 2 * int64(layers) * int64(tokens) * int64(m.HeadCountKV) * int64(hd) * bytesPerElem
+}
+
+// complete reports whether enough shape metadata was found to size the KV
+// cache at all.
+func (m ggufMeta) complete() bool {
+	return m.kvLayers() > 0 && m.HeadCountKV > 0 && m.headDim() > 0
 }
 
 // headDim returns the per-head dimension, preferring the explicit key
@@ -194,6 +257,10 @@ func readGGUFMeta(path string) (ggufMeta, error) {
 			meta.EmbeddingLength = int(v)
 		case strings.HasSuffix(key, ".attention.key_length"):
 			meta.KeyLength = int(v)
+		case strings.HasSuffix(key, ".full_attention_interval"):
+			meta.FullAttentionInterval = int(v)
+		case strings.HasSuffix(key, ".attention.sliding_window"):
+			meta.SlidingWindow = int(v)
 		}
 	}
 	if meta.ContextLength <= 0 {
