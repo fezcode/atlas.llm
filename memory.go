@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -111,10 +112,23 @@ func statSize(path string) (int64, error) {
 	return info.Size(), nil
 }
 
+// Total RAM does not change while the process runs, and reading it shells
+// out on every platform, so it is resolved once.
+var (
+	ramOnce  sync.Once
+	ramBytes int64
+	ramOK    bool
+)
+
 // systemRAM returns total physical memory in bytes, or ok=false when it
 // can't be determined. Used to say whether a model will actually fit rather
 // than just how large it is.
 func systemRAM() (int64, bool) {
+	ramOnce.Do(func() { ramBytes, ramOK = readSystemRAM() })
+	return ramBytes, ramOK
+}
+
+func readSystemRAM() (int64, bool) {
 	switch runtime.GOOS {
 	case "darwin":
 		out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
@@ -252,7 +266,7 @@ func modelMemoryEstimate(m Model, ctx int) (weights, kv int64, ok bool) {
 	if err != nil {
 		return weights, 0, false
 	}
-	meta, err := readGGUFMeta(p)
+	meta, err := readGGUFMetaCached(p)
 	if err != nil || !meta.complete() {
 		return weights, 0, false
 	}

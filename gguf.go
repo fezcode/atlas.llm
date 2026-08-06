@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"sync"
 )
 
 // Minimal GGUF metadata reader — just enough to learn a model's trained
@@ -39,8 +41,87 @@ const (
 // corrupt or hostile file can't spin us forever.
 const ggufMaxKVPairs = 1 << 16
 
+// ggufReader walks a GGUF header. It holds the file rather than a plain
+// Reader so uninteresting values can be seeked past instead of decoded: the
+// tokenizer vocabulary is a six-figure array of strings, and materializing
+// it made reading one header take the better part of a second.
 type ggufReader struct {
-	r io.Reader
+	r *bufio.Reader
+	f *os.File
+}
+
+// skip advances n bytes without allocating.
+func (g *ggufReader) skip(n int64) error {
+	if n < 0 {
+		return fmt.Errorf("negative skip")
+	}
+	// Discard is cheap for small hops and avoids invalidating the buffer.
+	if n <= 4096 {
+		_, err := g.r.Discard(int(n))
+		return err
+	}
+	if _, err := g.f.Seek(-int64(g.r.Buffered())+n, io.SeekCurrent); err != nil {
+		return err
+	}
+	g.r.Reset(g.f)
+	return nil
+}
+
+// skipValue advances past a value without decoding it.
+func (g *ggufReader) skipValue(t uint32) error {
+	switch t {
+	case ggufUint8, ggufInt8, ggufBool:
+		return g.skip(1)
+	case ggufUint16, ggufInt16:
+		return g.skip(2)
+	case ggufUint32, ggufInt32, ggufFloat32:
+		return g.skip(4)
+	case ggufUint64, ggufInt64, ggufFloat64:
+		return g.skip(8)
+	case ggufString:
+		n, err := g.u64()
+		if err != nil {
+			return err
+		}
+		return g.skip(int64(n))
+	case ggufArray:
+		et, err := g.u32()
+		if err != nil {
+			return err
+		}
+		n, err := g.u64()
+		if err != nil {
+			return err
+		}
+		// Fixed-width elements can be skipped in a single hop.
+		if w := ggufFixedWidth(et); w > 0 {
+			return g.skip(int64(n) * w)
+		}
+		for i := uint64(0); i < n; i++ {
+			if err := g.skipValue(et); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown GGUF value type %d", t)
+	}
+}
+
+// ggufFixedWidth returns the byte width of a fixed-size value type, or 0
+// for variable-length ones.
+func ggufFixedWidth(t uint32) int64 {
+	switch t {
+	case ggufUint8, ggufInt8, ggufBool:
+		return 1
+	case ggufUint16, ggufInt16:
+		return 2
+	case ggufUint32, ggufInt32, ggufFloat32:
+		return 4
+	case ggufUint64, ggufInt64, ggufFloat64:
+		return 8
+	}
+	return 0
 }
 
 func (g *ggufReader) u32() (uint32, error) {
@@ -209,7 +290,7 @@ func readGGUFMeta(path string) (ggufMeta, error) {
 	}
 	defer f.Close()
 
-	g := &ggufReader{r: f}
+	g := &ggufReader{r: bufio.NewReaderSize(f, 1<<16), f: f}
 	magic, err := g.u32()
 	if err != nil {
 		return meta, err
@@ -240,6 +321,14 @@ func readGGUFMeta(path string) (ggufMeta, error) {
 		if err != nil {
 			return meta, err
 		}
+		// Decode only what we use. Everything else — above all the
+		// tokenizer arrays — is skipped without allocating.
+		if !ggufWantedKey(key) {
+			if err := g.skipValue(t); err != nil {
+				return meta, err
+			}
+			continue
+		}
 		v, err := g.value(t)
 		if err != nil {
 			return meta, err
@@ -269,6 +358,53 @@ func readGGUFMeta(path string) (ggufMeta, error) {
 	return meta, nil
 }
 
+// ggufWantedKey reports whether a metadata key is one readGGUFMeta uses.
+func ggufWantedKey(key string) bool {
+	for _, suffix := range []string{
+		".context_length", ".block_count", ".attention.head_count_kv",
+		".attention.head_count", ".embedding_length", ".attention.key_length",
+		".full_attention_interval", ".attention.sliding_window",
+	} {
+		if strings.HasSuffix(key, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// GGUF headers never change for a given file, so parse each one once.
+// Keyed by path plus size and mtime, so a re-download is picked up.
+var (
+	ggufCacheMu sync.Mutex
+	ggufCache   = map[string]ggufMeta{}
+)
+
+// readGGUFMetaCached is what callers on a render path should use: repainting
+// the model picker asks for every model's metadata on every keypress.
+func readGGUFMetaCached(path string) (ggufMeta, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ggufMeta{}, err
+	}
+	key := fmt.Sprintf("%s|%d|%d", path, info.Size(), info.ModTime().UnixNano())
+
+	ggufCacheMu.Lock()
+	meta, ok := ggufCache[key]
+	ggufCacheMu.Unlock()
+	if ok {
+		return meta, nil
+	}
+
+	meta, err = readGGUFMeta(path)
+	if err != nil {
+		return meta, err
+	}
+	ggufCacheMu.Lock()
+	ggufCache[key] = meta
+	ggufCacheMu.Unlock()
+	return meta, nil
+}
+
 // currentModelMeta returns the active model's GGUF metadata, or ok=false
 // when it isn't downloaded or can't be read.
 func currentModelMeta() (ggufMeta, bool) {
@@ -280,7 +416,7 @@ func currentModelMeta() (ggufMeta, bool) {
 	if err != nil {
 		return ggufMeta{}, false
 	}
-	meta, err := readGGUFMeta(p)
+	meta, err := readGGUFMetaCached(p)
 	if err != nil {
 		return ggufMeta{}, false
 	}
@@ -298,7 +434,7 @@ func modelTrainedContext(path string) (int, error) {
 	}
 	defer f.Close()
 
-	g := &ggufReader{r: f}
+	g := &ggufReader{r: bufio.NewReaderSize(f, 1<<16), f: f}
 	magic, err := g.u32()
 	if err != nil {
 		return 0, err
@@ -353,9 +489,9 @@ func currentModelTrainedContext() int {
 	if err != nil {
 		return 0
 	}
-	n, err := modelTrainedContext(p)
+	meta, err := readGGUFMetaCached(p)
 	if err != nil {
 		return 0
 	}
-	return n
+	return meta.ContextLength
 }
