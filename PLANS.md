@@ -357,6 +357,28 @@ the old fixed 12000, which assumed a 16K window.
 ctx is part of the server's identity alongside -ngl, so a change restarts
 llama-server rather than silently taking effect on the next model switch.
 
+### 19. /config and per-setting help  — SHIPPED (v0.18.0)
+Settings information lived in three places — handleSet, help.go, and the
+README — and kept drifting. settings.go is now the single source: each entry
+carries its key, usage, how to render the current value, and its guidance,
+and /set, /config, and the /help cross-check test all read from it.
+
+- `/set` lists keys with values and summaries.
+- `/set <key>` explains the setting instead of echoing it: current value,
+  limits computed for the active model, cost, usage, and a pointer to
+  `/help set <key>`.
+- `/config` shows settings, model, engine, session-only state (tools,
+  yesman, MCP), memory, and file paths in one place.
+- A test asserts every registry key has a matching `/help set` subcommand.
+
+Memory is measured from the running server process, not predicted. The
+obvious KV formula (2 * layers * ctx * kv_heads * head_dim * 2 bytes)
+overestimates ~4x on the shipped models: measured Qwen3.5-4B at 0.91 GB
+resident for ctx 16384 and 2.36 GB for 65536, about 31 KB/token against the
+formula's 128 KB/token — consistent with hybrid attention where only a
+fraction of layers keep a full-context cache. Showing the formula's number
+would have been four times too large, so it was dropped.
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships

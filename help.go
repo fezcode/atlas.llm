@@ -361,6 +361,25 @@ var helpTopics = []helpTopic{
 		SeeAlso: []string{"tools", "model"},
 	},
 	{
+		Name:    "config",
+		Summary: "Show the whole current setup in one place.",
+		Usage:   []string{"/config"},
+		Detail: "Prints every persisted setting with its current value, the active " +
+			"model and whether it's downloaded, the installed engine build, the " +
+			"session-only state (tool-use, yesman, MCP connections), how much " +
+			"memory the model server is using, and where everything lives on " +
+			"disk.\n\n" +
+			"Read-only — `/set <key> <value>` changes settings, `/mcp` manages " +
+			"servers. This is the place to start when behaviour is surprising, " +
+			"since it shows session state that config.json doesn't record.",
+		Notes: []string{
+			"The memory figure is measured from the running model server, not " +
+				"predicted. It reads as \"not running\" until the first message, " +
+				"since the server starts lazily.",
+		},
+		SeeAlso: []string{"set", "mcp", "tools"},
+	},
+	{
 		Name:    "yesman",
 		Summary: "Auto-approve destructive tools for this session only.",
 		Usage:   []string{"/yesman", "/yesman on", "/yesman off"},

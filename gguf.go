@@ -112,6 +112,114 @@ func (g *ggufReader) value(t uint32) (int64, error) {
 	}
 }
 
+// ggufMeta is the subset of GGUF metadata atlas.llm uses: the trained
+// context length, plus the shape parameters needed to size the KV cache.
+type ggufMeta struct {
+	ContextLength   int
+	BlockCount      int // transformer layers
+	HeadCountKV     int // key/value heads (< head count on GQA models)
+	HeadCount       int
+	EmbeddingLength int
+	KeyLength       int // head dim, when stated explicitly
+}
+
+// headDim returns the per-head dimension, preferring the explicit key
+// length and falling back to embedding / head count.
+func (m ggufMeta) headDim() int {
+	if m.KeyLength > 0 {
+		return m.KeyLength
+	}
+	if m.HeadCount > 0 && m.EmbeddingLength > 0 {
+		return m.EmbeddingLength / m.HeadCount
+	}
+	return 0
+}
+
+// readGGUFMeta walks a GGUF header and extracts the fields above. Keys are
+// architecture-prefixed (qwen35.block_count, gemma3.block_count, …), so we
+// match on the suffix.
+func readGGUFMeta(path string) (ggufMeta, error) {
+	var meta ggufMeta
+	f, err := os.Open(path)
+	if err != nil {
+		return meta, err
+	}
+	defer f.Close()
+
+	g := &ggufReader{r: f}
+	magic, err := g.u32()
+	if err != nil {
+		return meta, err
+	}
+	if magic != ggufMagic {
+		return meta, fmt.Errorf("%s is not a GGUF file", path)
+	}
+	if _, err := g.u32(); err != nil { // version
+		return meta, err
+	}
+	if _, err := g.u64(); err != nil { // tensor count
+		return meta, err
+	}
+	nkv, err := g.u64()
+	if err != nil {
+		return meta, err
+	}
+	if nkv > ggufMaxKVPairs {
+		return meta, fmt.Errorf("implausible GGUF metadata count %d", nkv)
+	}
+
+	for i := uint64(0); i < nkv; i++ {
+		key, err := g.str()
+		if err != nil {
+			return meta, err
+		}
+		t, err := g.u32()
+		if err != nil {
+			return meta, err
+		}
+		v, err := g.value(t)
+		if err != nil {
+			return meta, err
+		}
+		switch {
+		case strings.HasSuffix(key, ".context_length"):
+			meta.ContextLength = int(v)
+		case strings.HasSuffix(key, ".block_count"):
+			meta.BlockCount = int(v)
+		case strings.HasSuffix(key, ".attention.head_count_kv"):
+			meta.HeadCountKV = int(v)
+		case strings.HasSuffix(key, ".attention.head_count"):
+			meta.HeadCount = int(v)
+		case strings.HasSuffix(key, ".embedding_length"):
+			meta.EmbeddingLength = int(v)
+		case strings.HasSuffix(key, ".attention.key_length"):
+			meta.KeyLength = int(v)
+		}
+	}
+	if meta.ContextLength <= 0 {
+		return meta, fmt.Errorf("no context_length in %s", path)
+	}
+	return meta, nil
+}
+
+// currentModelMeta returns the active model's GGUF metadata, or ok=false
+// when it isn't downloaded or can't be read.
+func currentModelMeta() (ggufMeta, bool) {
+	m, err := currentModel()
+	if err != nil {
+		return ggufMeta{}, false
+	}
+	p, err := modelPath(m)
+	if err != nil {
+		return ggufMeta{}, false
+	}
+	meta, err := readGGUFMeta(p)
+	if err != nil {
+		return ggufMeta{}, false
+	}
+	return meta, true
+}
+
 // modelTrainedContext returns the context length a GGUF model was trained
 // for — the hard ceiling on what llama-server can be asked to allocate.
 // The key is architecture-prefixed (qwen35.context_length,

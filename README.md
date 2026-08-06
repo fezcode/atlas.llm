@@ -41,6 +41,7 @@ they are missing returns an error with the command to run.
 | `/summarize`      | Summarize the current directory into `SUMMARY.md`.                  |
 | `/grep <query>`   | Semantic grep: ask the local model to find lines matching `<query>`.|
 | `/set [k [v]]`    | Settings: `max_tokens`, `ctx_size`, `gpu_layers`, `engine_variant`. |
+| `/config`         | Everything at once: settings, session state, memory, paths.         |
 | `/tools [on\|off\|list]` | Toggle agentic tool-use (off by default). See below.         |
 | `/mcp [...]`      | Connect MCP servers (Slack, Confluence, …). See below.              |
 | `/compact`        | Summarize older turns to free up the context window.                |
@@ -143,6 +144,26 @@ it is never silent. `Esc` still stops a turn mid-flight.
 
 For a narrower version, `/mcp trust NAME on` exempts a single MCP server you
 have vetted, and that one does persist.
+
+### Seeing the whole setup
+
+`/config` prints every persisted setting with its current value, the active
+model and engine, session-only state (`/tools`, `/yesman`, MCP connections),
+the model server's memory use, and where everything lives on disk. It's the
+place to start when behaviour is surprising, since it shows session state
+that `config.json` doesn't record.
+
+`/set` with no arguments lists the settings; `/set <key>` explains one —
+what it does, its limits for the current model, and what it costs — and
+`/help set <key>` has the long form.
+
+**Memory is measured, not predicted.** The figure comes from the running
+model server process, and reads "not running" until the first message since
+the server starts lazily. Predicting the KV cache from model shape turned
+out to overestimate by ~4× on the models shipped here (Qwen3.5 reports
+dimensions implying 128 KB/token, but measures ~31 KB/token — consistent
+with hybrid attention where only some layers keep a full-context cache), so
+atlas.llm reports what is actually in use rather than a formula.
 
 ### Context size
 

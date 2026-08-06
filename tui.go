@@ -280,6 +280,7 @@ func welcomeText() string {
 			{"/reset", "drop conversation context + server KV cache"},
 			{"/compact", "summarize older turns to free up context"},
 			{"/set [k [v]]", "settings: max_tokens, ctx_size, gpu_layers, engine_variant"},
+			{"/config", "everything at once: settings, session state, memory, paths"},
 			{"/tools [on|off|list]", "agentic tool-use (read/write/grep/run_cmd; off by default)"},
 			{"/mcp [connect|tools]", "connect MCP servers (Slack, Confluence, …); /mcp help for setup"},
 			{"/quit  /exit", "leave chat (or press ctrl+c)"},
@@ -441,24 +442,20 @@ func (m *chatModel) handleSet(args []string) {
 		return
 	}
 	if len(args) == 0 {
-		m.pushSystem(fmt.Sprintf("Settings:\n"+
-			"  max_tokens     = %d  (reply-length cap; default %d)\n"+
-			"  ctx_size       = %s\n"+
-			"  gpu_layers     = %s  (layers offloaded to the GPU)\n"+
-			"  engine_variant = %s  (llama.cpp build; installed: %s)",
-			cfg.MaxTokens, defaultMaxTokens,
-			ctxSizeDisplay(cfg),
-			gpuLayersDisplay(cfg),
-			engineVariantDisplay(cfg), installedEngineVariant()))
+		m.pushSystem(renderSettingsList(cfg))
 		return
 	}
 	key := strings.ToLower(args[0])
-	switch key {
-	case "ctx_size":
-		if len(args) < 2 {
-			m.pushSystem(fmt.Sprintf("ctx_size = %s", ctxSizeDisplay(cfg)))
+	// `/set <key>` with no value explains the setting rather than just
+	// echoing it — choosing a value needs the limits and the tradeoff.
+	if len(args) < 2 {
+		if s, ok := findSetting(key); ok {
+			m.pushSystem(renderSettingDetail(s, cfg))
 			return
 		}
+	}
+	switch key {
+	case "ctx_size":
 		val := strings.ToLower(args[1])
 		if val == "auto" || val == "default" {
 			cfg.CtxSize = 0
@@ -495,10 +492,6 @@ func (m *chatModel) handleSet(args []string) {
 			ctxSizeDisplay(cfg)))
 
 	case "gpu_layers":
-		if len(args) < 2 {
-			m.pushSystem(fmt.Sprintf("gpu_layers = %s", gpuLayersDisplay(cfg)))
-			return
-		}
 		val := strings.ToLower(args[1])
 		if val == "auto" {
 			cfg.GPULayers = nil
@@ -525,11 +518,6 @@ func (m *chatModel) handleSet(args []string) {
 		m.pushSystem(msg)
 
 	case "engine_variant":
-		if len(args) < 2 {
-			m.pushSystem(fmt.Sprintf("engine_variant = %s  (installed: %s)",
-				engineVariantDisplay(cfg), installedEngineVariant()))
-			return
-		}
 		val := strings.ToLower(args[1])
 		switch val {
 		case engineVariantAuto, "":
@@ -564,10 +552,6 @@ func (m *chatModel) handleSet(args []string) {
 		m.pushSystem(msg)
 
 	case "max_tokens":
-		if len(args) < 2 {
-			m.pushSystem(fmt.Sprintf("max_tokens = %d", cfg.MaxTokens))
-			return
-		}
 		n, err := strconv.Atoi(args[1])
 		if err != nil || n <= 0 {
 			m.pushError(fmt.Sprintf("invalid max_tokens=%q (expected positive integer)", args[1]))
@@ -590,7 +574,7 @@ func (m *chatModel) handleSet(args []string) {
 		}
 		m.pushSystem(fmt.Sprintf("max_tokens = %d", n))
 	default:
-		m.pushError(fmt.Sprintf("unknown setting: %s (supported: max_tokens, ctx_size, gpu_layers, engine_variant)", key))
+		m.pushError(fmt.Sprintf("unknown setting: %s (supported: %s)", key, strings.Join(settingKeys(), ", ")))
 	}
 }
 
@@ -1027,6 +1011,15 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 	case "/compact":
 		return m.handleCompact()
 
+	case "/config":
+		cfg, err := loadConfig()
+		if err != nil {
+			m.pushError("load config: " + err.Error())
+			return nil
+		}
+		m.pushSystem(renderConfig(cfg, m.configState()))
+		return nil
+
 	case "/yesman":
 		m.handleYesman(args)
 		return nil
@@ -1135,8 +1128,8 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 // slashCommands is the canonical list of completable command names.
 var slashCommands = []string{
 	"/clear", "/download", "/exit", "/grep", "/help", "/list",
-	"/compact", "/mcp", "/model", "/quit", "/reset", "/set", "/summarize",
-	"/tools", "/yesman",
+	"/compact", "/config", "/mcp", "/model", "/quit", "/reset", "/set",
+	"/summarize", "/tools", "/yesman",
 }
 
 // tabComplete handles Tab in the input box. Returns true if it modified
@@ -1174,7 +1167,7 @@ func (m *chatModel) tabComplete() bool {
 	case "/help":
 		pool = helpTopicNames()
 	case "/set":
-		pool = []string{"ctx_size", "engine_variant", "gpu_layers", "max_tokens"}
+		pool = settingKeys()
 	case "/tools":
 		pool = []string{"on", "off", "list"}
 	case "/yesman":
@@ -2029,4 +2022,21 @@ func (m *chatModel) handleYesman(args []string) {
 			"It is never written to config.json, so it resets when you quit. " +
 			"Turn it off with `/yesman off`, and press esc to stop a turn mid-flight.")
 	m.refresh()
+}
+
+// configState snapshots the session-only state `/config` reports alongside
+// the persisted settings.
+func (m *chatModel) configState() configState {
+	mcpMu.RLock()
+	connected := len(mcpConns)
+	tools := len(mcpTools)
+	mcpMu.RUnlock()
+
+	return configState{
+		toolsEnabled: m.agentEnabled,
+		yesman:       m.yesman,
+		mcpServers:   len(configuredMCPNames()),
+		mcpConnected: connected,
+		mcpTools:     tools,
+	}
 }
