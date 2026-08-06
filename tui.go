@@ -376,18 +376,62 @@ func warmupServerCmd() tea.Cmd {
 	}
 }
 
+// ruleMarker is a placeholder stored in m.rendered wherever a full-width
+// separator belongs. It is expanded at render time rather than baked in, so
+// the rules re-fit when the terminal is resized.
+const ruleMarker = "\x00rule\x00"
+
 func (m *chatModel) refresh() {
-	m.viewport.SetContent(strings.Join(m.rendered, "\n"))
+	m.viewport.SetContent(m.renderTranscript())
 	m.viewport.GotoBottom()
 }
 
+// renderTranscript joins the transcript, expanding rule markers to the
+// current width. Built with a single Builder because this runs on every
+// streamed token.
+func (m *chatModel) renderTranscript() string {
+	rule := m.horizontalRule()
+	var b strings.Builder
+	for i, line := range m.rendered {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		if line == ruleMarker {
+			b.WriteString(rule)
+			continue
+		}
+		b.WriteString(line)
+	}
+	return b.String()
+}
+
+// horizontalRule spans the viewport width.
+func (m *chatModel) horizontalRule() string {
+	w := m.viewport.Width
+	if w <= 0 {
+		w = 80
+	}
+	return ruleStyle.Render(strings.Repeat("─", w))
+}
+
+// pushRule appends a separator, collapsing consecutive ones.
+func (m *chatModel) pushRule() {
+	if n := len(m.rendered); n > 0 && m.rendered[n-1] == ruleMarker {
+		return
+	}
+	m.rendered = append(m.rendered, ruleMarker)
+}
+
 // lastRenderedIsBlank reports whether the most recent entry is an empty
-// separator line, so pushers can avoid stacking blank lines.
+// separator line or a rule, so pushers can avoid stacking separators.
 func (m *chatModel) lastRenderedIsBlank() bool {
 	if len(m.rendered) == 0 {
 		return true
 	}
-	return strings.TrimSpace(m.rendered[len(m.rendered)-1]) == ""
+	last := m.rendered[len(m.rendered)-1]
+	// A rule already separates blocks, so it counts as blank for the
+	// purposes of not stacking further separators on top of it.
+	return last == ruleMarker || strings.TrimSpace(last) == ""
 }
 
 func (m *chatModel) pushBlank() {
@@ -411,6 +455,7 @@ func (m *chatModel) pushAssistant(s string) {
 	m.pushBlank()
 	m.rendered = append(m.rendered, assistantPillStyle.Render("ATLAS"))
 	m.rendered = append(m.rendered, m.renderMarkdown(s))
+	m.pushRule()
 	m.refresh()
 }
 
@@ -2303,6 +2348,7 @@ func (m *chatModel) finishStream(final string) bool {
 	if m.streamIdx >= 0 && m.streamIdx < len(m.rendered) {
 		m.rendered[m.streamIdx] = m.renderMarkdown(final)
 	}
+	m.pushRule()
 	m.streamBuf = ""
 	m.streamThinking = 0
 	m.refresh()
