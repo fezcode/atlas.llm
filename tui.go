@@ -677,6 +677,9 @@ func (m *chatModel) renderPicker() {
 		}
 		row := fmt.Sprintf("%s%-28s  %s%s%s", marker, mm.Name,
 			metaLabelStyle.Render(mm.Size), dot, status)
+		if note := modelResourceNote(mm); note != "" {
+			row += dot + sysStyle.Render(note)
+		}
 		if i == m.pickerIdx {
 			lines = append(lines, rowSelected.Render(row))
 		} else {
@@ -1041,9 +1044,15 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 			if mm.Name == m.modelName {
 				marker = "*"
 			}
-			fmt.Fprintf(&b, " %s %-25s %-8s %s\n", marker, mm.Name, mm.Size, status)
+			fmt.Fprintf(&b, " %s %-25s %-8s %-16s %s\n",
+				marker, mm.Name, mm.Size, status, modelResourceNote(mm))
 		}
-		b.WriteString("\n(* = current model)")
+		if total, ok := systemRAM(); ok {
+			fmt.Fprintf(&b, "\n(* = current model · RAM share is the weights against %s total;\n"+
+				" the context window adds more on top — see /help set ctx_size)", formatBytes(total))
+		} else {
+			b.WriteString("\n(* = current model)")
+		}
 		m.pushSystem(b.String())
 		return nil
 

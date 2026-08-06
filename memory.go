@@ -108,3 +108,114 @@ func statSize(path string) (int64, error) {
 	}
 	return info.Size(), nil
 }
+
+// systemRAM returns total physical memory in bytes, or ok=false when it
+// can't be determined. Used to say whether a model will actually fit rather
+// than just how large it is.
+func systemRAM() (int64, bool) {
+	switch runtime.GOOS {
+	case "darwin":
+		out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
+		if err != nil {
+			return 0, false
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+		return n, err == nil && n > 0
+	case "linux":
+		data, err := os.ReadFile("/proc/meminfo")
+		if err != nil {
+			return 0, false
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if !strings.HasPrefix(line, "MemTotal:") {
+				continue
+			}
+			f := strings.Fields(line)
+			if len(f) < 2 {
+				return 0, false
+			}
+			kb, err := strconv.ParseInt(f[1], 10, 64)
+			return kb * 1024, err == nil && kb > 0
+		}
+		return 0, false
+	case "windows":
+		out, err := exec.Command("wmic", "ComputerSystem", "get", "TotalPhysicalMemory").Output()
+		if err != nil {
+			return 0, false
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "TotalPhysical") {
+				continue
+			}
+			n, err := strconv.ParseInt(line, 10, 64)
+			if err == nil && n > 0 {
+				return n, true
+			}
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
+// Fit describes how comfortably a model's weights sit in system memory.
+type Fit int
+
+const (
+	FitUnknown Fit = iota
+	FitComfortable
+	FitOK
+	FitTight
+	FitTooBig
+)
+
+func (f Fit) String() string {
+	switch f {
+	case FitComfortable:
+		return "comfortable"
+	case FitOK:
+		return "ok"
+	case FitTight:
+		return "tight"
+	case FitTooBig:
+		return "too big"
+	}
+	return ""
+}
+
+// modelFit judges a model's weights against total RAM.
+//
+// Only the weights are counted. The KV cache adds to this and grows with
+// ctx_size, but predicting it from model shape proved unreliable (see the
+// note at the top of this file), so the figure here is the floor rather
+// than a total — deliberately, since an honest floor beats a wrong total.
+func modelFit(m Model) (share float64, fit Fit) {
+	total, ok := systemRAM()
+	if !ok || total <= 0 {
+		return 0, FitUnknown
+	}
+	weights := parseModelSize(m.Size)
+	if weights <= 0 {
+		return 0, FitUnknown
+	}
+	share = float64(weights) / float64(total)
+	switch {
+	case share < 0.25:
+		return share, FitComfortable
+	case share < 0.5:
+		return share, FitOK
+	case share < 0.75:
+		return share, FitTight
+	default:
+		return share, FitTooBig
+	}
+}
+
+// modelResourceNote is the per-model column in `/list` and the picker.
+func modelResourceNote(m Model) string {
+	share, fit := modelFit(m)
+	if fit == FitUnknown {
+		return ""
+	}
+	return fmt.Sprintf("%.0f%% RAM, %s", share*100, fit)
+}

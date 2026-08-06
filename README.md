@@ -94,6 +94,23 @@ local model.
 | ------------ | ------- | ---------------------------------------------------- |
 | `--max-size` | `32768` | Skip files larger than this many bytes. Keeps per-file prompts under the OS command-line limit on Windows. |
 
+### `--reset-model` — unstick a heavy model
+
+atlas.llm loads the selected model at startup. Quitting while a large model
+is active means the next launch blocks loading it again, with no chance to
+reach `/model` from inside the TUI.
+
+```
+atlas.llm --reset-model
+```
+
+Switches to the lightest model in the registry and exits. Other settings are
+left alone.
+
+`/list` and the `/model` picker show each model's weights as a share of
+system RAM, so it's visible which ones your machine can hold before you
+download one.
+
 ### Agentic tool-use
 
 Enable with `/tools on` inside chat. When enabled, the model can call a

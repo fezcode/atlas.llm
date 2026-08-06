@@ -25,6 +25,10 @@ FLAGS
   -h, --help           Show this help and exit.
   -v, --version        Print version and exit.
   --clear-logs         Delete the persistent TUI log file and exit.
+  --reset-model        Switch to the lightest model and exit. atlas.llm loads
+                       the selected model at startup, so quitting while a large
+                       one is active can leave the next launch stuck loading it
+                       with no way to reach /model. This is the way out.
 
   -c, --chat PROMPT    Send PROMPT to the local model and print the reply
                        to stdout, then exit. Pass "-" to read PROMPT from
@@ -140,6 +144,7 @@ func main() {
 		grepFlag          string
 		maxSizeFlag       int64
 		clearLogsFlag     bool
+		resetModelFlag    bool
 		chatFlag          string
 		chatFlagSet       bool
 	)
@@ -157,6 +162,7 @@ func main() {
 	flag.StringVar(&grepFlag, "grep", "", "")
 	flag.Int64Var(&maxSizeFlag, "max-size", DefaultGrepMaxSize, "")
 	flag.BoolVar(&clearLogsFlag, "clear-logs", false, "")
+	flag.BoolVar(&resetModelFlag, "reset-model", false, "")
 	flag.StringVar(&chatFlag, "c", "", "")
 	flag.StringVar(&chatFlag, "chat", "", "")
 
@@ -180,6 +186,14 @@ func main() {
 	if clearLogsFlag {
 		if err := clearLogs(); err != nil {
 			fmt.Fprintf(os.Stderr, "clear-logs: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if resetModelFlag {
+		if err := resetToLightestModel(); err != nil {
+			fmt.Fprintf(os.Stderr, "reset-model: %v\n", err)
 			os.Exit(1)
 		}
 		return

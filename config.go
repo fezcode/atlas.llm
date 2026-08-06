@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -535,4 +537,80 @@ func gpuHelpRows() [][2]string {
 	rows = append(rows, [2]string{"/set", fmt.Sprintf("current: gpu_layers=%s, engine=%s",
 		gpuLayersDisplay(cfg), installed)})
 	return rows
+}
+
+// parseModelSize turns a registry Size string ("~700MB", "~2.5GB") into
+// bytes for comparison. Returns 0 when it can't be parsed, which sorts such
+// entries last rather than making them look tiny.
+func parseModelSize(s string) int64 {
+	s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "~"))
+	upper := strings.ToUpper(s)
+	var mult float64
+	switch {
+	case strings.HasSuffix(upper, "GB"):
+		mult, upper = 1e9, strings.TrimSuffix(upper, "GB")
+	case strings.HasSuffix(upper, "MB"):
+		mult, upper = 1e6, strings.TrimSuffix(upper, "MB")
+	default:
+		return 0
+	}
+	n, err := strconv.ParseFloat(strings.TrimSpace(upper), 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	// Round rather than truncate: 8.2 * 1e9 lands just under 8.2e9 in
+	// binary floating point, which would report 8199999999 bytes.
+	return int64(math.Round(n * mult))
+}
+
+// lightestModel returns the smallest model in the registry — the safe one
+// to fall back to when a heavy model makes startup unusable. Falls back to
+// defaultModel if no size parses.
+func lightestModel() Model {
+	best, bestSize := Model{}, int64(0)
+	for _, m := range availableModels {
+		size := parseModelSize(m.Size)
+		if size == 0 {
+			continue
+		}
+		if bestSize == 0 || size < bestSize {
+			best, bestSize = m, size
+		}
+	}
+	if bestSize == 0 {
+		if m, ok := findModel(defaultModel); ok {
+			return m
+		}
+		return availableModels[0]
+	}
+	return best
+}
+
+// resetToLightestModel switches the configured model to the smallest one.
+//
+// atlas.llm warms the model server at startup, so quitting while a large
+// model is selected means the next launch blocks loading it again — with no
+// chance to reach /model from inside the TUI. This is the way out, from the
+// command line, without touching config.json by hand.
+func resetToLightestModel() error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	target := lightestModel()
+	if cfg.CurrentModel == target.Name {
+		fmt.Printf("Already using %s (%s), the lightest model available.\n", target.Name, target.Size)
+		return nil
+	}
+	previous := cfg.CurrentModel
+	cfg.CurrentModel = target.Name
+	if err := saveConfig(cfg); err != nil {
+		return err
+	}
+	fmt.Printf("Model reset: %s -> %s (%s)\n", previous, target.Name, target.Size)
+	if !isModelDownloaded(target) {
+		fmt.Printf("Note: %s is not downloaded yet — run /download %s inside chat.\n",
+			target.Name, target.Name)
+	}
+	return nil
 }

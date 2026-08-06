@@ -379,6 +379,24 @@ formula's 128 KB/token — consistent with hybrid attention where only a
 fraction of layers keep a full-context cache. Showing the formula's number
 would have been four times too large, so it was dropped.
 
+### 20. --reset-model and per-model RAM share  — SHIPPED (v0.20.0)
+Init() warms the model server at startup, so quitting on a 14B left the next
+launch blocked loading it with no way to reach /model. `atlas.llm
+--reset-model` switches to the smallest registry entry and exits, leaving
+every other setting untouched.
+
+"Smallest" is computed by parsing the registry Size strings rather than
+trusting defaultModel or list order, so adding a smaller model later is
+picked up automatically.
+
+/list and the model picker now show each model's weights as a share of
+system RAM (read from sysctl / /proc/meminfo / wmic) with a verdict.
+
+Only the weights are counted, deliberately. Predicting the KV cache from
+model shape overestimates ~4x on these models (see memory.go), so the figure
+is an honest floor rather than a wrong total, and the listing says the
+context window adds more on top.
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships
