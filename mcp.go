@@ -845,7 +845,9 @@ func (m *chatModel) renderMCPPicker() {
 	}
 	lines = append(lines, "", sysStyle.Render("● = already in mcp.json · not listed? /mcp add NAME -- npx -y pkg"))
 	m.viewport.SetContent(strings.Join(lines, "\n"))
-	m.viewport.GotoBottom()
+	// Same reason as the model picker: pinning the view means entries below
+	// the fold can be selected but never seen.
+	m.scrollSelectionIntoView(pickerHeaderLines + m.pickerIdx)
 }
 
 // handleMCPAdd implements `/mcp add`.

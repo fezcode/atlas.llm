@@ -720,7 +720,40 @@ func (m *chatModel) renderPicker() {
 		}
 	}
 	m.viewport.SetContent(strings.Join(lines, "\n"))
-	m.viewport.GotoTop()
+	// The list can be taller than the viewport. Pinning to the top left
+	// everything below the fold unreachable: the cursor moved but you could
+	// not see it, so later models looked absent from the picker entirely.
+	m.scrollSelectionIntoView(pickerHeaderLines + m.pickerIdx)
+}
+
+// pickerHeaderLines is how many lines precede the first selectable row —
+// the title and the blank line under it.
+const pickerHeaderLines = 2
+
+// scrollSelectionIntoView nudges the viewport just far enough to show the
+// given content line, leaving the offset alone when it is already visible.
+func (m *chatModel) scrollSelectionIntoView(line int) {
+	h := m.viewport.Height
+	if h <= 0 {
+		return
+	}
+	off := m.viewport.YOffset
+	switch {
+	case line <= pickerHeaderLines:
+		// Near the top, show the title too rather than scrolling the
+		// minimum amount and leaving the header off-screen.
+		off = 0
+	case line < off:
+		off = line
+	case line >= off+h:
+		off = line - h + 1
+	default:
+		return
+	}
+	if off < 0 {
+		off = 0
+	}
+	m.viewport.SetYOffset(off)
 }
 
 func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

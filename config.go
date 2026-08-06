@@ -47,6 +47,20 @@ var availableModels = []Model{
 		Size:     "~2.9GB",
 	},
 	{
+		// Gemma 4, unlike Gemma 3, ships a tool-calling chat template, so
+		// this family can drive /tools and /mcp.
+		Name:     "gemma-4-e4b-it",
+		Filename: "gemma-4-E4B-it-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf",
+		Size:     "~5.0GB",
+	},
+	{
+		Name:     "gemma-4-12b-it",
+		Filename: "gemma-4-12b-it-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/resolve/main/gemma-4-12b-it-Q4_K_M.gguf",
+		Size:     "~7.1GB",
+	},
+	{
 		// Fills the gap between qwen3.5-4b and qwen3.5-9b. Same family as
 		// the 14B below, which already tool-calls reliably.
 		Name:     "ministral-3-8b-instruct",

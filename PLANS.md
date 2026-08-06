@@ -445,6 +445,37 @@ the right direction for a "will this fit" number.
 The header gained a `mem` segment next to the context gauge, showing the
 model server's measured resident memory and its share of system RAM.
 
+### 23. Gemma 4  — SHIPPED (v0.22.0)
+Added gemma-4-e4b-it (~5.0GB) and gemma-4-12b-it (~7.1GB), joining the
+gemma-4-e2b-it already in the registry.
+
+The reason to care: Gemma 4 ships a tool-calling chat template. Gemma 3 does
+not, which is why the default gemma-3-1b-it makes /tools and /mcp look broken
+on a fresh install. The Gemma 4 template (published 2026-07-09) carries
+tool_calls, tool_response and tools, and its header comment reads "Fixed
+tool-calling loops, turn closures, and thinking content-ordering".
+
+Not yet verified by running one — a tool-capable template is not proof the
+model uses it well, and Gemma 3 parsed fine while still fabricating
+```tool_code blocks.
+
+Bigger Gemma 4 variants do not fit 16GB: 26B-A4B is 16.95GB and 31B is
+18.32GB at Q4_K_M.
+
+Worth revisiting: if gemma-4-e2b-it tool-calls reliably it is a better
+default than gemma-3-1b-it, which would fix the out-of-the-box MCP
+experience.
+
+### 24. Picker scrolling  — FIXED (v0.22.0)
+renderPicker called viewport.GotoTop() on every repaint, so a list taller
+than the viewport left everything below the fold unreachable — the cursor
+moved but was invisible, making later models look absent from the picker.
+The MCP catalog picker had the mirror-image bug, pinned to the bottom.
+
+Both now scroll only as far as needed to keep the selection visible, and
+snap to the top near the first row so the title stays on screen. The bug got
+worse with every model added, and the registry is now nine.
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships
