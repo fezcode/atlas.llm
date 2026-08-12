@@ -334,14 +334,21 @@ var helpTopics = []helpTopic{
 		Detail: "Off by default. When on, the model can call tools instead of " +
 			"guessing — reading files, searching, editing, running commands — and " +
 			"loops until it has what it needs before answering.\n\n" +
-			"Seven built-in tools. read_file, list_dir, and grep are read-only " +
-			"and run silently. write_file, edit_file, multi_edit, and run_cmd are " +
-			"destructive and open a confirmation modal first: Enter approves, Esc " +
-			"denies. A denial is fed back to the model as a tool error so it " +
-			"adapts instead of retrying the same call.\n\n" +
+			"Eight built-in tools. read_file, list_dir, and grep are read-only " +
+			"and run silently. write_file, edit_file, multi_edit, run_cmd, and " +
+			"web_fetch are destructive and open a confirmation modal first: Enter " +
+			"approves, Esc denies. A denial is fed back to the model as a tool " +
+			"error so it adapts instead of retrying the same call.\n\n" +
 			"Edits are partial: edit_file replaces one unique string and " +
 			"multi_edit applies a batch of them atomically, both leaving the rest " +
 			"of the file untouched. Only write_file rewrites a whole file.\n\n" +
+			"web_fetch reads one web page as text — navigation and boilerplate " +
+			"stripped, links kept absolute so the model can follow one. It needs " +
+			"confirmation because it is outbound, not because it writes anything. " +
+			"It reaches the public internet only: loopback, LAN and link-local " +
+			"addresses are refused, at every redirect hop as well as the first. " +
+			"It reads text formats and does not run JavaScript, so a page that " +
+			"builds itself in the browser comes back empty and says so.\n\n" +
 			"This switch also governs MCP tools. /mcp manages connections; /tools " +
 			"decides whether the model may call anything at all.",
 		Subcommands: []helpSub{

@@ -118,9 +118,9 @@ download one.
 ### Agentic tool-use
 
 Enable with `/tools on` inside chat. When enabled, the model can call a
-small set of filesystem + shell tools to inspect or change the project
-before replying. Destructive tools prompt for approval in a confirm modal
-before they run.
+small set of filesystem, shell and web tools to inspect or change the
+project before replying. Destructive tools prompt for approval in a confirm
+modal before they run.
 
 Edits are partial by default: `edit_file` and `multi_edit` replace matched
 strings and leave the rest of the file alone. Only `write_file` rewrites a
@@ -135,6 +135,19 @@ whole file.
 | `edit_file`  | ✓           | Replace one unique occurrence of `old_string` with `new_string`.|
 | `multi_edit` | ✓           | Apply several edits to one file atomically — all or nothing.    |
 | `run_cmd`    | ✓           | Execute a shell command (30s timeout).                          |
+| `web_fetch`  | ✓           | Read one web page as text (20s timeout).                        |
+
+`web_fetch` needs confirmation because it is outbound, not because it
+changes anything. It strips navigation and boilerplate, keeps links absolute
+so the model can follow one, and reads text formats only — it does not run
+JavaScript, so a page that assembles itself in the browser comes back empty
+and says why.
+
+It reaches the **public internet only**. Loopback, LAN and link-local
+addresses are refused, and the check runs against the IP actually being
+dialled — so it holds at every redirect hop, not just the URL you approved.
+Pointing it at your own dev server will not work, by design; the URL in a
+tool call comes from a model reading text it did not write.
 
 The agent is told the project root and its top-level layout at the start of
 each turn, so it doesn't guess directory names. `run_cmd` also lifts a

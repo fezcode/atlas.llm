@@ -194,6 +194,26 @@ var toolRegistry = map[string]Tool{
 		},
 		Run: toolRunCmd,
 	},
+	"web_fetch": {
+		Name: "web_fetch",
+		Description: "Fetch a web page over http/https and return it as readable text. " +
+			"HTML is stripped of navigation and boilerplate and converted to markdown-ish text with links kept, " +
+			"so a link in the result can be passed straight back to web_fetch to follow it. " +
+			"Reads text formats only (HTML, plain text, markdown, JSON, XML) and does not run JavaScript. " +
+			"Public internet only — local and private addresses are refused. Confirmation required.",
+		Destructive: true,
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"url": map[string]any{
+					"type":        "string",
+					"description": "Absolute URL to fetch. https:// is assumed when the scheme is omitted.",
+				},
+			},
+			"required": []string{"url"},
+		},
+		Run: toolWebFetch,
+	},
 }
 
 // toolNames returns the built-in registry keys in stable order — used to

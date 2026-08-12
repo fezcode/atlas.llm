@@ -152,3 +152,38 @@ func TestHelpSubNamesSkipsPlaceholders(t *testing.T) {
 		t.Error("expected no subcommands for /clear")
 	}
 }
+
+// /help tools states how many built-ins there are. A number written out in
+// prose goes stale the moment one is added, and nobody notices for a year.
+func TestToolsHelpCountMatchesRegistry(t *testing.T) {
+	tp, ok := findHelpTopic("tools")
+	if !ok {
+		t.Fatal("no tools help topic")
+	}
+	words := map[int]string{
+		5: "Five", 6: "Six", 7: "Seven", 8: "Eight",
+		9: "Nine", 10: "Ten", 11: "Eleven", 12: "Twelve",
+	}
+	want, ok := words[len(toolRegistry)]
+	if !ok {
+		t.Fatalf("no number word for %d tools — extend the table", len(toolRegistry))
+	}
+	if !strings.Contains(tp.Detail, want+" built-in tools") {
+		t.Errorf("tools help should say %q built-in tools; the registry has %d",
+			want, len(toolRegistry))
+	}
+}
+
+// A tool the model can call but the help never mentions is one the user
+// cannot find out about.
+func TestToolsHelpNamesEveryBuiltin(t *testing.T) {
+	tp, ok := findHelpTopic("tools")
+	if !ok {
+		t.Fatal("no tools help topic")
+	}
+	for name := range toolRegistry {
+		if !strings.Contains(tp.Detail, name) {
+			t.Errorf("%s is missing from /help tools", name)
+		}
+	}
+}
