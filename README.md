@@ -314,8 +314,16 @@ Vulkan driver is present. Selecting a variant with no build for your
 platform (e.g. `cuda` on macOS) is rejected with the list of what's actually
 available.
 
-A model larger than your VRAM will not fit with `auto`, which offloads every
-layer — use `/set gpu_layers N` to offload part of it instead.
+`auto` sizes the offload to the card: if a model plus its KV cache won't fit
+in free VRAM it offloads the share that does, rather than attempting every
+layer and failing at load. `/config` shows the device, VRAM in use, and how
+many layers actually went to the GPU, labelling a partial offload as either
+your choice or its estimate. `/set gpu_layers N` overrides it.
+
+The estimate assumes layers cost an equal share of the weights, which is
+approximate for mixed-quant GGUFs, and it samples free VRAM once before
+launch — another process claiming memory in between still fails, but now with
+a real error rather than a bare exit code.
 
 Changing `gpu_layers` restarts the model server, so it takes effect on your
 next message. `/set` with no arguments shows the current values and which

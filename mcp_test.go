@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -184,7 +185,22 @@ func TestMCPAuthStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm&0077 != 0 {
+	if runtime.GOOS == "windows" {
+		// Go's Chmod on Windows only toggles the read-only attribute, so a
+		// writable file always reads back 0666 no matter what mode it was
+		// created with — the 0600 in writeAuthStore is a no-op here and
+		// asserting it would be asserting a fiction. What actually protects
+		// the file is NTFS inheritance from the profile directory, so check
+		// it landed there.
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skip("no home directory to check containment against")
+		}
+		if !strings.HasPrefix(p, filepath.Clean(home)+string(filepath.Separator)) {
+			t.Errorf("credential file %q is outside the user profile %q, so it "+
+				"inherits no user-restricted ACL", p, home)
+		}
+	} else if perm := info.Mode().Perm(); perm&0077 != 0 {
 		t.Errorf("credential file mode is %o, want no group/other access", perm)
 	}
 

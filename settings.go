@@ -302,6 +302,7 @@ func renderConfig(cfg Config, st configState) string {
 		}
 		fmt.Fprintf(&b, "  %-14s  %s\n", "status", status)
 		fmt.Fprintf(&b, "  %-14s  %s\n", "variant", installedEngineVariant())
+		b.WriteString(renderGPUSection(cfg))
 	}
 
 	b.WriteString("\nSESSION  (resets when you quit)\n")

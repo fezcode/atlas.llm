@@ -79,7 +79,7 @@ func resolveInRoot(p string) (string, error) {
 		return root, nil
 	}
 	abs := p
-	if !filepath.IsAbs(abs) {
+	if !isRootedPath(abs) {
 		abs = filepath.Join(root, abs)
 	}
 	abs = filepath.Clean(abs)
@@ -160,4 +160,20 @@ func projectOverview(maxEntries int) string {
 		out += "  …"
 	}
 	return out
+}
+
+// isRootedPath reports whether a path was written as an absolute one.
+//
+// filepath.IsAbs is not enough on Windows, where "/etc/passwd" is not
+// absolute (it has no drive) and would be joined onto the root — so a tool
+// asking for /etc/passwd would silently get <root>/etc/passwd instead of a
+// refusal. The path never escapes either way, but quietly rewriting what was
+// asked for is worse than saying no: it invites a model to believe it read
+// the real file. Windows also treats a leading slash as drive-relative, so
+// these are absolute in intent on both platforms.
+func isRootedPath(p string) bool {
+	if filepath.IsAbs(p) {
+		return true
+	}
+	return strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`)
 }

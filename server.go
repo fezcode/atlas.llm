@@ -245,7 +245,14 @@ func launchLlamaServerOn(bin, modelPath string, m Model, threads, ngl, ctxN int,
 		"--port", fmt.Sprintf("%d", port),
 		"-t", fmt.Sprintf("%d", threads),
 		"-ngl", fmt.Sprintf("%d", ngl),
-		"--log-disable",
+		// Not --log-disable. That discarded llama.cpp's own account of
+		// itself — the model load, the slot layout, and the reason behind a
+		// failed start — leaving a bare "exit status 1" as the only symptom.
+		// Default verbosity is about a dozen lines per start; stdout and
+		// stderr are piped into the atlas log, so none of it reaches the
+		// terminal.
+		// Colours would arrive as ANSI escapes in a log file.
+		"--log-colors", "off",
 	}
 	if opts.APIKey != "" {
 		args = append(args, "--api-key", opts.APIKey)
@@ -716,12 +723,45 @@ func truncateForLog(s string, n int) string {
 
 // logWriter forwards subprocess stdout/stderr into the atlas.llm log with a
 // tag prefix so server messages show up alongside our own.
-type logWriter struct{ tag string }
+//
+// It buffers to line boundaries rather than logging each Write: llama.cpp
+// emits a line's timestamp and its text as separate writes, so logging chunks
+// verbatim split every message across two entries.
+type logWriter struct {
+	tag string
+	mu  sync.Mutex
+	buf []byte
+}
+
+// logWriterMaxBuffer bounds the partial-line buffer, so a subprocess that
+// somehow never emits a newline can't grow it without limit.
+const logWriterMaxBuffer = 64 << 10
 
 func newLogWriter(tag string) *logWriter { return &logWriter{tag: tag} }
+
 func (w *logWriter) Write(p []byte) (int, error) {
-	log.Printf("[%s] %s", w.tag, bytes.TrimRight(p, "\r\n "))
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		w.emit(w.buf[:i])
+		w.buf = w.buf[i+1:]
+	}
+	if len(w.buf) > logWriterMaxBuffer {
+		w.emit(w.buf)
+		w.buf = w.buf[:0]
+	}
 	return len(p), nil
+}
+
+func (w *logWriter) emit(line []byte) {
+	if line = bytes.TrimRight(line, "\r \t"); len(line) > 0 {
+		log.Printf("[%s] %s", w.tag, line)
+	}
 }
 
 // StreamDelta is one increment from a streaming completion. Reasoning

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -138,21 +139,30 @@ func TestRunCmdUsesJailedWorkingDirectory(t *testing.T) {
 	if err := os.MkdirAll(sub, 0755); err != nil {
 		t.Fatal(err)
 	}
-	out, err := toolRunCmd(map[string]any{"command": "pwd"})
+	// `pwd` on Windows resolves to the MSYS one when git-bash is installed,
+	// which prints /tmp/... for a path under %TEMP% — a translation of the
+	// right directory, but not comparable to it as text. cmd's `cd` prints
+	// the native form.
+	pwd := "pwd"
+	if runtime.GOOS == "windows" {
+		pwd = "cd"
+	}
+
+	out, err := toolRunCmd(map[string]any{"command": pwd})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out, root) {
 		t.Errorf("default cwd = %q, want the root %q", out, root)
 	}
-	out, err = toolRunCmd(map[string]any{"command": "pwd", "cwd": "sub"})
+	out, err = toolRunCmd(map[string]any{"command": pwd, "cwd": "sub"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out, "sub") {
 		t.Errorf("cwd=sub gave %q", out)
 	}
-	if _, err := toolRunCmd(map[string]any{"command": "pwd", "cwd": "nope"}); err == nil {
+	if _, err := toolRunCmd(map[string]any{"command": pwd, "cwd": "nope"}); err == nil {
 		t.Error("expected an error for a nonexistent cwd")
 	}
 }

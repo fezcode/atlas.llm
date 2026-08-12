@@ -752,3 +752,84 @@ Known limitations:
   continues without the sidecar and clients silently see less.
 - The heartbeat only detects a server that stops answering /health. A server
   that answers but has swapped models is not noticed until reconnect.
+
+### 30. Engine diagnostics, VRAM-aware offload, remote ceilings — SHIPPED (v0.32.0)
+Closes the three items left open by the GPU and LAN work, plus a ceiling bug
+the remote support introduced.
+
+**llama.cpp's own output is no longer discarded.** `--log-disable` threw away
+the model load, the slot layout, and the reason behind a failed start,
+leaving a bare `exit status 1` as the only symptom. It is gone; stdout and
+stderr were already piped into the atlas log, so about a dozen lines per
+start now land there and nothing reaches the terminal.
+
+Two findings while doing it:
+- The first attempt passed `--no-log-colors`, which this build rejects. The
+  change immediately diagnosed its own bug — previously that would have been
+  `exit status 1` with nothing else. `--log-colors off` is the real flag.
+- `--log-verbosity 0` suppresses everything; the default threshold is 3, and
+  that is the level the useful lines sit at. So no verbosity flag is passed.
+- `logWriter` now buffers to line boundaries. llama.cpp writes a line's
+  timestamp and its text as separate `write` calls, so logging each chunk
+  split every message across two entries.
+
+Current builds do *not* print "offloaded N/N layers" at default verbosity, so
+that is not available as offload evidence. VRAM in use is.
+
+**`auto` no longer offloads a model that cannot fit.** `fitGPULayers` charges
+the KV cache in full, holds back 1GiB for compute buffers and the CUDA
+context, and divides what is left by the per-layer share of the weights.
+muse-glimmer-30b on a 16GB card comes out at 39 of 48 layers rather than
+attempting all 48 and failing at load. When anything needed is unknown it
+declines to clamp: a guessed clamp is a permanent silent slowdown, which is
+worse than a loud failure. The arithmetic is `layersThatFit`, split out so it
+is testable without a GPU or a GGUF.
+
+**`/config` gained a GPU section** — device, compute capability, VRAM in use,
+and what is actually offloaded, with a partial offload labelled as either
+"set explicitly" or "auto — model exceeds free VRAM". A silent estimate that
+halves throughput should not look like a deliberate setting.
+
+**`max_tokens` ceilings follow the remote.** The ceiling was
+`resolveCtxSize(cfg) * 3/4` against the *client's* ctx_size, which says
+nothing about the server's: a client at the default 16384 talking to a server
+serving 8192 computed a ceiling of 12288, larger than the remote's entire
+context, accepted it, and failed at request time. `effectiveCtxSize` prefers
+the context the server reports.
+
+Known limitations:
+- The offload estimate assumes every layer costs the same share of the
+  weights. Mixed-quant GGUFs (unsloth's UD dynamic quants among them) have
+  uneven layers, so the estimate is approximate.
+- Free VRAM is sampled once before launch. Another process claiming memory
+  between the estimate and the load still fails, now with a real error.
+- Per-request llama.cpp lines are included at default verbosity, so the log
+  grows faster than before on a busy session.
+
+#### Fixed: three tests that had been failing on Windows — (v0.32.0)
+All three were platform assumptions, not flakes. They had been red long
+enough to become background noise, which is how a real regression would have
+hidden among them.
+
+- `resolveInRoot("/etc/passwd")` was allowed. `filepath.IsAbs` is false for a
+  slash-rooted path on Windows, so it was joined onto the jail root and
+  resolved to `<root>/etc/passwd`. Never an escape, but it silently rewrote
+  what was asked for, which could convince a model it had read the real file.
+  `isRootedPath` now treats a leading `/` or `\` as absolute on every
+  platform — Windows treats it as drive-relative anyway. This is a behaviour
+  fix, not a test fix.
+- `TestRunCmdUsesJailedWorkingDirectory` ran `pwd`, which resolves to MSYS's
+  when git-bash is installed and prints `/tmp/...` for a path under `%TEMP%`.
+  The working directory was correct all along; the comparison wasn't. The
+  test now uses `cd` on Windows, which prints the native form.
+- `TestMCPAuthStoreRoundTrip` asserted `perm&0077 == 0` on a file written
+  0600. Go's Chmod on Windows only toggles the read-only attribute, so a
+  writable file always reads back 0666 and the mode in `writeAuthStore` is a
+  no-op there. What actually protects the file is NTFS inheritance from the
+  profile directory, so on Windows the test asserts containment there
+  instead.
+
+Not done: a real DACL on the credential file. `golang.org/x/sys/windows`
+could set one, but it is ~60 lines of security-sensitive code to strip
+Administrators and SYSTEM from a file already restricted by profile
+inheritance — a poor trade against the chance of getting an ACL subtly wrong.

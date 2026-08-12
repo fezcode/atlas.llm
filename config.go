@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log"
 	"math"
 	"net"
 	"net/url"
@@ -374,10 +375,22 @@ const maxGPULayers = 999
 // macOS builds always carry Metal, so offloading is free there. On
 // Windows/Linux only a GPU-enabled engine build can use it.
 func autoGPULayers(variant string) int {
-	if runtime.GOOS == "darwin" || engineVariantIsGPU(effectiveEngineVariant(variant)) {
-		return maxGPULayers
+	if runtime.GOOS != "darwin" && !engineVariantIsGPU(effectiveEngineVariant(variant)) {
+		return 0
 	}
-	return 0
+	// A model larger than VRAM fails at load with everything offloaded, so
+	// auto picks the share that fits instead. Only when the estimate is
+	// confident: an unknown answer means offload everything and let a real
+	// failure be loud, rather than quietly halving performance forever.
+	if m, err := currentModel(); err == nil {
+		cfg, _ := loadConfig()
+		if n, total, ok := fitGPULayers(m, resolveCtxSize(cfg)); ok && n < total {
+			log.Printf("gpu: %s does not fit in free VRAM — offloading %d of %d layers",
+				m.Name, n, total)
+			return n
+		}
+	}
+	return maxGPULayers
 }
 
 // effectiveEngineVariant is the build inference will actually run against,
@@ -579,7 +592,7 @@ func resolveCtxSize(cfg Config) int {
 // the prompt and history. Derived from the context window rather than fixed,
 // so raising ctx_size raises this too.
 func maxTokensCeiling(cfg Config) int {
-	n := resolveCtxSize(cfg) * 3 / 4
+	n := effectiveCtxSize(cfg) * 3 / 4
 	if n < 512 {
 		n = 512
 	}
@@ -997,4 +1010,22 @@ func remoteDecidesSetting(key string) bool {
 		return true
 	}
 	return false
+}
+
+// effectiveCtxSize is the context the next request will actually get.
+//
+// In remote mode the server fixed it at spawn, and this install's ctx_size
+// says nothing about it — a client at the default 16384 talking to a server
+// serving 8192 would compute a max_tokens ceiling larger than the server's
+// entire context, accept it, and fail at request time.
+func effectiveCtxSize(cfg Config) int {
+	if ep, _ := remoteEndpoint(); ep != "" {
+		if st := getRemoteStatus(); st.HaveInfo && st.Info.CtxPerSlot > 0 {
+			return st.Info.CtxPerSlot
+		}
+		// Connected to something that doesn't report its context. Nothing
+		// better than the local value is available, so the ceiling stays
+		// advisory rather than accurate.
+	}
+	return resolveCtxSize(cfg)
 }
