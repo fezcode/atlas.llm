@@ -515,6 +515,31 @@ the right direction for a "will this fit" number.
 The header gained a `mem` segment next to the context gauge, showing the
 model server's measured resident memory and its share of system RAM.
 
+#### Fixed: the mem segment made every keystroke laggy — (v0.29.1)
+Reading resident memory spawns a process (`ps`, or `tasklist` on Windows),
+and the header re-renders on every keystroke, so the spawn sat directly on
+the input path. Measured at ~180ms per `tasklist` call. It only bit while a
+model server was running, and stayed hidden until GPU offload made
+everything else fast enough for the input lag to become the slowest thing
+left.
+
+Readings are now cached for 2s and refreshed off the render path: callers
+get the last known value immediately and never block. The gauge stays blank
+until the first refresh rather than stalling the first frame.
+
+Two parsing bugs went with it, both in the `tasklist` memory column:
+- The grouping separator follows the system locale. The parser stripped
+  commas, so on a locale that groups with dots — `"8.174.328 K"` —
+  `ParseInt` failed, the reading was dropped, and `/config` reported
+  "model server not running" while it was plainly running.
+- Splitting the CSV on `,` broke the *comma* locale too, just silently:
+  `"12,345 K"` split across two fields and the last one parsed as 345,
+  under-reporting by 1000x. Parsed with `encoding/csv` now, keeping only
+  the digits so any grouping character works.
+
+`TestProcessRSSRejectsBadPID` had been failing on a dot-locale machine for
+this reason, and `TestHeaderSegmentsAreCheap` went from 22.8s to 0.00s.
+
 ### 23. Gemma 4  — SHIPPED (v0.22.0)
 Added gemma-4-e4b-it (~5.0GB) and gemma-4-12b-it (~7.1GB), joining the
 gemma-4-e2b-it already in the registry.

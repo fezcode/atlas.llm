@@ -121,7 +121,13 @@ func TestEngineAssetSuffix(t *testing.T) {
 	}
 }
 
+// Hermetic on purpose: auto now consults the *installed* engine, so without
+// a temp home this asserted against whatever the developer's machine
+// happened to have downloaded — and started failing the moment a real CUDA
+// engine was installed.
 func TestResolveGPULayers(t *testing.T) {
+	withTempHome(t)
+	noGPU(t)
 	zero, forty := 0, 40
 
 	// Explicit values win over auto-detection.
@@ -139,12 +145,20 @@ func TestResolveGPULayers(t *testing.T) {
 			t.Errorf("auto on darwin = %d, want %d (Metal is built in)", auto, maxGPULayers)
 		}
 	} else if auto != 0 {
-		t.Errorf("auto on %s = %d, want 0 (default engine is CPU-only)", runtime.GOOS, auto)
+		t.Errorf("auto on %s = %d, want 0 (no GPU engine installed)", runtime.GOOS, auto)
 	}
 
-	// A Vulkan engine means offload by default on any platform.
-	if got := resolveGPULayers(Config{EngineVariant: engineVariantVulkan}); got != maxGPULayers {
-		t.Errorf("auto with vulkan = %d, want %d", got, maxGPULayers)
+	// An explicitly selected Vulkan engine means offload by default,
+	// wherever llama.cpp publishes one.
+	want := maxGPULayers
+	if !engineVariantAvailable(engineVariantVulkan, platformKey()) && !isDarwin() {
+		want = 0
+	}
+	if isDarwin() {
+		want = maxGPULayers // Metal, regardless of the variant asked for
+	}
+	if got := resolveGPULayers(Config{EngineVariant: engineVariantVulkan}); got != want {
+		t.Errorf("explicit vulkan = %d, want %d", got, want)
 	}
 }
 

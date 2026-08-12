@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/csv"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -47,26 +50,91 @@ func processRSS(pid int) (int64, bool) {
 }
 
 // windowsProcessRSS parses tasklist's CSV output, whose memory column looks
-// like "\"12,345 K\"".
+// like "\"12,345 K\"" — or "\"8.174.328 K\"", depending on the locale.
 func windowsProcessRSS(pid int) (int64, bool) {
 	out, err := exec.Command("tasklist", "/FI", "PID eq "+strconv.Itoa(pid),
 		"/FO", "CSV", "/NH").Output()
 	if err != nil {
 		return 0, false
 	}
-	fields := strings.Split(strings.TrimSpace(string(out)), ",")
-	if len(fields) < 5 {
+	// Parse as real CSV rather than splitting on commas: where the locale
+	// groups with commas the memory column contains one, so splitting left
+	// half of "12,345 K" in its own field, which then parsed as 345.
+	rec, err := csv.NewReader(bytes.NewReader(out)).Read()
+	if err != nil || len(rec) < 5 {
 		return 0, false
 	}
-	mem := strings.Trim(fields[len(fields)-1], "\" \r\n")
-	mem = strings.TrimSuffix(mem, " K")
-	mem = strings.ReplaceAll(mem, ",", "")
-	mem = strings.ReplaceAll(mem, " ", "")
-	kb, err := strconv.ParseInt(strings.TrimSpace(mem), 10, 64)
+	return parseTasklistKB(rec[len(rec)-1])
+}
+
+// parseTasklistKB reads tasklist's memory column into bytes. The grouping
+// separator follows the system locale — "12,345 K" on en-US, "8.174.328 K"
+// where it is a dot — so this keeps the digits and discards everything else
+// rather than stripping one specific separator. A non-numeric column
+// ("N/A", which tasklist emits for processes it can't inspect) is ok=false.
+func parseTasklistKB(field string) (int64, bool) {
+	var digits strings.Builder
+	for _, r := range field {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	kb, err := strconv.ParseInt(digits.String(), 10, 64)
 	if err != nil || kb <= 0 {
 		return 0, false
 	}
 	return kb * 1024, true
+}
+
+// processRSS spawns a process on every platform — ps or tasklist — which is
+// far too expensive for the header, because that re-renders on every
+// keystroke. Measured at ~180ms per tasklist call on Windows, it was the
+// entire input lag.
+//
+// Resident memory moves slowly, so the reading is cached and refreshed off
+// the render path: callers get the last known value immediately and never
+// block on a probe. The gauge stays blank until the first refresh lands
+// rather than stalling the first frame.
+const rssCacheTTL = 2 * time.Second
+
+var (
+	rssMu       sync.Mutex
+	rssPID      int
+	rssValue    int64
+	rssOK       bool
+	rssAt       time.Time
+	rssInflight bool
+)
+
+func processRSSCached(pid int) (int64, bool) {
+	rssMu.Lock()
+	defer rssMu.Unlock()
+
+	if pid != rssPID || time.Since(rssAt) >= rssCacheTTL {
+		if !rssInflight {
+			rssInflight = true
+			go func() {
+				v, ok := processRSS(pid)
+				rssMu.Lock()
+				rssPID, rssValue, rssOK = pid, v, ok
+				rssAt, rssInflight = time.Now(), false
+				rssMu.Unlock()
+			}()
+		}
+	}
+	if pid != rssPID {
+		// A different process than the cached one — report nothing rather
+		// than the previous server's memory.
+		return 0, false
+	}
+	return rssValue, rssOK
+}
+
+// resetRSSCache drops the cached reading so a test can force a fresh probe.
+func resetRSSCache() {
+	rssMu.Lock()
+	rssPID, rssValue, rssOK, rssAt, rssInflight = 0, 0, false, time.Time{}, false
+	rssMu.Unlock()
 }
 
 // serverMemory reports the running model server's resident memory. Returns
@@ -79,7 +147,7 @@ func serverMemory() (int64, bool) {
 	if s == nil || s.cmd == nil || s.cmd.Process == nil {
 		return 0, false
 	}
-	return processRSS(s.cmd.Process.Pid)
+	return processRSSCached(s.cmd.Process.Pid)
 }
 
 // memoryDisplay renders the memory line for `/config`: what the model server
