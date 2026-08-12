@@ -244,6 +244,16 @@ var helpTopics = []helpTopic{
 					"  /set endpoint 192.168.1.50:8080\n\n" +
 					"A bare address, an address with a port, or a full URL all work; " +
 					"port 8080 is assumed if you leave it off. `local` clears it.\n\n" +
+					"Setting it checks the address immediately and reports what " +
+					"answered — server version, model, context and slots — rather " +
+					"than letting a typo look fine until your first message fails. " +
+					"An address that does not answer is still saved, since the usual " +
+					"reason is a server that has not been started yet.\n\n" +
+					"While connected the header carries a REMOTE badge naming the " +
+					"host, coloured by a background heartbeat: green when healthy, " +
+					"amber after a missed beat, red when it has gone. `/config` " +
+					"replaces its ENGINE and MEMORY sections with a REMOTE section " +
+					"describing the server and the settings it decides.\n\n" +
 					"While it is set, this install needs no engine and no model file — " +
 					"that is the point, and it is what makes a laptop able to use a " +
 					"desktop's GPU. /download becomes unnecessary.\n\n" +

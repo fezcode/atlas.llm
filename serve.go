@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/signal"
 	"sort"
 	"syscall"
+	"time"
 )
 
 // defaultServeSlots is wider than the TUI's default because a served engine
@@ -42,13 +44,42 @@ func runServe(opts serveOptions) error {
 	fmt.Printf("Starting %s on %s:%d — this can take a moment while the model loads.\n",
 		m.Name, opts.bindHost(), opts.Port)
 
+	started := time.Now()
 	s, err := startLlamaServerWith(m, opts)
 	if err != nil {
 		return err
 	}
 	defer s.stopLocked()
 
-	printServeBanner(s, opts)
+	build := ""
+	if p, ok := s.fetchProps(); ok {
+		build = p.BuildInfo
+	}
+	infoPort := infoPortFor(opts.Port)
+	info, infoErr := startInfoServer(opts.bindHost(), infoPort, func() atlasServerInfo {
+		return atlasServerInfo{
+			Service:       "atlas.llm",
+			Version:       Version,
+			Model:         m.Name,
+			ModelFile:     m.Filename,
+			EngineVariant: installedEngineVariant(),
+			GPULayers:     s.gpuLayer,
+			CtxPerSlot:    s.ctxN,
+			Slots:         s.slots,
+			InferencePort: opts.Port,
+			AuthRequired:  opts.APIKey != "",
+			UptimeSeconds: int64(time.Since(started).Seconds()),
+			LlamaBuild:    build,
+		}
+	})
+	if infoErr != nil {
+		// Not fatal: inference is the job. Clients just fall back to what
+		// llama-server's own /props reports.
+		log.Printf("info endpoint unavailable on :%d (%v) — clients will see less detail", infoPort, infoErr)
+	} else {
+		defer func() { _ = info.Close() }()
+	}
+	printServeBanner(s, opts, infoErr == nil)
 
 	// Ctrl+C is the documented way to stop this, so handle it rather than
 	// letting the runtime kill us with the engine subprocess still alive.
@@ -59,10 +90,15 @@ func runServe(opts serveOptions) error {
 	return nil
 }
 
-func printServeBanner(s *llamaServer, opts serveOptions) {
-	fmt.Printf("\n  atlas.llm serving %s\n", s.model.Name)
-	fmt.Printf("  %d slots · %d tokens of context each · %d layers on GPU\n\n",
+func printServeBanner(s *llamaServer, opts serveOptions, infoUp bool) {
+	fmt.Printf("\n  atlas.llm v%s serving %s\n", Version, s.model.Name)
+	fmt.Printf("  %d slots · %d tokens of context each · %d layers on GPU\n",
 		s.slots, s.ctxN, s.gpuLayer)
+	if infoUp {
+		fmt.Printf("  inference :%d · info :%d\n\n", opts.Port, infoPortFor(opts.Port))
+	} else {
+		fmt.Printf("  inference :%d · info endpoint unavailable\n\n", opts.Port)
+	}
 
 	addrs := clientURLs(opts)
 	if len(addrs) == 0 {

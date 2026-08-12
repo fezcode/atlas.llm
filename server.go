@@ -376,7 +376,9 @@ type remoteProps struct {
 	DefaultGenerationSettings struct {
 		NCtx int `json:"n_ctx"`
 	} `json:"default_generation_settings"`
-	ModelPath string `json:"model_path"`
+	ModelPath  string `json:"model_path"`
+	BuildInfo  string `json:"build_info"`
+	TotalSlots int    `json:"total_slots"`
 }
 
 // newRemoteServer attaches to a llama-server someone else is running. It owns

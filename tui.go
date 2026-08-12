@@ -720,17 +720,18 @@ func (m *chatModel) handleSet(args []string) {
 			shutdownServer()
 		}
 		if ep == "" {
+			clearRemoteStatus()
 			m.pushSystem("endpoint = local\nInference moves back to this machine on your next message.")
 			return
 		}
-		msg := fmt.Sprintf("endpoint = %s\n\nInference now runs there; this machine needs no engine or model.\n"+
-			"ctx_size, gpu_layers and engine_variant are the server's to decide.\n"+
-			"Tools still run here, against your own files.", ep)
-		if _, key := remoteEndpoint(); key == "" {
-			msg += "\nNo endpoint_key set — fine if the server was started without --api-key."
-		}
-		msg += "\nTakes effect on your next message."
-		m.pushSystem(msg)
+		// Check it now rather than letting a typo look fine until the first
+		// message fails. A LAN probe is milliseconds; the alternative is the
+		// user discovering the mistake three commands later.
+		_, key := remoteEndpoint()
+		st := probeRemote(ep, key)
+		setRemoteStatus(st)
+		startHeartbeat()
+		m.pushSystem(renderEndpointProbe(ep, st))
 
 	case "endpoint_key":
 		cfg.EndpointKey = strings.TrimSpace(args[1])
@@ -1158,6 +1159,11 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.progress.SetPercent(pct))
 		}
 
+	case remoteStatusMsg:
+		// The badge reads cached state, so there is nothing to apply here —
+		// receiving the message is what triggers the repaint.
+		return m, nil
+
 	case downloadDoneMsg:
 		m.busy = false
 		m.busyReason = ""
@@ -1499,6 +1505,7 @@ func (m chatModel) renderHeader(width int) string {
 	dot := sepStyle.Render(" • ")
 	brand := brandStyle.Render("◆ atlas.llm")
 	model := metaLabelStyle.Render("model ") + metaValueStyle.Render(m.modelName)
+	remote := renderRemoteBadge()
 
 	ctxSeg := renderCtxSegment()
 
@@ -1531,12 +1538,21 @@ func (m chatModel) renderHeader(width int) string {
 	}
 
 	dirMax := width - lipgloss.Width(brand) - lipgloss.Width(model) - lipgloss.Width(right) - 12
+	if remote != "" {
+		dirMax -= lipgloss.Width(remote) + 3
+	}
 	if dirMax < 12 {
 		dirMax = 12
 	}
 	dir := metaLabelStyle.Render("cwd ") + metaValueStyle.Render(truncateLeft(m.cwd, dirMax))
 
-	left := brand + dot + model + dot + dir
+	left := brand
+	// The badge sits immediately after the brand, before the model: which
+	// machine is answering outranks what it is running.
+	if remote != "" {
+		left += dot + remote
+	}
+	left += dot + model + dot + dir
 
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if gap < 1 {
@@ -2138,9 +2154,26 @@ func startChat() (err error) {
 	program = p
 	defer func() { program = nil }()
 	autoConnectMCP()
+	// A session that opens against a configured remote should already know
+	// whether it is reachable, rather than showing an unknown-state badge
+	// until the first heartbeat 15s later.
+	if ep, key := remoteEndpoint(); ep != "" {
+		go func() {
+			setRemoteStatus(probeRemote(ep, key))
+			startHeartbeat()
+			if program != nil {
+				program.Send(remoteStatusMsg{})
+			}
+		}()
+	}
+	defer stopHeartbeat()
 	_, err = p.Run()
 	return err
 }
+
+// remoteStatusMsg nudges the TUI to repaint after a background probe changes
+// the badge. It carries nothing: the state lives in the cache.
+type remoteStatusMsg struct{}
 
 // maxInputHistory bounds the recall buffer. Generous enough to cover a
 // working session, small enough to stay irrelevant to memory.
@@ -2437,4 +2470,37 @@ func (m *chatModel) finishStream(final string) bool {
 	m.streamThinking = 0
 	m.refresh()
 	return true
+}
+
+// renderRemoteBadge draws the "which machine is answering" indicator. Empty
+// when inference is local, because the absence of a badge is the clearest
+// possible statement that nothing remote is involved.
+//
+// Reads only cached state — see remoteStatus. This renders on every
+// keystroke, so it must never touch the network.
+func renderRemoteBadge() string {
+	ep, _ := remoteEndpoint()
+	if ep == "" {
+		return ""
+	}
+	st := getRemoteStatus()
+
+	// Strip the scheme: host:port is what the user typed and what they need
+	// to recognise, and header width is scarce.
+	label := strings.TrimPrefix(strings.TrimPrefix(ep, "http://"), "https://")
+
+	var colour lipgloss.Color
+	var mark string
+	switch st.State {
+	case remoteHealthy:
+		colour, mark = colAssistant, "⇅"
+	case remoteDegraded:
+		colour, mark = colBusy, "⇅"
+	case remoteUnreachable:
+		colour, mark = colErr, "✗"
+	default:
+		colour, mark = colMuted, "⇅"
+	}
+	style := lipgloss.NewStyle().Foreground(colour).Bold(true)
+	return style.Render(mark + " REMOTE " + label)
 }

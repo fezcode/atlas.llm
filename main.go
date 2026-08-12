@@ -48,6 +48,8 @@ FLAGS
                        each, not more VRAM used.
         --api-key KEY  Require this bearer token. Off by default; without
                        it anyone who can reach the port can use the model.
+                       A second port (--port + 1) serves /atlas/info, which
+                       is how clients report what they are connected to.
 
   --summarize          Summarize every text file in DIR (default: .) and write
                        the result to SUMMARY.md in the target directory.

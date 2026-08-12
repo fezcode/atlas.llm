@@ -343,6 +343,35 @@ That's it — no `/download` needed on the client. A bare address, an address
 with a port, or a full URL all work; port 8080 is assumed. `/set endpoint
 local` moves inference back to that machine.
 
+Setting an endpoint checks it straight away and reports what answered, so a
+typo fails at the point you make it rather than at your first message:
+
+```
+endpoint = http://192.168.1.50:8080
+
+  ✓ connected
+    server    atlas.llm v0.31.0, up 27s
+    model     ministral-3-14b-instruct
+    context   8192 tokens per slot · 4 slots
+    engine    cuda · 999 layers on GPU
+    llama.cpp b10375-ba360efe1
+```
+
+An address that doesn't answer is still saved — usually the server just
+isn't started yet — and the error says which: connection refused, host not
+found, or timed out.
+
+While connected, the header carries a `⇅ REMOTE host:port` badge, coloured
+by a background heartbeat: green when healthy, amber after a missed beat,
+red once it's gone. `/config` swaps its ENGINE and MEMORY sections for a
+REMOTE section describing the server and the settings it owns.
+
+The serving side publishes this on a second port (`--port` + 1) as
+`/atlas/info`. It's a sidecar rather than a proxy, so nothing sits in the
+inference path. A server without it — a plain llama-server, or an atlas
+older than 0.31.0 — still works; the client just shows less detail. Note the
+info port is not covered by `--api-key`.
+
 | Serve flag | Default | Purpose |
 | ---------- | ------- | ------- |
 | `--bind`    | `0.0.0.0` | Interface to listen on. `127.0.0.1` keeps it to that machine. |

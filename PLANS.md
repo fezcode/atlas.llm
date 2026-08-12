@@ -707,3 +707,48 @@ Known limitations:
   single-model until whoever runs it restarts it.
 - Nothing reconnects. If the server goes away mid-session the next message
   errors, and `/set endpoint` again is the way back.
+
+### 29. Remote session status and server identity — SHIPPED (v0.31.0)
+A client could use a remote but couldn't tell you anything about it: no
+indication in the header that inference had left the machine, and `/config`
+still described the local engine that wasn't running.
+
+The gap is that llama-server knows nothing about atlas. `/props` gives the
+model path, `n_ctx`, `total_slots` and the llama.cpp build; `/slots` gives
+live occupancy. None of it covers `gpu_layers`, `engine_variant`, or the
+atlas version — which is most of what "show me the remote's config" means.
+
+So a served instance now publishes `/atlas/info` on a sidecar port
+(inference port + 1), carrying version, registry model name, engine variant,
+-ngl, per-slot context, slot count, auth, and uptime. A sidecar rather than
+a reverse proxy: nothing sits in the inference path, so streaming is
+untouched and a bug here cannot break generation. The cost is a second port
+through the firewall.
+
+- Setting an endpoint probes it immediately and prints what answered rather
+  than deferring the failure to the first message. Unreachable addresses are
+  still saved — the usual cause is a server that isn't up yet — and the
+  error names the cause: refused, no such host, or timed out, instead of
+  Go's "connectex: No connection could be made because...".
+- The header carries `⇅ REMOTE host:port`, coloured by a 15s background
+  heartbeat. Two consecutive misses are required before it reads
+  unreachable, so one dropped packet doesn't produce an indicator people
+  learn to ignore. The badge reads cached state only — a status light that
+  polls from the render path is precisely the v0.29.1 keystroke-lag bug, and
+  a test pins 500 renders under 100ms.
+- `/config` swaps ENGINE and MEMORY for a REMOTE section: connection state,
+  server version and uptime, and the server's model, ctx_size, engine and
+  gpu_layers under a heading that says they belong to that machine.
+- A reachable server without the sidecar — a plain llama-server, or an
+  atlas older than 0.31.0 — is reported as connected with less detail, not
+  as an error. Only a payload identifying itself as `atlas.llm` is believed,
+  since anything can be listening on port+1.
+
+Known limitations:
+- The sidecar is unauthenticated even when `--api-key` is set: the key
+  guards inference, and the info endpoint exposes model and config details
+  to anyone who can reach the port.
+- Port+1 is a convention with no negotiation. If it's taken, serving
+  continues without the sidecar and clients silently see less.
+- The heartbeat only detects a server that stops answering /health. A server
+  that answers but has swapped models is not noticed until reconnect.

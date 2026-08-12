@@ -289,13 +289,20 @@ func renderConfig(cfg Config, st configState) string {
 		fmt.Fprintf(&b, "  %-14s  %d tokens\n", "trained ctx", trained)
 	}
 
-	b.WriteString("\nENGINE\n")
-	status := "NOT downloaded — run /download engine"
-	if isEngineDownloaded() {
-		status = "downloaded"
+	// ENGINE and MEMORY describe a local llama-server. When inference is
+	// remote there isn't one, and printing "engine: cpu / not downloaded"
+	// would describe a machine that isn't answering. Show the server instead.
+	if ep, _ := remoteEndpoint(); ep != "" {
+		b.WriteString(renderRemoteSection(ep))
+	} else {
+		b.WriteString("\nENGINE\n")
+		status := "NOT downloaded — run /download engine"
+		if isEngineDownloaded() {
+			status = "downloaded"
+		}
+		fmt.Fprintf(&b, "  %-14s  %s\n", "status", status)
+		fmt.Fprintf(&b, "  %-14s  %s\n", "variant", installedEngineVariant())
 	}
-	fmt.Fprintf(&b, "  %-14s  %s\n", "status", status)
-	fmt.Fprintf(&b, "  %-14s  %s\n", "variant", installedEngineVariant())
 
 	b.WriteString("\nSESSION  (resets when you quit)\n")
 	fmt.Fprintf(&b, "  %-14s  %s\n", "tools", onOff(st.toolsEnabled))
@@ -307,7 +314,9 @@ func renderConfig(cfg Config, st configState) string {
 	fmt.Fprintf(&b, "  %-14s  %d configured, %d connected, %d tools\n",
 		"mcp", st.mcpServers, st.mcpConnected, st.mcpTools)
 
-	fmt.Fprintf(&b, "\nMEMORY\n  %s\n", memoryDisplay(cfg))
+	if ep, _ := remoteEndpoint(); ep == "" {
+		fmt.Fprintf(&b, "\nMEMORY\n  %s\n", memoryDisplay(cfg))
+	}
 
 	b.WriteString("\nFILES\n")
 	if p, err := configPath(); err == nil {
