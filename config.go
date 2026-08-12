@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -447,6 +449,16 @@ type Config struct {
 	// 0 means the default. The ceiling is whatever the model was trained
 	// for, which is read from its GGUF metadata.
 	CtxSize int `json:"ctx_size,omitempty"`
+
+	// Endpoint points inference at a llama-server someone else is running,
+	// typically another atlas.llm in --serve mode. When set, this install
+	// needs no engine and no model file: it becomes a client. Empty means
+	// run inference locally.
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// EndpointKey is the bearer token for Endpoint, for a server started
+	// with --api-key. Empty is the normal case on a trusted LAN.
+	EndpointKey string `json:"endpoint_key,omitempty"`
 }
 
 // Reasoning settings.
@@ -905,4 +917,84 @@ func resetToLightestModel() error {
 			target.Name, target.Name)
 	}
 	return nil
+}
+
+// defaultServePort matches llama-server's own default, so a user who reaches
+// for a port number guesses right.
+const defaultServePort = 8080
+
+// normalizeEndpoint canonicalises what a user types into `/set endpoint`.
+// Accepts "192.168.1.50", "192.168.1.50:8080", or a full URL, because all
+// three are things people reasonably type for a machine on their LAN.
+// Returns "" for input that clears the setting.
+func normalizeEndpoint(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" || strings.EqualFold(s, "local") || strings.EqualFold(s, "off") ||
+		strings.EqualFold(s, "none") {
+		return "", nil
+	}
+	if !strings.Contains(s, "://") {
+		s = "http://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", fmt.Errorf("invalid endpoint %q: %v", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("endpoint %q: expected an http:// or https:// address", raw)
+	}
+	if u.Hostname() == "" {
+		return "", fmt.Errorf("endpoint %q: no host in the address", raw)
+	}
+	if u.Port() == "" {
+		u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(defaultServePort))
+	}
+	// Only scheme://host:port is meaningful; the API paths are ours to append.
+	return strings.TrimRight((&url.URL{Scheme: u.Scheme, Host: u.Host}).String(), "/"), nil
+}
+
+// remoteEndpoint returns the configured endpoint and key, or "" when this
+// install runs inference locally.
+func remoteEndpoint() (string, string) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return "", ""
+	}
+	ep, err := normalizeEndpoint(cfg.Endpoint)
+	if err != nil {
+		return "", ""
+	}
+	return ep, strings.TrimSpace(cfg.EndpointKey)
+}
+
+// isRemoteMode reports whether inference runs on another machine. Used to
+// skip the local engine/model requirements and to mark settings that the
+// remote decides.
+func isRemoteMode() bool {
+	ep, _ := remoteEndpoint()
+	return ep != ""
+}
+
+// endpointDisplay renders the endpoint setting, naming the machine doing the
+// work so "local" and "remote" are never ambiguous in /set output.
+func endpointDisplay(cfg Config) string {
+	ep, err := normalizeEndpoint(cfg.Endpoint)
+	if err != nil {
+		return "invalid (" + strings.TrimSpace(cfg.Endpoint) + ")"
+	}
+	if ep == "" {
+		return "local (inference runs on this machine)"
+	}
+	return ep
+}
+
+// remoteDecidesSetting reports whether a setting is fixed by the machine
+// running the model rather than the one typing. These are all passed to
+// llama-server at spawn, so a client cannot change them over HTTP.
+func remoteDecidesSetting(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "ctx_size", "gpu_layers", "engine_variant":
+		return true
+	}
+	return false
 }

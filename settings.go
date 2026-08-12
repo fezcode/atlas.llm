@@ -156,6 +156,51 @@ var settingsRegistry = []setting{
 			return b.String()
 		},
 	},
+	{
+		Key:     "endpoint",
+		Usage:   "/set endpoint IP:PORT | local",
+		Summary: "Run inference on another machine instead of this one.",
+		Value:   func(c Config) string { return endpointDisplay(c) },
+		Detail: func(c Config) string {
+			var b strings.Builder
+			b.WriteString("Points inference at a llama-server on your network — normally " +
+				"another atlas.llm started with --serve. While it is set this install " +
+				"needs no engine and no model file: /download becomes unnecessary and " +
+				"the weights stay on the server.\n")
+			b.WriteString("Accepts a bare address (192.168.1.50), an address with a port " +
+				"(192.168.1.50:8080), or a full URL. Port " +
+				fmt.Sprintf("%d", defaultServePort) + " is assumed if you omit one.\n")
+			b.WriteString("`local` (or an empty value) clears it and moves inference back " +
+				"to this machine.\n")
+			if ep, _ := remoteEndpoint(); ep != "" {
+				b.WriteString("\nWhile remote, the server decides ctx_size, gpu_layers and " +
+					"engine_variant — setting those here has no effect until you go " +
+					"back to local. Tools still run on this machine against your own " +
+					"files; only token generation is remote.\n")
+			}
+			b.WriteString("Takes effect on your next message.")
+			return b.String()
+		},
+	},
+	{
+		Key:     "endpoint_key",
+		Usage:   "/set endpoint_key KEY",
+		Summary: "Bearer token for an endpoint started with --api-key.",
+		Value: func(c Config) string {
+			if strings.TrimSpace(c.EndpointKey) == "" {
+				return "(none)"
+			}
+			return "(set)"
+		},
+		Detail: func(c Config) string {
+			return "Only needed when the server was started with --api-key. Sent as an " +
+				"Authorization: Bearer header on every request.\n" +
+				"Servers on a trusted LAN are usually started without a key, in which " +
+				"case leave this empty.\n" +
+				"Stored in plain text in config.json, so treat it as a shared secret " +
+				"for the network rather than a real credential."
+		},
+	},
 }
 
 func findSetting(key string) (setting, bool) {

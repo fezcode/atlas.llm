@@ -36,6 +36,19 @@ FLAGS
                        is persisted between calls. Same dependency
                        requirement as --summarize/--grep.
 
+  --serve              Host this machine's model on the network and block
+                       until Ctrl+C. No TUI. Other machines then run
+                       '/set endpoint IP:PORT' to use it, and need no engine
+                       or model of their own. Prints the addresses to use.
+        --bind ADDR    Interface to listen on (default 0.0.0.0, all).
+                       Use 127.0.0.1 to keep it to this machine.
+        --port N       Port to listen on (default 8080).
+        --slots N      Concurrent conversations (default 4). Slots divide
+                       the same KV memory, so more slots means less context
+                       each, not more VRAM used.
+        --api-key KEY  Require this bearer token. Off by default; without
+                       it anyone who can reach the port can use the model.
+
   --summarize          Summarize every text file in DIR (default: .) and write
                        the result to SUMMARY.md in the target directory.
                        Uses the currently selected local model (see /model).
@@ -147,6 +160,11 @@ func main() {
 		resetModelFlag    bool
 		chatFlag          string
 		chatFlagSet       bool
+		serveFlag         bool
+		bindFlag          string
+		portFlag          int
+		slotsFlag         int
+		apiKeyFlag        string
 	)
 
 	flag.BoolVar(&versionFlag, "v", false, "")
@@ -165,6 +183,11 @@ func main() {
 	flag.BoolVar(&resetModelFlag, "reset-model", false, "")
 	flag.StringVar(&chatFlag, "c", "", "")
 	flag.StringVar(&chatFlag, "chat", "", "")
+	flag.BoolVar(&serveFlag, "serve", false, "")
+	flag.StringVar(&bindFlag, "bind", "0.0.0.0", "")
+	flag.IntVar(&portFlag, "port", defaultServePort, "")
+	flag.IntVar(&slotsFlag, "slots", defaultServeSlots, "")
+	flag.StringVar(&apiKeyFlag, "api-key", "", "")
 
 	flag.Usage = func() { fmt.Print(helpText) }
 	flag.Parse()
@@ -180,6 +203,25 @@ func main() {
 	}
 	if versionFlag {
 		fmt.Printf("atlas.llm v%s\n", Version)
+		return
+	}
+
+	if serveFlag {
+		// Serving is a foreground process with no TUI, so its log goes to
+		// the same file the TUI uses and errors go to stderr.
+		_, closeLog, logErr := setupLogging()
+		if logErr == nil {
+			defer closeLog()
+		}
+		if err := runServe(serveOptions{
+			Bind:   bindFlag,
+			Port:   portFlag,
+			Slots:  slotsFlag,
+			APIKey: apiKeyFlag,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "serve: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 

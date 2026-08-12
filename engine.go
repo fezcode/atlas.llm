@@ -483,13 +483,8 @@ func requireModel(m Model) (string, error) {
 // turn boundary. Raw completion with "User:/Assistant:" markers was causing
 // the model to hallucinate additional fake turns after its real answer.
 func runChat(ctx context.Context, msgs []ChatMsg, maxTokens int) (string, error) {
-	if _, err := requireEngine(); err != nil {
+	if err := requireInference(); err != nil {
 		return "", err
-	}
-	if m, err := currentModel(); err == nil {
-		if _, err := requireModel(m); err != nil {
-			return "", err
-		}
 	}
 
 	s, err := ensureServer()
@@ -521,13 +516,8 @@ func runSingleUser(ctx context.Context, system, user string, maxTokens int) (str
 // runChatNoThinking mirrors runChat but asks the chat template to skip the
 // reasoning block.
 func runChatNoThinking(ctx context.Context, msgs []ChatMsg, maxTokens int) (string, error) {
-	if _, err := requireEngine(); err != nil {
+	if err := requireInference(); err != nil {
 		return "", err
-	}
-	if m, err := currentModel(); err == nil {
-		if _, err := requireModel(m); err != nil {
-			return "", err
-		}
 	}
 	s, err := ensureServer()
 	if err != nil {
@@ -569,13 +559,8 @@ type ChatMessage struct {
 // assistant content and any requested tool calls. Callers loop until the
 // returned toolCalls list is empty.
 func runAgentStep(ctx context.Context, msgs []ChatMsg, maxTokens int) (string, []ToolCall, error) {
-	if _, err := requireEngine(); err != nil {
+	if err := requireInference(); err != nil {
 		return "", nil, err
-	}
-	if m, err := currentModel(); err == nil {
-		if _, err := requireModel(m); err != nil {
-			return "", nil, err
-		}
 	}
 	s, err := ensureServer()
 	if err != nil {
@@ -643,13 +628,8 @@ func formatBytes(n int64) string {
 // runChatStream is the streaming counterpart to runChat: it forwards each
 // delta to onDelta as it arrives and returns the assembled reply.
 func runChatStream(ctx context.Context, msgs []ChatMsg, maxTokens int, onDelta func(StreamDelta)) (string, error) {
-	if _, err := requireEngine(); err != nil {
+	if err := requireInference(); err != nil {
 		return "", err
-	}
-	if m, err := currentModel(); err == nil {
-		if _, err := requireModel(m); err != nil {
-			return "", err
-		}
 	}
 	s, err := ensureServer()
 	if err != nil {
@@ -674,4 +654,23 @@ func chatStream(ctx context.Context, history []ChatMessage, userInput string, on
 	msgs = append(msgs, ChatMsg{Role: "user", Content: userInput})
 	cfg, _ := loadConfig()
 	return runChatStream(ctx, msgs, cfg.MaxTokens, onDelta)
+}
+
+// requireInference checks that this machine can actually run a turn. In
+// remote mode it always can: the engine and the model file live on the
+// server, so demanding them locally would reject exactly the setup the
+// endpoint setting exists to enable.
+func requireInference() error {
+	if isRemoteMode() {
+		return nil
+	}
+	if _, err := requireEngine(); err != nil {
+		return err
+	}
+	if m, err := currentModel(); err == nil {
+		if _, err := requireModel(m); err != nil {
+			return err
+		}
+	}
+	return nil
 }

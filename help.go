@@ -238,6 +238,34 @@ var helpTopics = []helpTopic{
 					"next message.\n\n" +
 					"On Windows and Linux this does nothing until a GPU build is " +
 					"installed — see `/help set engine_variant`."},
+			{Name: "endpoint", Usage: "/set endpoint IP:PORT | local",
+				Detail: "Runs inference on another machine instead of this one. Point " +
+					"it at an atlas.llm started with --serve:\n" +
+					"  /set endpoint 192.168.1.50:8080\n\n" +
+					"A bare address, an address with a port, or a full URL all work; " +
+					"port 8080 is assumed if you leave it off. `local` clears it.\n\n" +
+					"While it is set, this install needs no engine and no model file — " +
+					"that is the point, and it is what makes a laptop able to use a " +
+					"desktop's GPU. /download becomes unnecessary.\n\n" +
+					"What moves and what doesn't: only token generation is remote. " +
+					"Tools run here, against the files in the directory you started " +
+					"in, so an agentic session edits your machine while inferring on " +
+					"the server's card.\n\n" +
+					"ctx_size, gpu_layers and engine_variant are handed to llama-server " +
+					"when it starts, so the server owns them. Setting them here while " +
+					"remote saves the value but changes nothing until you go back to " +
+					"local, and atlas.llm says so rather than accepting them silently. " +
+					"/model is refused outright, since only the serving machine can " +
+					"change which weights are loaded.\n\n" +
+					"/reset clears your own history but deliberately leaves the " +
+					"server's KV slots alone — they are shared, and erasing them " +
+					"would force every other client to re-process its conversation."},
+			{Name: "endpoint_key", Usage: "/set endpoint_key KEY",
+				Detail: "Bearer token for a server started with --api-key. Servers on a " +
+					"trusted LAN are usually started without one, in which case leave " +
+					"this empty.\n\n" +
+					"Stored in plain text in config.json. Treat it as a shared network " +
+					"secret, not a real credential."},
 			{Name: "engine_variant", Usage: "/set engine_variant auto|cpu|vulkan|cuda|hip",
 				Detail: "Which llama.cpp build to download. This is what decides " +
 					"whether your GPU can be used at all — gpu_layers only has an " +

@@ -19,20 +19,49 @@ import (
 	"time"
 )
 
-// llamaServer wraps a long-running llama-server subprocess and the HTTP
-// client that talks to it. One instance per (model, context-size). The
-// model stays loaded in memory so subsequent /completion calls don't pay
-// the GGUF mmap + warmup cost on every turn.
+// llamaServer wraps the HTTP endpoint that answers inference requests, and
+// for a local server the subprocess behind it. One instance per (model,
+// context-size); the model stays loaded so subsequent calls don't pay the
+// GGUF mmap + warmup cost on every turn.
+//
+// A llamaServer is either local — a subprocess we spawned and own — or
+// remote, an endpoint someone else is running. Every field below except cmd
+// and waitErr means the same thing in both cases, because inference is HTTP
+// either way; what differs is lifecycle. cmd == nil marks the remote case,
+// and the rule that follows from it is: never kill what we didn't start.
 type llamaServer struct {
 	cmd      *exec.Cmd
+	base     string // scheme://host:port, no trailing slash
 	port     int
 	model    Model
 	ctxN     int // per-slot context — what one conversation can use
 	slots    int // llama-server slots (-np); total -c is ctxN*slots
 	gpuLayer int
+	apiKey   string
 	client   *http.Client
 	waitOnce sync.Once
 	waitErr  chan error
+}
+
+// isRemote reports whether this server is someone else's process. Remote
+// servers are shared, so anything destructive — killing the process, erasing
+// KV slots — has to be suppressed for them.
+func (s *llamaServer) isRemote() bool { return s.cmd == nil }
+
+// url builds an absolute request URL. Every caller goes through this rather
+// than formatting a host, so there is one place that knows where the model
+// lives.
+func (s *llamaServer) url(path string) string {
+	return s.base + path
+}
+
+// do is the single exit point for every request, so a remote's API key is
+// attached in exactly one place instead of at each call site.
+func (s *llamaServer) do(req *http.Request) (*http.Response, error) {
+	if s.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+s.apiKey)
+	}
+	return s.client.Do(req)
 }
 
 var (
@@ -46,6 +75,25 @@ var (
 func ensureServer() (*llamaServer, error) {
 	serverMu.Lock()
 	defer serverMu.Unlock()
+
+	// A configured endpoint takes over entirely: no engine, no model file,
+	// no subprocess. Model and ctx are the remote's to decide, so none of
+	// the local-identity checks below apply.
+	if cfgEndpoint, key := remoteEndpoint(); cfgEndpoint != "" {
+		if activeServer != nil && activeServer.isRemote() && activeServer.base == cfgEndpoint {
+			return activeServer, nil
+		}
+		if activeServer != nil {
+			activeServer.stopLocked()
+			activeServer = nil
+		}
+		s, err := newRemoteServer(cfgEndpoint, key)
+		if err != nil {
+			return nil, err
+		}
+		activeServer = s
+		return s, nil
+	}
 
 	m, err := currentModel()
 	if err != nil {
@@ -90,7 +138,33 @@ func shutdownServer() {
 // so one-shots land in the second slot and the conversation's KV survives.
 const kvCacheSlots = 2
 
+// serveCapacity decides the slot count and the total -c for a launch.
+//
+// The KV budget is what ctx_size implies at the default slot count, and it
+// does not grow with the slot count: extra slots divide that budget rather
+// than multiplying it. Serving four clients must not silently quadruple VRAM
+// use and fail to load the model — each client gets less context instead,
+// which is the honest trade and the one the operator can see.
+//
+// wantSlots of 0 means "the default", which is what the TUI's own private
+// server always asks for.
+func serveCapacity(ctxN, wantSlots int) (slots, totalCtx int) {
+	slots = kvCacheSlots
+	if wantSlots > 0 {
+		slots = wantSlots
+	}
+	return slots, ctxN * kvCacheSlots
+}
+
 func startLlamaServer(m Model) (*llamaServer, error) {
+	return startLlamaServerWith(m, serveOptions{})
+}
+
+// startLlamaServerWith spawns the engine, retrying without the optimized
+// flag set if this engine/model/backend combination rejects it. opts is the
+// zero value for the TUI's private loopback server and carries the bind
+// address for `--serve`.
+func startLlamaServerWith(m Model, opts serveOptions) (*llamaServer, error) {
 	bin, err := findEngineServer()
 	if err != nil {
 		return nil, fmt.Errorf("llama-server: %w", err)
@@ -112,36 +186,72 @@ func startLlamaServer(m Model) (*llamaServer, error) {
 	ngl := resolveGPULayers(cfg)
 	ctxN := resolveCtxSize(cfg)
 
-	s, err := launchLlamaServer(bin, modelPath, m, threads, ngl, ctxN, true)
+	s, err := launchLlamaServerOn(bin, modelPath, m, threads, ngl, ctxN, true, opts)
 	if errors.Is(err, errServerExitedEarly) {
 		// The optimized flag set is rejected by engines that predate the
 		// `-fa on` syntax, and by backend/model combos that can't force
 		// flash attention. The base flags work everywhere.
 		log.Printf("llama-server rejected optimized flags (%v) — retrying with base flags", err)
-		s, err = launchLlamaServer(bin, modelPath, m, threads, ngl, ctxN, false)
+		s, err = launchLlamaServerOn(bin, modelPath, m, threads, ngl, ctxN, false, opts)
 	}
 	return s, err
 }
 
 func launchLlamaServer(bin, modelPath string, m Model, threads, ngl, ctxN int, optimized bool) (*llamaServer, error) {
-	port, err := pickFreePort()
-	if err != nil {
-		return nil, fmt.Errorf("pick port: %w", err)
+	return launchLlamaServerOn(bin, modelPath, m, threads, ngl, ctxN, optimized, serveOptions{})
+}
+
+// serveOptions carries the LAN-facing overrides used by `--serve`. The zero
+// value is the private, loopback-only server the TUI has always started.
+type serveOptions struct {
+	Bind   string // listen address; "" means 127.0.0.1
+	Port   int    // fixed port; 0 means pick a free one
+	Slots  int    // llama-server -np; 0 means kvCacheSlots
+	APIKey string
+}
+
+func (o serveOptions) bindHost() string {
+	if o.Bind == "" {
+		return "127.0.0.1"
+	}
+	return o.Bind
+}
+
+// clientHost is the host a request should be addressed to. A server bound to
+// a wildcard is not reachable *at* that wildcard, so requests from this
+// process still go to loopback.
+func (o serveOptions) clientHost() string {
+	switch o.bindHost() {
+	case "0.0.0.0", "::", "[::]":
+		return "127.0.0.1"
+	}
+	return o.bindHost()
+}
+
+func launchLlamaServerOn(bin, modelPath string, m Model, threads, ngl, ctxN int, optimized bool, opts serveOptions) (*llamaServer, error) {
+	port := opts.Port
+	if port == 0 {
+		var err error
+		if port, err = pickFreePort(); err != nil {
+			return nil, fmt.Errorf("pick port: %w", err)
+		}
 	}
 
 	slots := 1
 	serverCtx := ctxN // -c is the total across slots; each slot gets an equal share
 	args := []string{
 		"-m", modelPath,
-		"--host", "127.0.0.1",
+		"--host", opts.bindHost(),
 		"--port", fmt.Sprintf("%d", port),
 		"-t", fmt.Sprintf("%d", threads),
 		"-ngl", fmt.Sprintf("%d", ngl),
 		"--log-disable",
 	}
+	if opts.APIKey != "" {
+		args = append(args, "--api-key", opts.APIKey)
+	}
 	if optimized {
-		slots = kvCacheSlots
-		serverCtx = ctxN * kvCacheSlots
+		slots, serverCtx = serveCapacity(ctxN, opts.Slots)
 		args = append(args,
 			// q8_0 halves KV memory vs f16, which is what pays for the
 			// second slot: two q8_0 slots cost what one f16 slot did, so
@@ -161,6 +271,9 @@ func launchLlamaServer(bin, modelPath string, m Model, threads, ngl, ctxN int, o
 		)
 	}
 	args = append(args, "-c", fmt.Sprintf("%d", serverCtx))
+	// -c is the total across slots, so what one conversation actually gets
+	// is the share, not the total.
+	perSlot := serverCtx / slots
 	cmd := exec.Command(bin, args...)
 	cmd.Stdin = bytes.NewReader(nil)
 	cmd.Stdout = newLogWriter("llama-server stdout")
@@ -169,18 +282,20 @@ func launchLlamaServer(bin, modelPath string, m Model, threads, ngl, ctxN int, o
 	applyEngineSysProcAttr(cmd)
 
 	log.Printf("starting llama-server on :%d (model=%s threads=%d ngl=%d ctx=%d slots=%d optimized=%v)",
-		port, m.Name, threads, ngl, ctxN, slots, optimized)
+		port, m.Name, threads, ngl, perSlot, slots, optimized)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start llama-server: %w", err)
 	}
 
 	s := &llamaServer{
 		cmd:      cmd,
+		base:     fmt.Sprintf("http://%s:%d", opts.clientHost(), port),
 		port:     port,
 		model:    m,
-		ctxN:     ctxN,
+		ctxN:     perSlot,
 		slots:    slots,
 		gpuLayer: ngl,
+		apiKey:   opts.APIKey,
 		client:   &http.Client{Timeout: 10 * time.Minute},
 		waitErr:  make(chan error, 1),
 	}
@@ -215,7 +330,7 @@ var errServerExitedEarly = errors.New("llama-server exited before ready")
 // If the subprocess exits early, returns that error instead of timing out.
 func (s *llamaServer) waitReady(maxWait time.Duration) error {
 	deadline := time.Now().Add(maxWait)
-	url := fmt.Sprintf("http://127.0.0.1:%d/health", s.port)
+	url := s.url("/health")
 
 	for time.Now().Before(deadline) {
 		select {
@@ -228,7 +343,7 @@ func (s *llamaServer) waitReady(maxWait time.Duration) error {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
-		resp, err := s.client.Do(req)
+		resp, err := s.do(req)
 		cancel()
 		if err == nil {
 			body := make([]byte, 256)
@@ -240,7 +355,89 @@ func (s *llamaServer) waitReady(maxWait time.Duration) error {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+	if s.isRemote() {
+		// A local server not coming up is a startup failure; a remote one is
+		// almost always a wrong address, a firewall, or a host that isn't
+		// serving — say that instead of "did not become ready".
+		return fmt.Errorf("no atlas.llm server answering at %s — check it is running with --serve "+
+			"and that the port is reachable", s.base)
+	}
 	return fmt.Errorf("llama-server did not become ready in %s", maxWait)
+}
+
+// remoteReadyTimeout is short on purpose: a remote is either already serving
+// or it isn't, so there is nothing to wait out the way a local model load
+// has to be waited out.
+const remoteReadyTimeout = 5 * time.Second
+
+// remoteProps is the subset of llama-server's /props we can use to describe a
+// server we did not configure.
+type remoteProps struct {
+	DefaultGenerationSettings struct {
+		NCtx int `json:"n_ctx"`
+	} `json:"default_generation_settings"`
+	ModelPath string `json:"model_path"`
+}
+
+// newRemoteServer attaches to a llama-server someone else is running. It owns
+// no process, so it never sets cmd — see isRemote.
+func newRemoteServer(endpoint, apiKey string) (*llamaServer, error) {
+	s := &llamaServer{
+		base:   strings.TrimRight(endpoint, "/"),
+		apiKey: apiKey,
+		slots:  1,
+		client: &http.Client{Timeout: 10 * time.Minute},
+	}
+	if err := s.waitReady(remoteReadyTimeout); err != nil {
+		return nil, err
+	}
+	s.model = Model{Name: remoteModelName(s), Size: "remote"}
+	s.ctxN = remoteContext(s)
+	log.Printf("attached to remote server %s (model=%s ctx=%d)", s.base, s.model.Name, s.ctxN)
+	return s, nil
+}
+
+// fetchProps reads /props, which is how a client learns what it is talking to
+// — there is no local GGUF to inspect.
+func (s *llamaServer) fetchProps() (remoteProps, bool) {
+	var p remoteProps
+	req, err := http.NewRequest("GET", s.url("/props"), nil)
+	if err != nil {
+		return p, false
+	}
+	resp, err := s.do(req)
+	if err != nil {
+		return p, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return p, false
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+		return p, false
+	}
+	return p, true
+}
+
+func remoteModelName(s *llamaServer) string {
+	p, ok := s.fetchProps()
+	if !ok || strings.TrimSpace(p.ModelPath) == "" {
+		return "remote"
+	}
+	// model_path is the server's filesystem path; only the basename is
+	// meaningful here, and the .gguf suffix is noise in a header.
+	name := p.ModelPath
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	return strings.TrimSuffix(name, ".gguf")
+}
+
+func remoteContext(s *llamaServer) int {
+	if p, ok := s.fetchProps(); ok && p.DefaultGenerationSettings.NCtx > 0 {
+		return p.DefaultGenerationSettings.NCtx
+	}
+	return 0
 }
 
 func (s *llamaServer) stopLocked() {
@@ -405,12 +602,12 @@ func (s *llamaServer) chatCompleteCore(ctx context.Context, msgs []ChatMsg, maxT
 		Tools:              tools,
 		ChatTemplateKwargs: kwargs,
 	})
-	log.Printf("→ POST /v1/chat/completions port=%d max_tokens=%d msgs=%d", s.port, maxTokens, len(msgs))
+	log.Printf("→ POST %s max_tokens=%d msgs=%d", s.url("/v1/chat/completions"), maxTokens, len(msgs))
 	for i, m := range msgs {
 		log.Printf("  msg[%d] %s (%d bytes): %s", i, m.Role, len(m.Content), truncateForLog(m.Content, 500))
 	}
 
-	url := fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", s.port)
+	url := s.url("/v1/chat/completions")
 	start := time.Now()
 	if ctx == nil {
 		ctx = context.Background()
@@ -420,7 +617,7 @@ func (s *llamaServer) chatCompleteCore(ctx context.Context, msgs []ChatMsg, maxT
 		return "", nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.client.Do(req)
+	resp, err := s.do(req)
 	if err != nil {
 		// Cancellation is a user action, not a failure to report as one.
 		if ctx.Err() != nil {
@@ -476,14 +673,22 @@ func (s *llamaServer) chatCompleteCore(ctx context.Context, msgs []ChatMsg, maxT
 // next request starts from a clean slate. Called from the TUI's /reset so
 // the server doesn't silently reuse tokens from the previous conversation.
 func (s *llamaServer) DropKVCache() error {
+	if s.isRemote() {
+		// Slots are shared on a served engine, so erasing them would throw
+		// away other clients' cached prefixes and make their next message
+		// re-prefill from scratch. The caller has already dropped this
+		// conversation's history, which is the part that's ours to drop.
+		log.Printf("/reset: leaving slots on remote %s alone (shared with other clients)", s.base)
+		return nil
+	}
 	// A stale prefix could survive in any slot, so erase them all.
 	for i := 0; i < s.slots; i++ {
-		url := fmt.Sprintf("http://127.0.0.1:%d/slots/%d?action=erase", s.port, i)
+		url := s.url(fmt.Sprintf("/slots/%d?action=erase", i))
 		req, err := http.NewRequest("POST", url, nil)
 		if err != nil {
 			return err
 		}
-		resp, err := s.client.Do(req)
+		resp, err := s.do(req)
 		if err != nil {
 			return err
 		}
@@ -564,7 +769,7 @@ func (s *llamaServer) ChatCompleteStreamOpt(ctx context.Context, msgs []ChatMsg,
 		CachePrompt:        true,
 		ChatTemplateKwargs: kwargs,
 	})
-	url := fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", s.port)
+	url := s.url("/v1/chat/completions")
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -575,9 +780,9 @@ func (s *llamaServer) ChatCompleteStreamOpt(ctx context.Context, msgs []ChatMsg,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 
-	log.Printf("→ POST /v1/chat/completions (stream) port=%d max_tokens=%d msgs=%d", s.port, maxTokens, len(msgs))
+	log.Printf("→ POST %s (stream) max_tokens=%d msgs=%d", s.url("/v1/chat/completions"), maxTokens, len(msgs))
 	start := time.Now()
-	resp, err := s.client.Do(req)
+	resp, err := s.do(req)
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()

@@ -1,4 +1,5 @@
 //go:build gobake
+
 package bake_recipe
 
 import (

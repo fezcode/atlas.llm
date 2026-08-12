@@ -653,3 +653,57 @@ join busts the cache once).
 - **Multimodal (image / vision).** Some candidate models (Ministral-3
   has a vision encoder; the engine ships `llama-mtmd-cli.exe`) could
   support this. Not worth the protocol work unless someone wants it.
+
+### 28. LAN inference: --serve and /set endpoint — SHIPPED (v0.30.0)
+One atlas.llm hosts its model on the network; another uses it and needs no
+engine and no weights of its own. A laptop drives an agentic session against
+a desktop's GPU.
+
+This was mostly already true and unexposed. Inference has always gone over
+HTTP to llama-server, and llama-server already takes `--host`, `--port` and
+`--api-key`, so no new protocol or transport was written — the work was
+removing the assumption that the other end is a subprocess we own.
+
+- `llamaServer` gained a `base` URL, and `cmd == nil` now means remote. The
+  five hardcoded `http://127.0.0.1:%d` strings became `s.url(path)`, and
+  every request goes through `s.do` so a bearer token is attached in one
+  place. `stopLocked` and `DropKVCache` became no-ops for a remote: killing
+  a process we didn't start, or erasing slots other clients are using, are
+  the two ways a client could ruin a shared server.
+- `requireEngine`/`requireModel` were duplicated at four call sites and are
+  now one `requireInference()`, which is a no-op in remote mode. A client
+  with no engine and no GGUF is the supported setup, not a broken install.
+- `--serve` reuses the existing config (model, variant, ngl, ctx), binds to
+  the LAN, prints the real interface addresses to paste into `/set endpoint`,
+  and blocks until Ctrl+C. It refuses to run if the same install is
+  configured as someone else's client.
+- Slots default to 4 when serving so several clients keep their own KV
+  prefix instead of evicting each other every turn. The budget does not grow
+  with the slot count — `serveCapacity` divides a fixed `ctx_size * 2` — so
+  raising slots costs context per client, not VRAM. Multiplying it would
+  have OOM'd the 16GB card the default was sized for.
+- The client learns what it's talking to from `/props`, since there's no
+  local GGUF to read.
+
+What deliberately does not move: tools run on the client, against the
+directory it was started in. Only token generation is remote.
+
+Settings that llama-server takes at spawn — ctx_size, gpu_layers,
+engine_variant — belong to the server. Setting them on a client saves the
+value but changes nothing, and says so; `/model` is refused outright. The
+alternative was accepting them silently, which is the failure mode three
+separate bugs in v0.29.x already came from.
+
+Measured through the client path: 75.9 tok/s generating on ministral-3-14b
+against the RTX 5070 Ti, attach in 60ms.
+
+Known limitations:
+- No auth by default. `--api-key` is plumbed through, but a bare `--serve`
+  is open to anyone who can reach the port, and `/slots` means clients are
+  not isolated from each other's KV state. Fine on a home LAN, not on an
+  untrusted one.
+- No discovery. Clients need the address typed in; there's no mDNS.
+- The client can't switch the server's model, so a shared server is
+  single-model until whoever runs it restarts it.
+- Nothing reconnects. If the server goes away mid-session the next message
+  errors, and `/set endpoint` again is the way back.

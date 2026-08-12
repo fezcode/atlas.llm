@@ -44,7 +44,7 @@ they are missing returns an error with the command to run.
 | `/download all`   | Download engine + every model in the registry.                      |
 | `/summarize`      | Summarize the current directory into `SUMMARY.md`.                  |
 | `/grep <query>`   | Semantic grep: ask the local model to find lines matching `<query>`.|
-| `/set [k [v]]`    | Settings: `max_tokens`, `reasoning`, `max_tool_rounds`, `ctx_size`, `gpu_layers`, `engine_variant`. |
+| `/set [k [v]]`    | Settings: `max_tokens`, `reasoning`, `max_tool_rounds`, `ctx_size`, `gpu_layers`, `engine_variant`, `endpoint`. |
 | `/config`         | Everything at once: settings, session state, memory, paths.         |
 | `/tools [on\|off\|list]` | Toggle agentic tool-use (off by default). See below.         |
 | `/mcp [...]`      | Connect MCP servers (Slack, Confluence, …). See below.              |
@@ -320,6 +320,57 @@ layer — use `/set gpu_layers N` to offload part of it instead.
 Changing `gpu_layers` restarts the model server, so it takes effect on your
 next message. `/set` with no arguments shows the current values and which
 engine variant is actually installed.
+
+### Running inference on another machine
+
+One atlas.llm can host its model on your network and others can use it. The
+client needs **no engine and no model weights** — a laptop can drive a full
+agentic session against a desktop's GPU.
+
+On the machine with the GPU:
+
+```
+atlas.llm --serve
+```
+
+It prints the addresses to use. On the other machine:
+
+```
+/set endpoint 192.168.1.50:8080
+```
+
+That's it — no `/download` needed on the client. A bare address, an address
+with a port, or a full URL all work; port 8080 is assumed. `/set endpoint
+local` moves inference back to that machine.
+
+| Serve flag | Default | Purpose |
+| ---------- | ------- | ------- |
+| `--bind`    | `0.0.0.0` | Interface to listen on. `127.0.0.1` keeps it to that machine. |
+| `--port`    | `8080`    | Port to listen on. |
+| `--slots`   | `4`       | Concurrent conversations. |
+| `--api-key` | none      | Require a bearer token (`/set endpoint_key` on clients). |
+
+**Only token generation is remote.** Tools — `read_file`, `run_cmd`, and the
+rest — run on the client, against the directory you started it in. So the
+model thinks on the server's GPU and edits files on your machine.
+
+Slots exist so several clients don't evict each other's cached prompt prefix
+every turn. They divide a fixed KV budget rather than adding to it, so more
+slots means less context each, not more VRAM — `--slots 4` on a 16K
+`ctx_size` gives each client 8192 tokens.
+
+Some settings belong to the server, because llama-server takes them when it
+starts: `ctx_size`, `gpu_layers`, and `engine_variant`. Setting them on a
+client saves the value but changes nothing until you go back to local, and
+atlas.llm tells you so. `/model` is refused outright — only the serving
+machine can change which weights are loaded. `/reset` clears your own history
+but leaves the server's KV slots alone, since other clients are using them.
+
+**There is no authentication unless you add one.** A bare `--serve` is open
+to anyone who can reach the port, and llama-server's `/slots` endpoint means
+clients aren't isolated from each other's cached state. That's a reasonable
+trade on a home LAN and a bad one anywhere else; use `--api-key` if the
+network isn't yours.
 
 ### MCP servers
 

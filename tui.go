@@ -521,6 +521,15 @@ func (m *chatModel) handleSet(args []string) {
 			return
 		}
 	}
+	// Some settings configure a llama-server this install isn't running.
+	// Saving them is still right — they apply again on `/set endpoint local`
+	// — but silently accepting one that changes nothing is the failure mode
+	// this whole session has been about.
+	if ep, _ := remoteEndpoint(); ep != "" && remoteDecidesSetting(key) {
+		m.pushSystem(fmt.Sprintf(
+			"Note: %s is decided by the server at %s. This saves the value locally, "+
+				"but nothing changes until `/set endpoint local`.", key, ep))
+	}
 	switch key {
 	case "ctx_size":
 		val := strings.ToLower(args[1])
@@ -691,6 +700,54 @@ func (m *chatModel) handleSet(args []string) {
 			return
 		}
 		m.pushSystem(fmt.Sprintf("max_tokens = %d", n))
+
+	case "endpoint":
+		ep, err := normalizeEndpoint(args[1])
+		if err != nil {
+			m.pushError(err.Error())
+			return
+		}
+		was, _ := remoteEndpoint()
+		cfg.Endpoint = ep
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		// The old server is now the wrong one either way: switching to a
+		// remote makes the local subprocess dead weight, and switching back
+		// leaves a remote attachment pointing nowhere.
+		if was != ep {
+			shutdownServer()
+		}
+		if ep == "" {
+			m.pushSystem("endpoint = local\nInference moves back to this machine on your next message.")
+			return
+		}
+		msg := fmt.Sprintf("endpoint = %s\n\nInference now runs there; this machine needs no engine or model.\n"+
+			"ctx_size, gpu_layers and engine_variant are the server's to decide.\n"+
+			"Tools still run here, against your own files.", ep)
+		if _, key := remoteEndpoint(); key == "" {
+			msg += "\nNo endpoint_key set — fine if the server was started without --api-key."
+		}
+		msg += "\nTakes effect on your next message."
+		m.pushSystem(msg)
+
+	case "endpoint_key":
+		cfg.EndpointKey = strings.TrimSpace(args[1])
+		if strings.EqualFold(cfg.EndpointKey, "none") || strings.EqualFold(cfg.EndpointKey, "off") {
+			cfg.EndpointKey = ""
+		}
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		shutdownServer() // reattach so the new key is used
+		if cfg.EndpointKey == "" {
+			m.pushSystem("endpoint_key cleared.")
+			return
+		}
+		m.pushSystem("endpoint_key set.\nTakes effect on your next message.")
+
 	default:
 		m.pushError(fmt.Sprintf("unknown setting: %s (supported: %s)", key, strings.Join(settingKeys(), ", ")))
 	}
@@ -753,6 +810,15 @@ func (m *chatModel) pickerConfirm() tea.Cmd {
 // ensureServer will restart the llama-server subprocess on the next
 // inference call if the model actually changed.
 func (m *chatModel) applyModelSelection(target Model) {
+	// The model is loaded into the server's memory at spawn; a client has no
+	// way to change it over HTTP. Saving the selection anyway would leave the
+	// header naming a model that isn't answering.
+	if ep, _ := remoteEndpoint(); ep != "" {
+		m.pushError(fmt.Sprintf(
+			"inference runs on %s, and only that machine can change which model is loaded.\n"+
+				"Run `/set endpoint local` to use this machine's models instead.", ep))
+		return
+	}
 	cfg, _ := loadConfig()
 	cfg.CurrentModel = target.Name
 	if err := saveConfig(cfg); err != nil {
