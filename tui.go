@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/atotto/clipboard"
@@ -20,7 +22,10 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+	"golang.org/x/term"
 )
 
 // program is set in startChat so download goroutines can Send progress messages.
@@ -477,7 +482,7 @@ func (m *chatModel) renderMarkdown(s string) string {
 	}
 	if m.mdRenderer == nil || m.mdWidth != wrap {
 		r, err := glamour.NewTermRenderer(
-			glamour.WithAutoStyle(),
+			glamour.WithStandardStyle(markdownStyleName()),
 			glamour.WithWordWrap(wrap),
 		)
 		if err != nil {
@@ -2145,6 +2150,10 @@ func startChat() (err error) {
 		}
 	}()
 
+	// Must happen before the program starts: this reads a reply off stdin,
+	// and once bubbletea owns stdin the reply becomes a keystroke instead.
+	detectMarkdownStyle()
+
 	m := newChatModel()
 	if logErr == nil {
 		m.rendered = append(m.rendered, sysStyle.Render(fmt.Sprintf("Log file: %s", logFile)))
@@ -2158,6 +2167,10 @@ func startChat() (err error) {
 	// whether it is reachable, rather than showing an unknown-state badge
 	// until the first heartbeat 15s later.
 	if ep, key := remoteEndpoint(); ep != "" {
+		// Publish the endpoint synchronously so the badge is present from the
+		// first frame; the probe that fills in its state runs in the
+		// background, since it can take up to probeTimeout.
+		setRemoteStatus(remoteStatus{Endpoint: ep, State: remoteUnknown})
 		go func() {
 			setRemoteStatus(probeRemote(ep, key))
 			startHeartbeat()
@@ -2479,15 +2492,17 @@ func (m *chatModel) finishStream(final string) bool {
 // Reads only cached state — see remoteStatus. This renders on every
 // keystroke, so it must never touch the network.
 func renderRemoteBadge() string {
-	ep, _ := remoteEndpoint()
-	if ep == "" {
+	// Deliberately not remoteEndpoint(): that reads and parses config.json,
+	// and this runs on every keystroke. The cached status carries the
+	// endpoint precisely so the render path never touches disk.
+	st := getRemoteStatus()
+	if st.Endpoint == "" {
 		return ""
 	}
-	st := getRemoteStatus()
 
 	// Strip the scheme: host:port is what the user typed and what they need
 	// to recognise, and header width is scarce.
-	label := strings.TrimPrefix(strings.TrimPrefix(ep, "http://"), "https://")
+	label := strings.TrimPrefix(strings.TrimPrefix(st.Endpoint, "http://"), "https://")
 
 	var colour lipgloss.Color
 	var mark string
@@ -2503,4 +2518,54 @@ func renderRemoteBadge() string {
 	}
 	style := lipgloss.NewStyle().Foreground(colour).Bold(true)
 	return style.Render(mark + " REMOTE " + label)
+}
+
+// Markdown style detection happens once, before bubbletea takes over stdin.
+//
+// glamour.WithAutoStyle() asks termenv whether the background is dark, and
+// termenv answers by writing an OSC 11 query to the terminal and reading the
+// reply back off stdin. Inside a running TUI, bubbletea owns stdin — so the
+// terminal's answer ("\x1b]11;rgb:158e/193a/1e75\x1b\\") races between the two
+// readers, and when bubbletea wins it lands in the transcript as text.
+//
+// The renderer is rebuilt whenever the wrap width changes, and markdown is
+// rendered when a reply finishes, which is why the escape sequence appeared
+// after a response rather than at startup.
+var (
+	mdStyleOnce sync.Once
+	mdStyle     = styles.DarkStyle
+)
+
+// detectMarkdownStyle resolves the style while stdin is still ours. Call it
+// before starting the bubbletea program.
+//
+// This mirrors what WithAutoStyle does internally — notty when stdout isn't a
+// terminal, otherwise dark or light by background — with the one difference
+// that matters: it runs at a moment when reading the terminal's reply is safe.
+func detectMarkdownStyle() {
+	mdStyleOnce.Do(func() {
+		if !term.IsTerminal(int(os.Stdout.Fd())) {
+			mdStyle = styles.NoTTYStyle
+			return
+		}
+		if !termenv.HasDarkBackground() {
+			mdStyle = styles.LightStyle
+		}
+		log.Printf("markdown style: %s", mdStyle)
+	})
+}
+
+// markdownStyleName returns the resolved style.
+//
+// If detection never ran — a caller that renders markdown outside the TUI —
+// it settles the question without a terminal round trip: IsTerminal is a
+// local syscall, while the background query is the thing that must never
+// happen off the startup path.
+func markdownStyleName() string {
+	mdStyleOnce.Do(func() {
+		if !term.IsTerminal(int(os.Stdout.Fd())) {
+			mdStyle = styles.NoTTYStyle
+		}
+	})
+	return mdStyle
 }

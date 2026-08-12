@@ -833,3 +833,36 @@ Not done: a real DACL on the credential file. `golang.org/x/sys/windows`
 could set one, but it is ~60 lines of security-sensitive code to strip
 Administrators and SYSTEM from a file already restricted by profile
 inheritance — a poor trade against the chance of getting an ACL subtly wrong.
+
+#### Fixed: OSC colour-query escape leaking into the transcript — (v0.32.2)
+A reply would sometimes be followed by `;rgb:158e/193a/1e75\` in the
+transcript. That is a terminal answering an OSC 11 background-colour query.
+
+`glamour.WithAutoStyle()` resolves dark-vs-light by asking termenv, and
+termenv asks by writing the query to the terminal and reading the reply off
+stdin. Inside the TUI bubbletea owns stdin, so the answer raced two readers
+and when bubbletea won it landed in the transcript as text.
+
+The timing explains the "sometimes": the renderer is only rebuilt when it
+does not exist or the wrap width changed, and markdown is rendered when a
+reply finishes — so it fired on the first reply of a session and again after
+a resize, never at startup.
+
+Resolution now happens once in `detectMarkdownStyle`, before the program
+starts and while stdin is still ours, and renderers are built with
+`WithStandardStyle`. It mirrors AutoStyle exactly, including the TTY check
+that picks the notty style when stdout is redirected — missing that check
+made rendered output carry ANSI codes under `go test` and broke
+TestStoppingMidStreamKeepsPartialText.
+
+Guarded by a source-level test asserting tui.go never calls WithAutoStyle.
+The failure only appears against a real terminal — with stdin not a TTY, as
+under `go test`, termenv answers from a default and nothing leaks — so a
+runtime test would pass while the bug shipped. The guard was verified by
+reintroducing the call and watching it fail.
+
+Also fixed while here: `renderRemoteBadge` called `remoteEndpoint()`, which
+reads and parses config.json, putting a disk read on every keystroke — a
+milder repeat of the tasklist-per-frame bug from v0.29.1. It now reads only
+the cached status, and the test deletes config.json before rendering to prove
+it never looks.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -171,6 +172,7 @@ func TestRemoteBadgeIsCacheOnlyAndStateColoured(t *testing.T) {
 	t.Cleanup(clearRemoteStatus)
 
 	// Local: no badge at all. Absence is the clearest signal.
+	clearRemoteStatus()
 	if err := saveConfig(Config{CurrentModel: defaultModel}); err != nil {
 		t.Fatal(err)
 	}
@@ -195,17 +197,23 @@ func TestRemoteBadgeIsCacheOnlyAndStateColoured(t *testing.T) {
 		}
 	}
 
-	// Cache-only: an unroutable endpoint must not make rendering block.
+	// Cache-only, and that means no disk either: reading config.json per
+	// frame would be a milder repeat of the tasklist-per-keystroke bug.
+	// Delete the config outright — if rendering still works, it never
+	// looked.
 	setRemoteStatus(remoteStatus{Endpoint: "http://10.255.255.1:8080", State: remoteHealthy})
-	if err := saveConfig(Config{CurrentModel: defaultModel, Endpoint: "10.255.255.1:8080"}); err != nil {
-		t.Fatal(err)
+	if p, err := configPath(); err == nil {
+		_ = os.Remove(p)
+	}
+	if got := renderRemoteBadge(); !strings.Contains(got, "10.255.255.1:8080") {
+		t.Errorf("badge needs config.json to render: %q", got)
 	}
 	start := time.Now()
-	for i := 0; i < 500; i++ {
+	for i := 0; i < 5000; i++ {
 		_ = renderRemoteBadge()
 	}
 	if d := time.Since(start); d > 100*time.Millisecond {
-		t.Errorf("500 badge renders took %s — the badge is doing I/O", d)
+		t.Errorf("5000 badge renders took %s — the badge is doing I/O", d)
 	}
 }
 
