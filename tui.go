@@ -1110,6 +1110,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.busy = false
 		m.busyReason = ""
+		m.dropUnansweredUser()
 		m.pushError(msg.err.Error())
 
 	case sysMsg:
@@ -1736,6 +1737,7 @@ func (m *chatModel) handleAgentStep(msg agentStepMsg) tea.Cmd {
 		m.busy = false
 		m.busyReason = ""
 		m.pendingCalls = nil
+		m.dropUnansweredUser()
 		m.pushError(msg.err.Error())
 		return nil
 	}
@@ -2233,8 +2235,24 @@ func (m *chatModel) stopInflight() bool {
 		m.picking = ""
 		m.refresh()
 	}
+	m.dropUnansweredUser()
 	m.pushSystem("Stopped. (The partial reply was discarded; the conversation is unchanged.)")
 	return true
+}
+
+// dropUnansweredUser removes a trailing user message from the conversation
+// state after a turn dies without an assistant reply — an inference error or
+// an Esc. Leaving it in place corrupts every later turn: the next send puts
+// two user messages back-to-back, and strict chat templates (Mistral,
+// Ministral, Llama-2) reject non-alternating roles with raise_exception,
+// so the server 500s on every message from then on.
+func (m *chatModel) dropUnansweredUser() {
+	if n := len(m.history); n > 0 && m.history[n-1].Role == "user" {
+		m.history = m.history[:n-1]
+	}
+	if n := len(m.agentMsgs); n > 0 && m.agentMsgs[n-1].Role == "user" {
+		m.agentMsgs = m.agentMsgs[:n-1]
+	}
 }
 
 // inflightCanceled reports whether an error is the result of the user
