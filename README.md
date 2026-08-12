@@ -247,6 +247,21 @@ server, applying from the next message.
 If the context is filling up rather than being too small, `/compact` is the
 cheaper fix.
 
+### KV-cache optimizations
+
+atlas.llm launches llama-server with a tuned flag set: the KV cache is
+quantized to q8_0 (half the memory of the f16 default, no meaningful quality
+loss), flash attention is on, and two server slots are run so one-shot calls
+(`/summarize`, `/grep`, `/compact`'s summarizer) don't evict the
+conversation's cached prefix — replies after such a call stay instant instead
+of re-reading the whole history. The halved KV memory pays for the second
+slot, so the total is what a single unquantized slot cost before.
+
+If the engine rejects those flags — builds older than roughly September 2025,
+or a backend without flash-attention support — atlas.llm automatically
+relaunches with plain flags, so nothing breaks; it just runs without the
+optimization. `/download engine` gets a build that supports all of it.
+
 ### GPU offload
 
 Inference runs on the GPU where it can. `/set gpu_layers` controls how many
@@ -310,6 +325,11 @@ GitHub, a database, or anything else with an MCP server.
 
 `/mcp add` opens a picker of ready-made servers. Picking one writes
 `mcp.json` for you and connects it.
+
+One performance note: connect servers **before** a long agent session rather
+than in the middle of one. Tool definitions are part of the prompt the model
+sees, so a server joining mid-conversation changes the prompt prefix and the
+next reply re-reads the whole history instead of hitting the KV cache.
 
 **Zero-setup servers.** These need no account, token, or app — useful on
 their own, and a quick way to confirm the plumbing works:

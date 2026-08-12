@@ -546,6 +546,34 @@ the registry's Q4_K_M convention. URL verified to resolve at the size claimed
 Text-only: vision needs the separate mmproj GGUF, which we don't download.
 Not yet verified by running one — it's a 15.9GB download.
 
+### 27. KV-cache optimizations, sized for 16GB — SHIPPED (v0.28.0)
+llama-server now launches with an optimized flag set, and falls back to the
+old flags automatically if the process dies before /health comes up (the
+signature of a rejected flag — engines older than the `-fa on` syntax from
+Sep 2025, or a backend that can't force flash attention). Timeouts and
+missing binaries don't trigger the retry; only early exit does.
+
+The set: `-fa on`, `--cache-type-k/v q8_0`, `--parallel 2` with `-c` doubled,
+`--cache-reuse 256`.
+
+The sizing invariant that makes this safe on 16GB machines: q8_0 halves KV
+memory, and that saving pays for the second slot — two q8_0 slots at the
+same per-slot context cost what one f16 slot did. Per-slot ctx is unchanged
+(s.ctxN stays the per-slot value, so the TUI meter and the picker's fit
+column stay honest), and total server memory is unchanged.
+
+Why two slots: llama-server routes each request to the idle slot with the
+longest matching prefix, so one-shot calls (/summarize, /grep, /compact's
+summarizer) land in the second slot instead of evicting the conversation's
+cached prefix from the only slot — previously any such call forced a full
+re-prefill of the entire history on the next turn. --cache-reuse salvages
+still-matching chunks after /compact rewrites history (runtime no-op on SWA
+models like Gemma). /reset and /compact now erase all slots, not just 0.
+
+README gained a KV-cache section and an MCP note (connect servers before a
+long agent session — tools render into the prompt prefix, so a mid-session
+join busts the cache once).
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships

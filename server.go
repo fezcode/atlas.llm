@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -26,7 +27,8 @@ type llamaServer struct {
 	cmd      *exec.Cmd
 	port     int
 	model    Model
-	ctxN     int
+	ctxN     int // per-slot context — what one conversation can use
+	slots    int // llama-server slots (-np); total -c is ctxN*slots
 	gpuLayer int
 	client   *http.Client
 	waitOnce sync.Once
@@ -81,6 +83,13 @@ func shutdownServer() {
 	}
 }
 
+// kvCacheSlots is how many server slots the optimized launch runs. Two
+// slots keep one-shot utility calls (/summarize, /grep, compact's
+// summarizer) from evicting the conversation's cached prefix: llama-server
+// routes each request to the idle slot with the longest matching prefix,
+// so one-shots land in the second slot and the conversation's KV survives.
+const kvCacheSlots = 2
+
 func startLlamaServer(m Model) (*llamaServer, error) {
 	bin, err := findEngineServer()
 	if err != nil {
@@ -89,10 +98,6 @@ func startLlamaServer(m Model) (*llamaServer, error) {
 	modelPath, err := requireModel(m)
 	if err != nil {
 		return nil, err
-	}
-	port, err := pickFreePort()
-	if err != nil {
-		return nil, fmt.Errorf("pick port: %w", err)
 	}
 
 	threads := runtime.NumCPU() - 1
@@ -107,15 +112,55 @@ func startLlamaServer(m Model) (*llamaServer, error) {
 	ngl := resolveGPULayers(cfg)
 	ctxN := resolveCtxSize(cfg)
 
+	s, err := launchLlamaServer(bin, modelPath, m, threads, ngl, ctxN, true)
+	if errors.Is(err, errServerExitedEarly) {
+		// The optimized flag set is rejected by engines that predate the
+		// `-fa on` syntax, and by backend/model combos that can't force
+		// flash attention. The base flags work everywhere.
+		log.Printf("llama-server rejected optimized flags (%v) — retrying with base flags", err)
+		s, err = launchLlamaServer(bin, modelPath, m, threads, ngl, ctxN, false)
+	}
+	return s, err
+}
+
+func launchLlamaServer(bin, modelPath string, m Model, threads, ngl, ctxN int, optimized bool) (*llamaServer, error) {
+	port, err := pickFreePort()
+	if err != nil {
+		return nil, fmt.Errorf("pick port: %w", err)
+	}
+
+	slots := 1
+	serverCtx := ctxN // -c is the total across slots; each slot gets an equal share
 	args := []string{
 		"-m", modelPath,
 		"--host", "127.0.0.1",
 		"--port", fmt.Sprintf("%d", port),
-		"-c", fmt.Sprintf("%d", ctxN),
 		"-t", fmt.Sprintf("%d", threads),
 		"-ngl", fmt.Sprintf("%d", ngl),
 		"--log-disable",
 	}
+	if optimized {
+		slots = kvCacheSlots
+		serverCtx = ctxN * kvCacheSlots
+		args = append(args,
+			// q8_0 halves KV memory vs f16, which is what pays for the
+			// second slot: two q8_0 slots cost what one f16 slot did, so
+			// per-slot context is unchanged on the 16GB machines this
+			// targets. Quantizing V requires flash attention; forcing it
+			// on is also a prefill speedup where supported, and the base
+			// fallback covers where it isn't.
+			"-fa", "on",
+			"--cache-type-k", "q8_0",
+			"--cache-type-v", "q8_0",
+			"--parallel", fmt.Sprintf("%d", slots),
+			// Salvage still-matching KV chunks (min 256 tokens) past the
+			// first divergence instead of reprocessing everything after
+			// it — mainly softens the full re-prefill after /compact
+			// rewrites history. Runtime no-op for SWA models (Gemma).
+			"--cache-reuse", "256",
+		)
+	}
+	args = append(args, "-c", fmt.Sprintf("%d", serverCtx))
 	cmd := exec.Command(bin, args...)
 	cmd.Stdin = bytes.NewReader(nil)
 	cmd.Stdout = newLogWriter("llama-server stdout")
@@ -123,7 +168,8 @@ func startLlamaServer(m Model) (*llamaServer, error) {
 	cmd.Env = append(os.Environ(), "OMP_STACKSIZE=64M")
 	applyEngineSysProcAttr(cmd)
 
-	log.Printf("starting llama-server on :%d (model=%s threads=%d ngl=%d ctx=%d)", port, m.Name, threads, ngl, ctxN)
+	log.Printf("starting llama-server on :%d (model=%s threads=%d ngl=%d ctx=%d slots=%d optimized=%v)",
+		port, m.Name, threads, ngl, ctxN, slots, optimized)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start llama-server: %w", err)
 	}
@@ -133,6 +179,7 @@ func startLlamaServer(m Model) (*llamaServer, error) {
 		port:     port,
 		model:    m,
 		ctxN:     ctxN,
+		slots:    slots,
 		gpuLayer: ngl,
 		client:   &http.Client{Timeout: 10 * time.Minute},
 		waitErr:  make(chan error, 1),
@@ -158,6 +205,12 @@ func pickFreePort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
+// errServerExitedEarly marks a llama-server process that died before its
+// /health endpoint came up — the signature of a rejected flag, as opposed
+// to a slow model load (timeout) or a missing binary. Only this case is
+// worth retrying with different flags.
+var errServerExitedEarly = errors.New("llama-server exited before ready")
+
 // waitReady polls GET /health until the server reports ready, or gives up.
 // If the subprocess exits early, returns that error instead of timing out.
 func (s *llamaServer) waitReady(maxWait time.Duration) error {
@@ -170,7 +223,7 @@ func (s *llamaServer) waitReady(maxWait time.Duration) error {
 			// Process exited before becoming ready — put the error back for
 			// stopLocked(), then report to caller.
 			s.waitErr <- err
-			return fmt.Errorf("llama-server exited before ready: %v", err)
+			return fmt.Errorf("%w: %v", errServerExitedEarly, err)
 		default:
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -423,20 +476,23 @@ func (s *llamaServer) chatCompleteCore(ctx context.Context, msgs []ChatMsg, maxT
 // next request starts from a clean slate. Called from the TUI's /reset so
 // the server doesn't silently reuse tokens from the previous conversation.
 func (s *llamaServer) DropKVCache() error {
-	url := fmt.Sprintf("http://127.0.0.1:%d/slots/0?action=erase", s.port)
-	req, err := http.NewRequest("POST", url, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		// Older llama-server builds don't expose this; don't treat it as fatal.
-		log.Printf("/slots erase returned %d (probably unsupported on this llama-server)", resp.StatusCode)
-		return nil
+	// A stale prefix could survive in any slot, so erase them all.
+	for i := 0; i < s.slots; i++ {
+		url := fmt.Sprintf("http://127.0.0.1:%d/slots/%d?action=erase", s.port, i)
+		req, err := http.NewRequest("POST", url, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			// Older llama-server builds don't expose this; don't treat it as fatal.
+			log.Printf("/slots erase returned %d (probably unsupported on this llama-server)", resp.StatusCode)
+			return nil
+		}
 	}
 	return nil
 }
