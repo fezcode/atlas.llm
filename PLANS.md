@@ -250,14 +250,57 @@ server path: 12.1 tok/s at `-ngl 0` vs 27.0 tok/s on Metal (2.2x). Raw
 llama-bench on the same model shows prompt processing going 208 -> 997 t/s
 (4.8x), which matters most for agent loops with large tool results.
 
+#### GPU detection and CUDA archive selection — SHIPPED (v0.29.0)
+Closes the three items that were open above, plus a bug that made the
+documented two-step variant switch impossible to perform.
+
+- `nvidia-smi --query-gpu=name,compute_cap,memory.total` is the probe
+  (gpu.go). Cached behind a `sync.Once`: `resolveEngineVariant` feeds the
+  header and settings rendering, which repaint per keystroke, so spawning a
+  process per frame would cost more than the feature saves. On Windows it
+  reuses the engine's `CREATE_NO_WINDOW` flags so no console flashes.
+- CUDA is no longer one pinned archive. `cudaArchives` lists builds
+  newest-first with the compute-capability window each supports, because
+  neither archive is a superset of the other: CUDA 13 dropped
+  Maxwell/Pascal/Volta (floor sm_75) and 12.4 predates Blackwell (ceiling
+  sm_90). A GTX 1080 (61) needs 12.4; an RTX 5070 Ti (120) needs 13.3 and
+  was previously handed a build with no kernels for it. Undetected
+  hardware falls back to the widest archive — too-new fails at load, while
+  too-old only costs performance.
+- `auto` now selects `cuda` when an NVIDIA GPU is detected *and* an archive
+  covers it. Vulkan is still never auto-selected: nothing tells us a usable
+  Vulkan driver is installed.
+- `auto` never replaces an already-installed engine. Detection answering
+  doesn't prove the CUDA build will load, and spending ~510MB on a working
+  machine is not a call to make for the user, so detection decides fresh
+  installs only; existing ones get a named suggestion in the /help
+  Performance block instead (`engineUpgradeHint`).
+- `-ngl` follows the *installed* engine rather than the configured variant
+  (`effectiveEngineVariant`), so a detected-but-not-downloaded CUDA build
+  no longer hands `-ngl 999` to a CPU-only binary.
+- Fixed: `/download engine` skipped whenever any engine existed
+  (`!isEngineDownloaded()`), so `/set engine_variant cuda` followed by
+  `/download engine` reported "nothing (already present)" and stayed on
+  CPU — the documented flow could never be completed. It now runs when the
+  installed variant differs (`engineNeedsDownload`).
+- Fixed: the HIP archive suffix `win-hip-radeon-x64.zip` no longer exists
+  upstream; it was renamed to the versioned `win-rocm-7.14-x64.zip`, so the
+  variant was selectable but matched no asset. Linux `ubuntu-rocm-*` is now
+  registered too.
+
 Still open:
-- No GPU/driver detection: `auto` never picks a GPU build on Windows/Linux,
-  because one without a matching driver fails at load. The user opts in.
-  Probing for `nvidia-smi` would let us at least *suggest* CUDA.
-- CUDA is pinned to the 12.4 archive; 13.3 also ships. No driver-version
-  check to choose between them.
-- Linux GPU is Vulkan-only — llama.cpp publishes no Linux CUDA binary, and
-  ROCm (`ubuntu-rocm-*`) is unhandled.
+- ROCm suffixes are version-pinned (`7.14`), the same fragility that broke
+  the old HIP entry — a ROCm bump upstream silently breaks matching again.
+  Tolerant matching (substring + extension rather than exact tail) would
+  end the whole bug class for non-CUDA variants, which need no version
+  discrimination.
+- No VRAM-aware layer clamping. `auto` offloads everything, so a model
+  larger than VRAM (muse-glimmer-30b at ~15.9GB on a 16GB card) needs an
+  explicit `/set gpu_layers N`. Detection already reports `memory.total`,
+  so the estimate is available — pairing it with the GGUF layer count
+  would let auto pick a partial offload instead of failing at load.
+- Linux CUDA is still absent because llama.cpp publishes no Linux CUDA
+  binary; Vulkan and ROCm cover it.
 
 ### 11. Long-form help  — SHIPPED (v0.19.0)
 `/help <command>` and `/help <command> <subcommand>` print full

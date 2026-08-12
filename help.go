@@ -91,18 +91,24 @@ var helpTopics = []helpTopic{
 		},
 		Detail: "Nothing is downloaded automatically — this is the only thing " +
 			"that pulls the engine or model weights.\n\n" +
+			"Every form includes the engine, so plain /download is enough after " +
+			"an engine_variant change; /download engine is just the narrower " +
+			"version that skips model weights.\n\n" +
 			"The engine is the latest llama.cpp release build for your OS and " +
 			"architecture, resolved from GitHub at download time, so you get " +
 			"current binaries rather than a pinned version. Which archive is " +
-			"fetched depends on `/set engine_variant` (CPU vs a GPU build).\n\n" +
+			"fetched depends on `/set engine_variant` (CPU vs a GPU build), and " +
+			"for CUDA also on your GPU's compute capability — CUDA 13 dropped " +
+			"the older architectures that 12.4 still supports, so the archive is " +
+			"chosen to match the card.\n\n" +
 			"Re-running is cheap: an engine or model already present is skipped. " +
 			"The exception is an engine_variant change, which wipes the engine " +
 			"directory and re-downloads, since mixing build variants would leave " +
 			"the wrong binaries behind.",
 		Subcommands: []helpSub{
 			{Name: "engine", Usage: "/download engine",
-				Detail: "Just the llama.cpp engine. Also the way to apply an " +
-					"engine_variant change."},
+				Detail: "Just the llama.cpp engine, no model weights. Applies a " +
+					"pending engine_variant change, as every /download form does."},
 			{Name: "<model>", Usage: "/download qwen3.5-9b",
 				Detail: "The engine plus that model. Does not switch to it — use /model."},
 			{Name: "all", Usage: "/download all",
@@ -110,8 +116,11 @@ var helpTopics = []helpTopic{
 		},
 		Notes: []string{
 			"Downloads run in the background with a progress bar; the TUI stays usable.",
-			"CUDA is a two-archive install (engine + ~391MB CUDA runtime), so it's " +
-				"markedly larger than the other variants.",
+			"CUDA is a two-archive install — the engine plus a ~372MB CUDA runtime — " +
+				"so it's markedly larger than the other variants.",
+			"On a first install with no engine present, an NVIDIA GPU is detected " +
+				"and the CUDA archive picked automatically. An engine that is " +
+				"already installed is never replaced without you asking.",
 		},
 		SeeAlso: []string{"list", "model", "set"},
 	},
@@ -243,26 +252,35 @@ var helpTopics = []helpTopic{
 					"arguments shows both what you selected and what is actually " +
 					"installed, which is how you confirm the swap happened.\n\n" +
 					"Which one to pick:\n" +
-					"  auto    default; cpu everywhere, which on macOS already\n" +
-					"          includes Metal\n" +
+					"  auto    default; picks cuda on a detected NVIDIA card when\n" +
+					"          no engine is installed yet, cpu otherwise. On macOS\n" +
+					"          cpu already includes Metal\n" +
 					"  cpu     no GPU. Smallest download, works anywhere\n" +
-					"  vulkan  NVIDIA, AMD, or Intel on Windows and Linux. ~35MB,\n" +
+					"  vulkan  NVIDIA, AMD, or Intel on Windows and Linux. ~32MB,\n" +
 					"          the easiest GPU option and usually the right first try\n" +
-					"  cuda    NVIDIA on Windows. Usually the fastest, but ~640MB\n" +
+					"  cuda    NVIDIA on Windows. Usually the fastest, but ~510MB\n" +
 					"          because the CUDA runtime ships as a second archive\n" +
-					"  hip     AMD Radeon on Windows. ~325MB\n\n" +
+					"  hip     AMD Radeon on Windows and Linux. ~190MB\n\n" +
 					"macOS needs none of this. The macOS archive has always carried " +
 					"the Metal backend, so `auto` already runs on the GPU and the " +
 					"only GPU-capable value here is cpu.\n\n" +
+					"There is no single CUDA archive. CUDA 13 dropped Maxwell, " +
+					"Pascal and Volta, and CUDA 12.4 predates Blackwell, so the " +
+					"card's compute capability decides which one is fetched: 13.3 " +
+					"for an RTX 50-series, 12.4 for a GTX 1080. A GPU no archive " +
+					"covers is reported as such instead of downloading half a " +
+					"gigabyte that cannot load a model.\n\n" +
 					"Only variants llama.cpp actually publishes for your platform " +
 					"are accepted — asking for cuda on macOS is rejected up front " +
 					"with the list of what is available, rather than failing later " +
 					"during the download.\n\n" +
-					"A GPU build needs a working driver. atlas.llm will not pick one " +
-					"for you on Windows or Linux, because a Vulkan or CUDA build " +
-					"without the matching driver fails at load and there is no " +
-					"reliable way to detect one first. If a GPU build misbehaves, " +
-					"`/set engine_variant cpu` then `/download engine` puts you back."},
+					"A GPU build needs a working driver. NVIDIA is detected through " +
+					"nvidia-smi, but only to choose for a fresh install — an engine " +
+					"already installed is never replaced without you asking, and " +
+					"vulkan is never chosen automatically because nothing reveals " +
+					"whether a usable Vulkan driver is present. If a GPU build " +
+					"misbehaves, `/set engine_variant cpu` then `/download engine` " +
+					"puts you back."},
 		},
 		Notes: []string{
 			"`auto` never selects a GPU build on Windows or Linux. A GPU build " +

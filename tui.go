@@ -2026,7 +2026,7 @@ func throttledProgress(name string) ProgressFn {
 func runDownloadAllCmd(t downloadTargets) tea.Cmd {
 	return func() tea.Msg {
 		var done []string
-		if t.engine && !isEngineDownloaded() {
+		if t.engine && engineNeedsDownload() {
 			if err := downloadEngine(throttledProgress("engine")); err != nil {
 				return downloadDoneMsg{what: strings.Join(done, ", "), err: fmt.Errorf("engine: %w", err)}
 			}

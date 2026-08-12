@@ -131,43 +131,155 @@ type engineAsset struct {
 // llamacppAssetSuffix maps variant -> GOOS/GOARCH -> asset. Assets are named
 // like `llama-b8892-bin-win-cpu-x64.zip`.
 //
-// Note the CUDA entries: `cudart-llama-bin-win-cuda-12.4-x64.zip` and
-// `llama-b10280-bin-win-cuda-12.4-x64.zip` share a suffix, which is why
-// asset matching also requires the `llama-` / `cudart-` prefix rather than
-// matching on the tail alone.
+// CUDA is deliberately absent: one variant maps to several archives there,
+// selected by the GPU's compute capability. See cudaArchives. Look assets up
+// through engineAssetFor rather than indexing this map, or CUDA goes missing.
+//
+// Sizes are the compressed download, measured against release b10375. They
+// drift slowly and only feed "this is about to be a big download" messages,
+// so being a few MB out is fine — being 2x out is not.
 var llamacppAssetSuffix = map[string]map[string]engineAsset{
 	engineVariantCPU: {
-		"windows/amd64": {Suffix: "win-cpu-x64.zip", Size: "~30MB"},
-		"windows/arm64": {Suffix: "win-cpu-arm64.zip", Size: "~30MB"},
-		"darwin/amd64":  {Suffix: "macos-x64.tar.gz", Size: "~15MB"},
-		"darwin/arm64":  {Suffix: "macos-arm64.tar.gz", Size: "~11MB"},
-		"linux/amd64":   {Suffix: "ubuntu-x64.tar.gz", Size: "~30MB"},
-		"linux/arm64":   {Suffix: "ubuntu-arm64.tar.gz", Size: "~30MB"},
+		"windows/amd64": {Suffix: "win-cpu-x64.zip", Size: "~17MB"},
+		"windows/arm64": {Suffix: "win-cpu-arm64.zip", Size: "~11MB"},
+		"darwin/amd64":  {Suffix: "macos-x64.tar.gz", Size: "~10MB"},
+		"darwin/arm64":  {Suffix: "macos-arm64.tar.gz", Size: "~10MB"},
+		"linux/amd64":   {Suffix: "ubuntu-x64.tar.gz", Size: "~15MB"},
+		"linux/arm64":   {Suffix: "ubuntu-arm64.tar.gz", Size: "~12MB"},
 	},
 	engineVariantVulkan: {
-		"windows/amd64": {Suffix: "win-vulkan-x64.zip", Size: "~35MB"},
-		"linux/amd64":   {Suffix: "ubuntu-vulkan-x64.tar.gz", Size: "~35MB"},
-		"linux/arm64":   {Suffix: "ubuntu-vulkan-arm64.tar.gz", Size: "~35MB"},
-	},
-	engineVariantCUDA: {
-		"windows/amd64": {
-			Suffix:    "win-cuda-12.4-x64.zip",
-			Companion: "cudart-llama-bin-win-cuda-12.4-x64.zip",
-			Size:      "~640MB (engine + CUDA runtime)",
-		},
+		"windows/amd64": {Suffix: "win-vulkan-x64.zip", Size: "~32MB"},
+		"linux/amd64":   {Suffix: "ubuntu-vulkan-x64.tar.gz", Size: "~31MB"},
+		"linux/arm64":   {Suffix: "ubuntu-vulkan-arm64.tar.gz", Size: "~25MB"},
 	},
 	engineVariantHIP: {
-		"windows/amd64": {Suffix: "win-hip-radeon-x64.zip", Size: "~325MB"},
+		// Upstream renamed these from `win-hip-radeon-x64.zip` when it moved
+		// to versioned ROCm archives, which left the old suffix matching
+		// nothing at all. Version-pinned suffixes break on every ROCm bump;
+		// PLANS #7 tracks making this matching tolerant.
+		"windows/amd64": {Suffix: "win-rocm-7.14-x64.zip", Size: "~187MB"},
+		"linux/amd64":   {Suffix: "ubuntu-rocm-7.14-x64.tar.gz", Size: "~195MB"},
 	},
+}
+
+// cudaArchive is one CUDA engine build and the compute-capability window it
+// supports, scaled by ten to match gpuInfo.ComputeCap.
+type cudaArchive struct {
+	MinCap int
+	MaxCap int
+	Asset  engineAsset
+}
+
+// cudaArchives lists CUDA builds newest-first per platform. Neither archive
+// is a superset of the other, which is why this is a windowed list and not a
+// single pinned entry:
+//
+//   - CUDA 13 dropped Maxwell, Pascal and Volta, so its floor is Turing (75).
+//   - CUDA 12.4 predates Blackwell, so it carries no sm_120 kernels and its
+//     ceiling is Hopper (90).
+//
+// A GTX 1080 (61) therefore needs 12.4 and an RTX 5070 Ti (120) needs 13.3.
+// Selection walks the list in order and takes the first window that fits.
+//
+// Adding a future CUDA release means prepending a row; the newest row's open
+// ceiling already covers cards newer than anything released today. The only
+// forced edit is when a CUDA version drops architectures — then the previous
+// row gets a real MaxCap.
+var cudaArchives = map[string][]cudaArchive{
+	"windows/amd64": {
+		{
+			MinCap: 75, MaxCap: 9999,
+			Asset: engineAsset{
+				Suffix:    "win-cuda-13.3-x64.zip",
+				Companion: "cudart-llama-bin-win-cuda-13.3-x64.zip",
+				Size:      "~510MB (139MB engine + 372MB CUDA runtime)",
+			},
+		},
+		{
+			MinCap: 50, MaxCap: 90,
+			Asset: engineAsset{
+				Suffix:    "win-cuda-12.4-x64.zip",
+				Companion: "cudart-llama-bin-win-cuda-12.4-x64.zip",
+				Size:      "~610MB (239MB engine + 373MB CUDA runtime)",
+			},
+		},
+	},
+}
+
+// selectCUDAArchive returns the newest archive whose capability window
+// contains cap.
+func selectCUDAArchive(platform string, cap int) (engineAsset, bool) {
+	for _, a := range cudaArchives[platform] {
+		if cap >= a.MinCap && cap <= a.MaxCap {
+			return a.Asset, true
+		}
+	}
+	return engineAsset{}, false
+}
+
+// widestCUDAArchive returns the build supporting the oldest hardware. It's
+// the choice when we know CUDA exists for the platform but not which GPU is
+// present — an archive that's too new fails at load on an older card, while
+// an older archive at worst leaves performance on the table.
+func widestCUDAArchive(platform string) (engineAsset, bool) {
+	list := cudaArchives[platform]
+	if len(list) == 0 {
+		return engineAsset{}, false
+	}
+	widest := list[0]
+	for _, a := range list[1:] {
+		if a.MinCap < widest.MinCap {
+			widest = a
+		}
+	}
+	return widest.Asset, true
+}
+
+// platformKey is the GOOS/GOARCH key used by both asset tables.
+func platformKey() string { return runtime.GOOS + "/" + runtime.GOARCH }
+
+// engineVariantAvailable reports whether llama.cpp publishes this variant
+// for this platform. Deliberately hardware-independent: the CUDA build is
+// offered on Windows x64 whether or not an NVIDIA card is present right now,
+// and the check must stay cheap because engineVariantNames() is evaluated
+// while package-level vars initialise — probing hardware there would make
+// even `--version` spawn nvidia-smi.
+func engineVariantAvailable(variant, platform string) bool {
+	if variant == engineVariantCUDA {
+		return len(cudaArchives[platform]) > 0
+	}
+	_, ok := llamacppAssetSuffix[variant][platform]
+	return ok
+}
+
+// engineAssetFor resolves the concrete archive for a variant on a platform,
+// and reports whether one exists. CUDA resolves through capability
+// selection — and so may fail where engineVariantAvailable succeeds, when a
+// detected GPU falls outside every archive's window.
+func engineAssetFor(variant, platform string) (engineAsset, bool) {
+	if variant == engineVariantCUDA {
+		if len(cudaArchives[platform]) == 0 {
+			return engineAsset{}, false
+		}
+		if info, ok := detectGPU(); ok {
+			// A detected GPU that no archive covers means CUDA genuinely
+			// isn't an option here — better to report that than to install
+			// ~510MB that can't load the model.
+			return selectCUDAArchive(platform, info.ComputeCap)
+		}
+		return widestCUDAArchive(platform)
+	}
+	asset, ok := llamacppAssetSuffix[variant][platform]
+	return asset, ok
 }
 
 // engineVariantNames lists the selectable variants for this platform, for
 // help text and `/set` validation messages.
 func engineVariantNames() []string {
-	key := runtime.GOOS + "/" + runtime.GOARCH
+	key := platformKey()
 	out := []string{engineVariantAuto}
 	for _, v := range []string{engineVariantCPU, engineVariantVulkan, engineVariantCUDA, engineVariantHIP} {
-		if _, ok := llamacppAssetSuffix[v][key]; ok {
+		if engineVariantAvailable(v, key) {
 			out = append(out, v)
 		}
 	}
@@ -184,34 +296,65 @@ func engineVariantIsGPU(variant string) bool {
 	return false
 }
 
-// resolveEngineVariant turns "auto"/"" into a concrete variant. macOS gets
-// Metal from the standard archive, so auto stays on "cpu" there; elsewhere
-// auto also means "cpu" because a Vulkan build is useless without a Vulkan
-// driver and we can't reliably detect one.
+// resolveEngineVariant turns "auto"/"" into a concrete variant.
 func resolveEngineVariant(v string) string {
 	name := strings.ToLower(strings.TrimSpace(v))
+	if name == engineVariantAuto || name == "" {
+		return autoEngineVariant()
+	}
 	if !engineVariantIsGPU(name) {
 		return engineVariantCPU
 	}
 	// A GPU variant with no build for this platform would fail at download
-	// time; fall back rather than persisting an unusable selection.
-	if _, ok := llamacppAssetSuffix[name][runtime.GOOS+"/"+runtime.GOARCH]; !ok {
+	// time; fall back rather than persisting an unusable selection. This
+	// checks availability, not the resolved asset: an explicit `cuda` on a
+	// machine with no NVIDIA card stays `cuda` so the error names the real
+	// problem instead of silently reverting to CPU.
+	if !engineVariantAvailable(name, platformKey()) {
 		return engineVariantCPU
 	}
 	return name
 }
 
+// autoEngineVariant picks a build with no user input. macOS needs nothing:
+// its archive already carries Metal. Elsewhere we only choose a GPU build
+// when the hardware is positively identified and an archive covers it — a
+// GPU build without a working driver fails at load, so guessing is strictly
+// worse than staying on CPU. Vulkan is never auto-selected for that reason:
+// there's no probe that tells us a usable Vulkan driver is installed.
+func autoEngineVariant() string {
+	if isDarwin() {
+		return engineVariantCPU
+	}
+	if info, ok := detectGPU(); ok && info.Vendor == gpuVendorNVIDIA {
+		if _, ok := engineAssetFor(engineVariantCUDA, platformKey()); ok {
+			return engineVariantCUDA
+		}
+	}
+	return engineVariantCPU
+}
+
 // engineAssetSuffix returns the release-asset suffix for a variant on this
 // platform.
 func engineAssetSuffix(variant string) (engineAsset, error) {
-	key := runtime.GOOS + "/" + runtime.GOARCH
-	byPlatform, ok := llamacppAssetSuffix[variant]
-	if !ok {
+	key := platformKey()
+	if variant != engineVariantCPU && variant != engineVariantCUDA &&
+		llamacppAssetSuffix[variant] == nil {
 		return engineAsset{}, fmt.Errorf("unknown engine variant %q (expected %s)",
 			variant, strings.Join(engineVariantNames(), ", "))
 	}
-	asset, ok := byPlatform[key]
+	asset, ok := engineAssetFor(variant, key)
 	if !ok {
+		if variant == engineVariantCUDA {
+			// Distinguish "no CUDA on this platform" from "your specific GPU
+			// is outside every archive's range" — the second is actionable
+			// only as "use vulkan instead", and the first isn't actionable.
+			if info, found := detectGPU(); found && len(cudaArchives[key]) > 0 {
+				return engineAsset{}, fmt.Errorf(
+					"no CUDA build covers %s (compute %.1f) — try `/set engine_variant vulkan`",
+					info.Name, float64(info.ComputeCap)/10)
+			}
+		}
 		if variant != engineVariantCPU {
 			return engineAsset{}, fmt.Errorf("no %s llama.cpp build available for %s (available here: %s)",
 				variant, key, strings.Join(engineVariantNames(), ", "))
@@ -227,14 +370,28 @@ const maxGPULayers = 999
 
 // autoGPULayers decides the default -ngl when the user hasn't set one.
 // macOS builds always carry Metal, so offloading is free there. On
-// Windows/Linux only a GPU-enabled engine variant can use it.
+// Windows/Linux only a GPU-enabled engine build can use it.
 func autoGPULayers(variant string) int {
-	// macOS archives always carry Metal, so offloading is free there.
-	// Elsewhere it needs a GPU-enabled engine build.
-	if runtime.GOOS == "darwin" || engineVariantIsGPU(resolveEngineVariant(variant)) {
+	if runtime.GOOS == "darwin" || engineVariantIsGPU(effectiveEngineVariant(variant)) {
 		return maxGPULayers
 	}
 	return 0
+}
+
+// effectiveEngineVariant is the build inference will actually run against,
+// which is not always the one the setting resolves to. An explicit setting
+// wins — the user is expected to /download it. Under auto we report the
+// installed build instead of the detected one, so a machine where CUDA was
+// detected but not yet downloaded doesn't hand -ngl to a CPU binary.
+func effectiveEngineVariant(variant string) string {
+	if explicit := strings.TrimSpace(variant); explicit != "" &&
+		!strings.EqualFold(explicit, engineVariantAuto) {
+		return resolveEngineVariant(explicit)
+	}
+	if isEngineDownloaded() {
+		return installedEngineVariant()
+	}
+	return resolveEngineVariant(engineVariantAuto)
 }
 
 // resolveGPULayers returns the -ngl value to pass to llama-server.
@@ -631,6 +788,13 @@ func gpuHelpRows() [][2]string {
 	}
 	cfg, _ := loadConfig()
 	installed := installedEngineVariant()
+	// installedEngineVariant answers "cpu" for a missing marker, which is
+	// right for pre-variant installs but reads as a lie before the first
+	// /download. Separate the two for display only.
+	installedLabel := installed
+	if !isEngineDownloaded() {
+		installedLabel = "not installed"
+	}
 
 	switch {
 	case runtime.GOOS == "darwin":
@@ -639,17 +803,31 @@ func gpuHelpRows() [][2]string {
 		rows = append(rows, [2]string{"", fmt.Sprintf("engine: %s build installed — GPU offload active", installed)})
 	default:
 		opts := engineVariantNames()
-		if len(opts) > 2 {
+		switch {
+		case len(opts) <= 2:
+			rows = append(rows, [2]string{"", "no GPU llama.cpp build published for this platform"})
+		default:
+			// Naming the detected card turns a generic menu into a specific
+			// instruction, which is the difference between the setting being
+			// discoverable and it sitting unused.
+			if hint := engineUpgradeHint(); hint != "" {
+				for i, line := range strings.Split(hint, "\n") {
+					label := ""
+					if i == 0 {
+						label = "GPU detected"
+					}
+					rows = append(rows, [2]string{label, line})
+				}
+				break
+			}
 			rows = append(rows,
 				[2]string{"/set engine_variant", "GPU builds here: " + strings.Join(opts[2:], ", ")},
 				[2]string{"", "then /download engine to install it (CPU-only until you do)"},
 			)
-		} else {
-			rows = append(rows, [2]string{"", "no GPU llama.cpp build published for this platform"})
 		}
 	}
 	rows = append(rows, [2]string{"/set", fmt.Sprintf("current: gpu_layers=%s, engine=%s",
-		gpuLayersDisplay(cfg), installed)})
+		gpuLayersDisplay(cfg), installedLabel)})
 	return rows
 }
 

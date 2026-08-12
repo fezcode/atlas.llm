@@ -130,7 +130,7 @@ func findReleaseAsset(rel githubRelease, suffix, prefix string) string {
 // llamafile binary left over from older atlas.llm versions.
 func downloadEngine(onProgress ProgressFn) error {
 	cfg, _ := loadConfig()
-	variant := resolveEngineVariant(cfg.EngineVariant)
+	variant := plannedEngineVariant(cfg)
 
 	// An engine from a different variant would leave the wrong binaries
 	// behind, so a variant switch forces a clean re-download.
@@ -190,6 +190,59 @@ func engineVariantFile() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, ".variant"), nil
+}
+
+// plannedEngineVariant is the build `/download engine` would install.
+//
+// An explicit setting always wins. Under auto we deliberately keep whatever
+// is already installed rather than acting on detection: nvidia-smi answering
+// doesn't prove the CUDA build will load (a driver can be too old for the
+// runtime), and silently replacing a working engine with a ~510MB download
+// is a bad trade to make on the user's behalf. Detection therefore only
+// decides fresh installs; existing ones get a suggestion instead, via
+// engineUpgradeHint.
+func plannedEngineVariant(cfg Config) string {
+	if explicit := strings.TrimSpace(cfg.EngineVariant); explicit != "" &&
+		!strings.EqualFold(explicit, engineVariantAuto) {
+		return resolveEngineVariant(explicit)
+	}
+	if isEngineDownloaded() {
+		return installedEngineVariant()
+	}
+	return resolveEngineVariant(engineVariantAuto)
+}
+
+// engineNeedsDownload reports whether `/download engine` has work to do:
+// nothing installed, or an installed build that differs from the planned
+// one. Without the second case a variant switch silently no-ops, which is
+// what made `/set engine_variant cuda` impossible to act on.
+func engineNeedsDownload() bool {
+	if !isEngineDownloaded() {
+		return true
+	}
+	cfg, _ := loadConfig()
+	return installedEngineVariant() != plannedEngineVariant(cfg)
+}
+
+// engineUpgradeHint returns a one-line suggestion when a detected GPU is
+// faster than the installed engine, or "" when there's nothing to say. The
+// user asked for this rather than an automatic switch, so it stays advice.
+func engineUpgradeHint() string {
+	if isDarwin() || !isEngineDownloaded() || engineVariantIsGPU(installedEngineVariant()) {
+		return ""
+	}
+	info, ok := detectGPU()
+	if !ok {
+		return ""
+	}
+	asset, err := engineAssetSuffix(engineVariantCUDA)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%s detected, but the installed engine is a CPU-only build.\n"+
+			"Run `/set engine_variant cuda` then `/download engine` (%s) to offload the model to the GPU.",
+		info.Name, asset.Size)
 }
 
 // installedEngineVariant reports the extracted engine's variant. Installs

@@ -142,8 +142,16 @@ var settingsRegistry = []setting{
 				b.WriteString("macOS needs none of this: its archive already carries Metal.")
 			} else {
 				b.WriteString("vulkan is the smallest and most portable GPU option; cuda is " +
-					"usually fastest on NVIDIA but much larger. A GPU build needs a " +
-					"working driver, so atlas.llm won't select one for you.")
+					"usually fastest on NVIDIA but much larger, and the archive is " +
+					"chosen from your card's compute capability.\n")
+				if info, ok := detectGPU(); ok {
+					fmt.Fprintf(&b, "Detected %s (compute %.1f, %dMiB).\n",
+						info.Name, float64(info.ComputeCap)/10, info.VRAMMiB)
+				}
+				b.WriteString("auto picks cuda on a detected NVIDIA card when nothing is " +
+					"installed yet, but never replaces an installed engine on its own. " +
+					"vulkan is never chosen automatically — a GPU build needs a working " +
+					"driver, and nothing reveals whether a Vulkan one is present.")
 			}
 			return b.String()
 		},

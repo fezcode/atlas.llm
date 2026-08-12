@@ -279,8 +279,9 @@ backend, so `auto` offloads by default. Measured on an M-series Mac with
 prompt processing goes from 208 to 997 t/s — the latter matters most for
 agentic loops, where each turn re-reads a growing pile of tool output.
 
-**Windows and Linux** get a CPU-only archive by default. Pick a GPU build
-with `/set engine_variant`, then re-download the engine:
+**Windows and Linux** need a GPU build of the engine. On a fresh install
+atlas.llm probes for an NVIDIA GPU and picks the CUDA archive itself. To
+switch an existing install, choose a variant and re-download the engine:
 
 ```
 /set engine_variant cuda
@@ -289,21 +290,32 @@ with `/set engine_variant`, then re-download the engine:
 
 | Variant  | Platforms         | GPUs                        | Download |
 | -------- | ----------------- | --------------------------- | -------- |
-| `cuda`   | Windows x64       | NVIDIA                      | ~640MB (engine + CUDA runtime) |
-| `hip`    | Windows x64       | AMD Radeon                  | ~325MB   |
-| `vulkan` | Windows, Linux    | NVIDIA, AMD, Intel          | ~35MB    |
-| `cpu`    | all               | none                        | ~30MB    |
+| `cuda`   | Windows x64       | NVIDIA                      | ~510MB (engine + CUDA runtime) |
+| `hip`    | Windows, Linux    | AMD Radeon (ROCm)           | ~190MB   |
+| `vulkan` | Windows, Linux    | NVIDIA, AMD, Intel          | ~32MB    |
+| `cpu`    | all               | none                        | ~10–17MB |
 
 `vulkan` is the smallest and most portable; `cuda` is usually fastest on
 NVIDIA. The CUDA build links against runtime DLLs shipped in a separate
 `cudart-*` archive, which atlas.llm downloads and unpacks alongside it —
 that's why it's the largest option.
 
-`auto` never selects a GPU build on Windows or Linux. A GPU build without a
-matching driver fails at load, and there's no reliable way to detect one, so
-the choice is left to you. Selecting a variant with no build for your
+There is no single CUDA build. CUDA 13 dropped Maxwell, Pascal and Volta,
+and CUDA 12.4 predates Blackwell, so atlas.llm reads your card's compute
+capability from `nvidia-smi` and picks the archive that covers it — 13.3 for
+an RTX 50-series card, 12.4 for a GTX 1080. A GPU that no archive supports
+is reported as such instead of downloading half a gigabyte that can't load a model.
+
+Detection only chooses for **fresh** installs. If an engine is already
+installed, atlas.llm names the GPU it found and suggests the upgrade rather
+than replacing a working engine with a large download on its own. `vulkan`
+is never selected automatically, because nothing reveals whether a usable
+Vulkan driver is present. Selecting a variant with no build for your
 platform (e.g. `cuda` on macOS) is rejected with the list of what's actually
 available.
+
+A model larger than your VRAM will not fit with `auto`, which offloads every
+layer — use `/set gpu_layers N` to offload part of it instead.
 
 Changing `gpu_layers` restarts the model server, so it takes effect on your
 next message. `/set` with no arguments shows the current values and which
