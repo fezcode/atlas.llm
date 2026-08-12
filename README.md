@@ -507,6 +507,9 @@ Models in the registry (`/list` shows download status):
 - `gemma-4-e2b-it` (~2.9GB) — newer architecture; may crash on some llama.cpp builds.
 - `qwen3.5-9b` (~5.7GB)
 - `ministral-3-14b-instruct` (~8.2GB)
+- `muse-glimmer-30b` (~15.9GB) — Meta's agentic 30B; wants 24GB+ RAM, and
+  needs a llama.cpp build from Aug 2026 or later (`/download engine` refreshes
+  an older install).
 
 More can be added by extending `availableModels` in `config.go`.
 

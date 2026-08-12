@@ -522,6 +522,30 @@ the result, pointing at the cwd argument. Each call is a fresh shell, so a
 `cd` never survived to the next call and models assumed otherwise. An
 explicit cwd wins, and `cd ..` is still refused by the jail.
 
+### 26. Muse Glimmer 30B  — SHIPPED (v0.27.0)
+Added muse-glimmer-30b (~15.9GB, unsloth UD-Q4_K_XL) — the first registry
+entry aimed at 24/32GB machines.
+
+Meta released it 2026-08-10 (Apache 2.0) as a local-agent model: built around
+tool calling and long-horizon work, 131K context, llama.cpp support on day
+one. That last part is what makes it a one-struct change here — the engine
+downloader resolves the latest ggml-org release, so there is no pin to move.
+Installs with an older cached engine need `/download engine` before the model
+loads; the README says so.
+
+The 16GB line from the Gemma 4 note (#23) still holds — this reads "too big"
+in the picker's fit column on 16GB machines, and no quant changes that (the
+smallest, UD-IQ2_XXS, is 10.7GB of weights before KV). The fit column doing
+its job is the reason the registry can now carry a big-iron entry instead of
+excluding them.
+
+unsloth ships only UD dynamic quants for this model, so the filename breaks
+the registry's Q4_K_M convention. URL verified to resolve at the size claimed
+(15,878,222,368 bytes).
+
+Text-only: vision needs the separate mmproj GGUF, which we don't download.
+Not yet verified by running one — it's a 15.9GB download.
+
 ## Non-features (parked)
 
 - **Whisperfile / audio input.** The llama.cpp engine dir ships

@@ -80,6 +80,17 @@ var availableModels = []Model{
 		URL:      "https://huggingface.co/unsloth/Ministral-3-14B-Instruct-2512-GGUF/resolve/main/Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
 		Size:     "~8.2GB",
 	},
+	{
+		// Meta's local-agent model (Aug 2026), built around tool calling.
+		// First entry aimed at 24/32GB machines — the fit column reads
+		// "too big" on 16GB, and no quant of this dense 30B fits there.
+		// unsloth ships only UD dynamic quants, hence no Q4_K_M. Text-only:
+		// vision needs the separate mmproj GGUF, which we don't download.
+		Name:     "muse-glimmer-30b",
+		Filename: "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+		URL:      "https://huggingface.co/unsloth/Muse-Glimmer-30B-GGUF/resolve/main/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+		Size:     "~15.9GB",
+	},
 }
 
 const defaultModel = "gemma-3-1b-it"
