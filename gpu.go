@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"log"
+	"math"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -274,6 +276,113 @@ func layersThatFit(weights, kv int64, blockCount, usedMiB, totalMiB int) (int, b
 	return n, true
 }
 
+// offloadPlan is how a launch divides a model between GPU and system RAM.
+//
+// Two ways to shed VRAM, and for a mixture-of-experts model they are not
+// equally good. Dropping whole layers to the CPU (NGL) moves their
+// attention as well, and attention is what every token pays for. Dropping
+// only the expert tensors (CPUMoE) keeps all the attention on the GPU and
+// moves the weights that a given token mostly does not route through —
+// which is why a 30B-A3B can run largely on a 16GB card.
+type offloadPlan struct {
+	NGL    int // -ngl
+	CPUMoE int // --n-cpu-moe; 0 means the flag is not passed
+	// Setting is the gpu_layers setting the plan was derived from, carried
+	// so a running server can be identified by what the user asked for
+	// rather than by what the estimate happened to conclude. See
+	// serverMatches.
+	Setting int
+}
+
+// cpuMoELayers returns how many layers must keep their experts in system
+// RAM for everything else to fit in VRAM.
+//
+// fits=false means even every layer's experts on the CPU is not enough, and
+// the caller should fall back to plain layer offload.
+func cpuMoELayers(weights, expertPerLayer, kv int64, blockCount, usedMiB, totalMiB int) (n int, fits bool) {
+	if blockCount <= 0 || weights <= 0 || expertPerLayer <= 0 || totalMiB <= 0 {
+		return 0, false
+	}
+	const mib = 1024 * 1024
+	budgetMiB := totalMiB - usedMiB - vramHeadroomMiB - int(kv/mib)
+	if budgetMiB <= 0 {
+		return blockCount, false
+	}
+	deficitMiB := int(weights/mib) - budgetMiB
+	if deficitMiB <= 0 {
+		return 0, true // fits whole; no experts need to move
+	}
+	perLayerMiB := float64(expertPerLayer) / mib
+	if perLayerMiB <= 0 {
+		return 0, false
+	}
+	// Round up: a layer's experts move or they don't.
+	n = int(math.Ceil(float64(deficitMiB) / perLayerMiB))
+	if n > blockCount {
+		return blockCount, false
+	}
+	return n, true
+}
+
+// planOffload decides -ngl and --n-cpu-moe for a model at a context size.
+//
+// Only consulted when gpu_layers is on auto: an explicit setting is the
+// user's instruction and is passed through untouched.
+func planOffload(m Model, ctx int, variant string) offloadPlan {
+	if runtime.GOOS != "darwin" && !engineVariantIsGPU(effectiveEngineVariant(variant)) {
+		return offloadPlan{NGL: 0}
+	}
+	weights, kv, estOK := modelMemoryEstimate(m, ctx)
+	p, perr := modelPath(m)
+	used, total, memOK := gpuMemoryNow()
+	if !estOK || perr != nil || !memOK || total <= 0 {
+		// An unknown answer means offload everything and let a real failure
+		// be loud, rather than quietly halving performance forever.
+		return offloadPlan{NGL: maxGPULayers}
+	}
+	meta, err := readGGUFMetaCached(p)
+	if err != nil || meta.BlockCount <= 0 {
+		return offloadPlan{NGL: maxGPULayers}
+	}
+
+	if meta.isMoE() {
+		if per := meta.expertBytesPerLayer(weights); per > 0 {
+			if n, fits := cpuMoELayers(weights, per, kv, meta.BlockCount, used, total); fits {
+				if n > 0 {
+					log.Printf("gpu: %s is MoE and exceeds free VRAM — keeping experts of %d of %d layers in system RAM",
+						m.Name, n, meta.BlockCount)
+				}
+				return offloadPlan{NGL: maxGPULayers, CPUMoE: n}
+			}
+			log.Printf("gpu: %s does not fit even with every expert in system RAM — falling back to layer offload", m.Name)
+		}
+	}
+
+	n, ok := layersThatFit(weights, kv, meta.BlockCount, used, total)
+	if !ok || n >= meta.BlockCount {
+		return offloadPlan{NGL: maxGPULayers}
+	}
+	log.Printf("gpu: %s does not fit in free VRAM — offloading %d of %d layers",
+		m.Name, n, meta.BlockCount)
+	return offloadPlan{NGL: n}
+}
+
+// resolveOffload is the launch-time entry point: an explicit gpu_layers wins
+// outright, and only auto gets a plan.
+func resolveOffload(cfg Config) offloadPlan {
+	setting := gpuLayersSetting(cfg)
+	if cfg.GPULayers != nil {
+		return offloadPlan{NGL: resolveGPULayers(cfg), Setting: setting}
+	}
+	m, err := currentModel()
+	if err != nil {
+		return offloadPlan{NGL: resolveGPULayers(cfg), Setting: setting}
+	}
+	plan := planOffload(m, resolveCtxSize(cfg), cfg.EngineVariant)
+	plan.Setting = setting
+	return plan
+}
+
 // renderGPUSection is the GPU block in /config. Empty when there is no GPU to
 // describe, so a CPU-only machine isn't told about hardware it doesn't have.
 //
@@ -305,10 +414,17 @@ func renderGPUSection(cfg Config) string {
 		return b.String()
 	}
 
-	n := resolveGPULayers(cfg)
+	plan := resolveOffload(cfg)
+	n := plan.NGL
 	switch {
 	case n == 0:
 		fmt.Fprintf(&b, "  %-14s  %s\n", "offload", "disabled (gpu_layers = 0)")
+	case plan.CPUMoE > 0:
+		// Worth its own line: "all layers" would be true and misleading,
+		// since a chunk of the weights is in system RAM regardless.
+		fmt.Fprintf(&b, "  %-14s  %s\n", "offload", "all layers")
+		fmt.Fprintf(&b, "  %-14s  experts of %d layers in system RAM (auto — model exceeds free VRAM)\n",
+			"moe", plan.CPUMoE)
 	case n >= maxGPULayers:
 		fmt.Fprintf(&b, "  %-14s  %s\n", "offload", "all layers")
 	default:

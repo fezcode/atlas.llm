@@ -234,6 +234,13 @@ var helpTopics = []helpTopic{
 					"installed engine has a GPU backend, and stays on CPU otherwise. " +
 					"`0` forces CPU-only. A number offloads that many layers, which " +
 					"is how you fit a model that would otherwise exceed VRAM.\n\n" +
+					"Under `auto`, a mixture-of-experts model that does not fit is " +
+					"handled differently: every layer's attention stays on the GPU " +
+					"and the experts of as many layers as needed go to system RAM " +
+					"instead. Attention runs for every token and expert weights " +
+					"largely do not, so this is much faster than dropping whole " +
+					"layers. /config shows it on a `moe` line. Setting a number here " +
+					"turns that off — an explicit layer count is taken literally.\n\n" +
 					"Changing this restarts the model server, so it applies on your " +
 					"next message.\n\n" +
 					"On Windows and Linux this does nothing until a GPU build is " +

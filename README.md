@@ -640,11 +640,29 @@ Models in the registry (`/list` shows download status):
 - `gemma-4-e2b-it` (~2.9GB) — newer architecture; may crash on some llama.cpp builds.
 - `qwen3.5-9b` (~5.7GB)
 - `ministral-3-14b-instruct` (~8.2GB)
+- `qwen3-coder-30b-a3b` (~12.8GB) — mixture-of-experts, 30B of weights with
+  3B active per token, so it generates at roughly 4B speed. Aimed at code.
+- `gemma-4-26b-a4b-it` (~12.9GB) — the general-purpose MoE counterpart, 26B
+  with 4B active.
 - `muse-glimmer-30b` (~15.9GB) — Meta's agentic 30B; wants 24GB+ RAM, and
   needs a llama.cpp build from Aug 2026 or later (`/download engine` refreshes
   an older install).
 
 More can be added by extending `availableModels` in `config.go`.
+
+### Mixture-of-experts models
+
+Most of an MoE model's weights are expert FFNs that any given token mostly
+does not route through. That changes what "too big for the card" means: when
+one of these exceeds free VRAM, atlas.llm keeps every layer's *attention* on
+the GPU and pushes the *experts* of as many layers as necessary into system
+RAM (llama.cpp's `--n-cpu-moe`), rather than dropping whole layers. Attention
+runs for every token; expert weights largely do not, so the same VRAM buys a
+much larger model.
+
+This is automatic while `gpu_layers` is on `auto`, and `/config` reports it
+on a `moe` line. Setting `gpu_layers` to a number turns it off — an explicit
+layer count is taken literally.
 
 ## Conversation context
 

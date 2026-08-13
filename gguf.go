@@ -211,6 +211,54 @@ type ggufMeta struct {
 	// SlidingWindow caps how many tokens most layers attend over, so their
 	// KV stops growing past it. Gemma 3 reports 512.
 	SlidingWindow int
+
+	// ExpertCount is non-zero on mixture-of-experts models, where most of
+	// the weights are expert FFNs that only a few tokens route through.
+	// ExpertFeedForwardLength is one expert's hidden dimension, which is
+	// what sizes them.
+	ExpertCount             int
+	ExpertUsedCount         int
+	ExpertFeedForwardLength int
+}
+
+// isMoE reports whether the model has expert layers, and so whether
+// --n-cpu-moe means anything for it.
+func (m ggufMeta) isMoE() bool {
+	return m.ExpertCount > 0 && m.ExpertFeedForwardLength > 0
+}
+
+// moeExpertSafety shades the expert-size estimate down.
+//
+// The estimate below counts attention and experts and nothing else, so it
+// slightly overstates the expert share of a layer. Overstating it means
+// believing that moving one layer frees more VRAM than it does, which ends
+// in a failed load; understating it moves an extra layer or two to system
+// RAM and costs a little speed. The second is the better failure.
+const moeExpertSafety = 0.9
+
+// expertBytesPerLayer estimates how many of one layer's bytes are expert
+// tensors — the portion --n-cpu-moe relocates to system RAM.
+//
+// Derived from the parameter shapes rather than the file, because a GGUF
+// header does not carry per-tensor sizes: attention is Q, K, V and O
+// projections, experts are gate, up and down per expert. The ratio between
+// them is applied to the layer's share of the file, so it holds across
+// quantizations without needing to know the bits per weight.
+func (m ggufMeta) expertBytesPerLayer(weights int64) int64 {
+	hd := m.headDim()
+	if !m.isMoE() || m.BlockCount <= 0 || weights <= 0 || hd <= 0 ||
+		m.EmbeddingLength <= 0 || m.HeadCount <= 0 || m.HeadCountKV <= 0 {
+		return 0
+	}
+	d := float64(m.EmbeddingLength)
+	// Q and O are full width; K and V are narrowed by grouped-query attention.
+	attn := 2*d*float64(m.HeadCount)*float64(hd) + 2*d*float64(m.HeadCountKV)*float64(hd)
+	experts := float64(m.ExpertCount) * 3 * d * float64(m.ExpertFeedForwardLength)
+	if experts <= 0 {
+		return 0
+	}
+	perLayer := float64(weights) / float64(m.BlockCount)
+	return int64(perLayer * (experts / (attn + experts)) * moeExpertSafety)
 }
 
 // kvLayers returns how many layers actually hold a full-context KV cache.
@@ -233,18 +281,38 @@ func (m ggufMeta) kvLayers() int {
 	return m.BlockCount
 }
 
-// kvCacheBytes estimates the KV cache at a given context size.
+// kvCacheElemBytes is the per-element cost of the KV cache as the server
+// actually launches it: q8_0, which packs 32 elements into 34 bytes.
+//
+// The base-flag fallback runs f16 (2 bytes) but with one slot instead of
+// kvCacheSlots, so its total lands within a few percent of this and one
+// figure covers both paths.
+const kvCacheElemBytes = 34.0 / 32.0
+
+// kvCacheBytes estimates the KV cache for a launch at the given per-slot
+// context size.
 //
 // Two tensors (K and V) per attending layer, each holding tokens *
-// n_kv_heads * head_dim elements at 2 bytes for the default f16 cache.
+// n_kv_heads * head_dim elements. ctx is the per-conversation context the
+// user configures; the server allocates kvCacheSlots of them, so the cache
+// is sized for the total.
 //
-// This is an estimate. It ignores the fixed state of SSM layers and runtime
-// overhead, and a model whose metadata omits these hints is treated as plain
-// attention. Both choices err high, which is the right direction for a
-// figure someone uses to decide whether a model will fit.
+// Both factors are stated explicitly on purpose. They used to be wrong in
+// opposite directions — f16 against a cache the server quantizes to q8_0,
+// times a single slot against a server that runs two — which cancelled to
+// within 6% and hid the fact that neither matched what was launched. A
+// change to either constant would have silently unbalanced it.
 //
-// Checked against llama-server holding Qwen3.5-4B: predicted 0.54 GB at ctx
-// 16384 and 2.15 GB at 65536, a 1.61 GB delta against 1.45 GB measured.
+// This is still an estimate. It ignores the fixed state of SSM layers and
+// runtime overhead, and a model whose metadata omits these hints is treated
+// as plain attention. Both choices err high, which is the right direction
+// for a figure someone uses to decide whether a model will fit.
+//
+// Checked against llama-server holding Qwen3.5-4B: predicts 0.57 GB at ctx
+// 16384 and 2.28 GB at 65536, a 1.71 GB delta against 1.45 GB measured. The
+// 18% margin is the intended direction — two q8_0 slots cost about what one
+// f16 slot did, so the measurement and the formula agree on the shape and
+// the estimate simply sits above it.
 func (m ggufMeta) kvCacheBytes(ctx int) int64 {
 	hd := m.headDim()
 	layers := m.kvLayers()
@@ -256,9 +324,9 @@ func (m ggufMeta) kvCacheBytes(ctx int) int64 {
 	// many. Applying the window to every layer would understate the cache
 	// several times over, so it is deliberately not applied at all: for a
 	// "will this fit" figure, erring high is the safe direction.
-	tokens := ctx
-	const bytesPerElem = 2 // f16
-	return 2 * int64(layers) * int64(tokens) * int64(m.HeadCountKV) * int64(hd) * bytesPerElem
+	tokens := int64(ctx) * int64(kvCacheSlots)
+	elems := 2 * int64(layers) * tokens * int64(m.HeadCountKV) * int64(hd)
+	return int64(float64(elems) * kvCacheElemBytes)
 }
 
 // complete reports whether enough shape metadata was found to size the KV
@@ -350,6 +418,12 @@ func readGGUFMeta(path string) (ggufMeta, error) {
 			meta.FullAttentionInterval = int(v)
 		case strings.HasSuffix(key, ".attention.sliding_window"):
 			meta.SlidingWindow = int(v)
+		case strings.HasSuffix(key, ".expert_used_count"):
+			meta.ExpertUsedCount = int(v)
+		case strings.HasSuffix(key, ".expert_feed_forward_length"):
+			meta.ExpertFeedForwardLength = int(v)
+		case strings.HasSuffix(key, ".expert_count"):
+			meta.ExpertCount = int(v)
 		}
 	}
 	if meta.ContextLength <= 0 {
@@ -364,6 +438,7 @@ func ggufWantedKey(key string) bool {
 		".context_length", ".block_count", ".attention.head_count_kv",
 		".attention.head_count", ".embedding_length", ".attention.key_length",
 		".full_attention_interval", ".attention.sliding_window",
+		".expert_count", ".expert_used_count", ".expert_feed_forward_length",
 	} {
 		if strings.HasSuffix(key, suffix) {
 			return true

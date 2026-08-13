@@ -37,10 +37,14 @@ type llamaServer struct {
 	ctxN     int // per-slot context — what one conversation can use
 	slots    int // llama-server slots (-np); total -c is ctxN*slots
 	gpuLayer int
-	apiKey   string
-	client   *http.Client
-	waitOnce sync.Once
-	waitErr  chan error
+	cpuMoE   int // --n-cpu-moe layers, 0 when the flag was not passed
+	// gpuSetting is the gpu_layers *setting* this server was started under,
+	// not the resolved layer count. See serverMatches.
+	gpuSetting int
+	apiKey     string
+	client     *http.Client
+	waitOnce   sync.Once
+	waitErr    chan error
 }
 
 // isRemote reports whether this server is someone else's process. Remote
@@ -68,6 +72,37 @@ var (
 	serverMu     sync.Mutex
 	activeServer *llamaServer
 )
+
+// gpuSettingAuto marks "gpu_layers is on auto" in a server's identity.
+const gpuSettingAuto = -1
+
+// gpuLayersSetting collapses the gpu_layers config into a comparable int:
+// what the user asked for, not what it resolved to.
+func gpuLayersSetting(cfg Config) int {
+	if cfg.GPULayers == nil {
+		return gpuSettingAuto
+	}
+	if *cfg.GPULayers < 0 {
+		return 0
+	}
+	return *cfg.GPULayers
+}
+
+// serverMatches reports whether a running server can take the next request
+// without being restarted.
+//
+// It compares the gpu_layers *setting*, never a freshly resolved layer
+// count. Resolving reads live VRAM, and once a server is up, live VRAM
+// includes the several gigabytes that server is holding. Comparing against
+// that asks "would this model fit in a machine that is already running it",
+// which answers no — so the server is torn down, which frees the VRAM that
+// made it look too big, so the replacement loads at full offload, and the
+// next message repeats it. That loop reloaded the model from disk on every
+// tool round of an agent turn.
+func serverMatches(s *llamaServer, modelName string, ctxN, gpuSetting int) bool {
+	return s != nil && !s.isRemote() &&
+		s.model.Name == modelName && s.ctxN == ctxN && s.gpuSetting == gpuSetting
+}
 
 // ensureServer returns a running llamaServer for the current model, spawning
 // one if needed and restarting if the caller switched models. Safe to call
@@ -99,13 +134,10 @@ func ensureServer() (*llamaServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A -ngl change only takes effect at process start, so treat it as
-	// part of the server's identity alongside the model.
+	// Offload only takes effect at process start, so it is part of the
+	// server's identity alongside the model and context.
 	cfg, _ := loadConfig()
-	wantNGL := resolveGPULayers(cfg)
-	wantCtx := resolveCtxSize(cfg)
-	if activeServer != nil && activeServer.model.Name == m.Name &&
-		activeServer.gpuLayer == wantNGL && activeServer.ctxN == wantCtx {
+	if activeServer != nil && serverMatches(activeServer, m.Name, resolveCtxSize(cfg), gpuLayersSetting(cfg)) {
 		return activeServer, nil
 	}
 	if activeServer != nil {
@@ -183,22 +215,40 @@ func startLlamaServerWith(m Model, opts serveOptions) (*llamaServer, error) {
 	}
 
 	cfg, _ := loadConfig()
-	ngl := resolveGPULayers(cfg)
+	off := resolveOffload(cfg)
 	ctxN := resolveCtxSize(cfg)
 
-	s, err := launchLlamaServerOn(bin, modelPath, m, threads, ngl, ctxN, true, opts)
+	s, err := launchLlamaServerOn(bin, modelPath, m, threads, off, ctxN, true, opts)
 	if errors.Is(err, errServerExitedEarly) {
 		// The optimized flag set is rejected by engines that predate the
-		// `-fa on` syntax, and by backend/model combos that can't force
-		// flash attention. The base flags work everywhere.
+		// `-fa on` syntax, by backend/model combos that can't force flash
+		// attention, and by builds older than --n-cpu-moe. The base flags
+		// work everywhere. Dropping --n-cpu-moe means the model may no
+		// longer fit with everything offloaded, so the retry falls back to
+		// plain layer offload too.
 		log.Printf("llama-server rejected optimized flags (%v) — retrying with base flags", err)
-		s, err = launchLlamaServerOn(bin, modelPath, m, threads, ngl, ctxN, false, opts)
+		s, err = launchLlamaServerOn(bin, modelPath, m, threads, baseOffload(cfg, off), ctxN, false, opts)
 	}
 	return s, err
 }
 
+// baseOffload is the offload plan for the fallback launch, which cannot pass
+// --n-cpu-moe. Without it the experts come back to the GPU, so the layer
+// count has to absorb them instead.
+func baseOffload(cfg Config, off offloadPlan) offloadPlan {
+	if off.CPUMoE == 0 {
+		return off
+	}
+	if m, err := currentModel(); err == nil {
+		if n, total, ok := fitGPULayers(m, resolveCtxSize(cfg)); ok && n < total {
+			return offloadPlan{NGL: n, Setting: off.Setting}
+		}
+	}
+	return offloadPlan{NGL: off.NGL, Setting: off.Setting}
+}
+
 func launchLlamaServer(bin, modelPath string, m Model, threads, ngl, ctxN int, optimized bool) (*llamaServer, error) {
-	return launchLlamaServerOn(bin, modelPath, m, threads, ngl, ctxN, optimized, serveOptions{})
+	return launchLlamaServerOn(bin, modelPath, m, threads, offloadPlan{NGL: ngl}, ctxN, optimized, serveOptions{})
 }
 
 // serveOptions carries the LAN-facing overrides used by `--serve`. The zero
@@ -228,7 +278,7 @@ func (o serveOptions) clientHost() string {
 	return o.bindHost()
 }
 
-func launchLlamaServerOn(bin, modelPath string, m Model, threads, ngl, ctxN int, optimized bool, opts serveOptions) (*llamaServer, error) {
+func launchLlamaServerOn(bin, modelPath string, m Model, threads int, off offloadPlan, ctxN int, optimized bool, opts serveOptions) (*llamaServer, error) {
 	port := opts.Port
 	if port == 0 {
 		var err error
@@ -244,7 +294,7 @@ func launchLlamaServerOn(bin, modelPath string, m Model, threads, ngl, ctxN int,
 		"--host", opts.bindHost(),
 		"--port", fmt.Sprintf("%d", port),
 		"-t", fmt.Sprintf("%d", threads),
-		"-ngl", fmt.Sprintf("%d", ngl),
+		"-ngl", fmt.Sprintf("%d", off.NGL),
 		// Not --log-disable. That discarded llama.cpp's own account of
 		// itself — the model load, the slot layout, and the reason behind a
 		// failed start — leaving a bare "exit status 1" as the only symptom.
@@ -259,6 +309,13 @@ func launchLlamaServerOn(bin, modelPath string, m Model, threads, ngl, ctxN int,
 	}
 	if optimized {
 		slots, serverCtx = serveCapacity(ctxN, opts.Slots)
+		if off.CPUMoE > 0 {
+			// Keep the experts of the first N layers in system RAM while
+			// everything else stays on the GPU. For a mixture-of-experts
+			// model this beats dropping whole layers: attention runs for
+			// every token, expert weights mostly do not.
+			args = append(args, "--n-cpu-moe", fmt.Sprintf("%d", off.CPUMoE))
+		}
 		args = append(args,
 			// q8_0 halves KV memory vs f16, which is what pays for the
 			// second slot: two q8_0 slots cost what one f16 slot did, so
@@ -288,23 +345,25 @@ func launchLlamaServerOn(bin, modelPath string, m Model, threads, ngl, ctxN int,
 	cmd.Env = append(os.Environ(), "OMP_STACKSIZE=64M")
 	applyEngineSysProcAttr(cmd)
 
-	log.Printf("starting llama-server on :%d (model=%s threads=%d ngl=%d ctx=%d slots=%d optimized=%v)",
-		port, m.Name, threads, ngl, perSlot, slots, optimized)
+	log.Printf("starting llama-server on :%d (model=%s threads=%d ngl=%d cpu_moe=%d ctx=%d slots=%d optimized=%v)",
+		port, m.Name, threads, off.NGL, off.CPUMoE, perSlot, slots, optimized)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start llama-server: %w", err)
 	}
 
 	s := &llamaServer{
-		cmd:      cmd,
-		base:     fmt.Sprintf("http://%s:%d", opts.clientHost(), port),
-		port:     port,
-		model:    m,
-		ctxN:     perSlot,
-		slots:    slots,
-		gpuLayer: ngl,
-		apiKey:   opts.APIKey,
-		client:   &http.Client{Timeout: 10 * time.Minute},
-		waitErr:  make(chan error, 1),
+		cmd:        cmd,
+		base:       fmt.Sprintf("http://%s:%d", opts.clientHost(), port),
+		port:       port,
+		model:      m,
+		ctxN:       perSlot,
+		slots:      slots,
+		gpuLayer:   off.NGL,
+		cpuMoE:     off.CPUMoE,
+		gpuSetting: off.Setting,
+		apiKey:     opts.APIKey,
+		client:     &http.Client{Timeout: 10 * time.Minute},
+		waitErr:    make(chan error, 1),
 	}
 	// Single background Wait(); result is broadcast via waitErr so both
 	// waitReady and stopLocked can observe exit without double-calling Wait.

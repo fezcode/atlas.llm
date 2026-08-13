@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"log"
 	"math"
 	"net"
 	"net/url"
@@ -82,6 +81,29 @@ var availableModels = []Model{
 		Filename: "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
 		URL:      "https://huggingface.co/unsloth/Ministral-3-14B-Instruct-2512-GGUF/resolve/main/Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
 		Size:     "~8.2GB",
+	},
+	{
+		// First mixture-of-experts entry, and the first model aimed at code.
+		// 30B of weights with 3B active per token, so it generates at roughly
+		// 4B speed while knowing what a 30B knows — which is the trade a
+		// 16GB card wants. IQ3 rather than the nicer Q4_K_M (18.6GB) because
+		// it sits almost entirely in 16GB — measured against a 5070 Ti with
+		// a desktop running, five of its 48 layers spill their experts to
+		// system RAM. Q4_K_M works too and is the better model; it spills
+		// about twenty.
+		Name:     "qwen3-coder-30b-a3b",
+		Filename: "Qwen3-Coder-30B-A3B-Instruct-UD-IQ3_XXS.gguf",
+		URL:      "https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/main/Qwen3-Coder-30B-A3B-Instruct-UD-IQ3_XXS.gguf",
+		Size:     "~12.8GB",
+	},
+	{
+		// The general-purpose counterpart to the coder above: 26B of weights,
+		// 4B active. Same family as the gemma-4 entries, so it carries the
+		// same tool-calling chat template.
+		Name:     "gemma-4-26b-a4b-it",
+		Filename: "gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf",
+		URL:      "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf",
+		Size:     "~12.9GB",
 	},
 	{
 		// Meta's local-agent model (Aug 2026), built around tool calling.
@@ -374,23 +396,24 @@ const maxGPULayers = 999
 // autoGPULayers decides the default -ngl when the user hasn't set one.
 // macOS builds always carry Metal, so offloading is free there. On
 // Windows/Linux only a GPU-enabled engine build can use it.
+// A model larger than VRAM fails at load with everything offloaded, so auto
+// picks the share that fits instead. Only when the estimate is confident: an
+// unknown answer means offload everything and let a real failure be loud,
+// rather than quietly halving performance forever.
+//
+// planOffload owns that arithmetic, including the mixture-of-experts case
+// where the answer is a full offload plus --n-cpu-moe rather than a reduced
+// -ngl. This returns only the -ngl half, for the callers that render it.
 func autoGPULayers(variant string) int {
-	if runtime.GOOS != "darwin" && !engineVariantIsGPU(effectiveEngineVariant(variant)) {
-		return 0
-	}
-	// A model larger than VRAM fails at load with everything offloaded, so
-	// auto picks the share that fits instead. Only when the estimate is
-	// confident: an unknown answer means offload everything and let a real
-	// failure be loud, rather than quietly halving performance forever.
-	if m, err := currentModel(); err == nil {
-		cfg, _ := loadConfig()
-		if n, total, ok := fitGPULayers(m, resolveCtxSize(cfg)); ok && n < total {
-			log.Printf("gpu: %s does not fit in free VRAM — offloading %d of %d layers",
-				m.Name, n, total)
-			return n
+	m, err := currentModel()
+	if err != nil {
+		if runtime.GOOS != "darwin" && !engineVariantIsGPU(effectiveEngineVariant(variant)) {
+			return 0
 		}
+		return maxGPULayers
 	}
-	return maxGPULayers
+	cfg, _ := loadConfig()
+	return planOffload(m, resolveCtxSize(cfg), variant).NGL
 }
 
 // effectiveEngineVariant is the build inference will actually run against,
