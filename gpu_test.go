@@ -660,3 +660,19 @@ func TestModelRegistryIsWellFormed(t *testing.T) {
 		t.Error("registry has no lightweight tool-calling model")
 	}
 }
+
+// The first dense ~27B sized to sit entirely in 16GB. Unlike the MoE pair
+// there is no expert offload to save an oversized quant — every spilled
+// layer costs every token — so the quant has to fit outright, with room
+// for the KV cache on top.
+func TestQwen38CatalogEntry(t *testing.T) {
+	m, ok := findModel("qwen3.8-27b")
+	if !ok {
+		t.Fatal("qwen3.8-27b is not in the registry")
+	}
+	gb := float64(parseModelSize(m.Size)) / 1e9
+	if gb < 12 || gb > 15 {
+		t.Errorf("qwen3.8-27b: %s (%.1f GB) is outside the fits-16GB-fully window",
+			m.Size, gb)
+	}
+}

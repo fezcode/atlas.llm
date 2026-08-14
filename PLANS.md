@@ -866,3 +866,29 @@ reads and parses config.json, putting a disk read on every keystroke — a
 milder repeat of the tasklist-per-frame bug from v0.29.1. It now reads only
 the cached status, and the test deletes config.json before rendering to prove
 it never looks.
+
+### 31. Qwen3.8-27B — SHIPPED (v0.39.0)
+Added qwen3.8-27b (~13.4GB, unsloth UD-Q3_K_XL) — the first dense ~27B
+sized to sit entirely in 16GB, and on its benchmarks the strongest /tools
+driver in the registry.
+
+Qwen released it 2026-08-14 (Apache 2.0): dense 27B, 64 layers of the
+Qwen3.5-style hybrid attention (Gated DeltaNet + Gated Attention), built for
+agentic coding and computer use, 262K native context. GGUF quants and
+llama.cpp support landed day one, so — like muse-glimmer before it — it is a
+one-struct change here.
+
+Quant choice is the interesting part. Unlike the two MoE entries, where an
+oversized quant only spills cheap expert tensors, a dense model pays for
+every spilled layer on every token — so Q4_K_M (17.1GB) on a 16GB card would
+be a permanent slowdown. UD-Q3_K_XL (13.4GB) fits outright with room for the
+KV cache, which the hybrid attention keeps small: only a minority of layers
+carry a real KV cache, a layout the estimator in gguf.go already models for
+Qwen3.5.
+
+Known limitations:
+- Text-only. The model is a native vision-language model, but vision needs
+  the separate mmproj GGUF, which we don't download (same stance as
+  muse-glimmer-30b).
+- Needs a llama.cpp build recent enough to know the architecture;
+  `/download engine` refreshes an older install.

@@ -116,6 +116,21 @@ var availableModels = []Model{
 		URL:      "https://huggingface.co/unsloth/Muse-Glimmer-30B-GGUF/resolve/main/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
 		Size:     "~15.9GB",
 	},
+	{
+		// Qwen's dense 27B (Aug 2026, Apache 2.0), aimed squarely at agentic
+		// work — the strongest /tools driver in the registry. UD-Q3_K_XL
+		// rather than Q4_K_M (17.1GB) because a dense model pays for every
+		// spilled layer on every token; this quant sits entirely in 16GB
+		// with room for the KV cache, which its hybrid attention keeps
+		// small (most layers are linear-attention, like Qwen3.5). Text-only
+		// here: vision needs the separate mmproj GGUF, which we don't
+		// download. Needs a llama.cpp build recent enough to know the arch
+		// (`/download engine` refreshes an older install).
+		Name:     "qwen3.8-27b",
+		Filename: "Qwen3.8-27B-UD-Q3_K_XL.gguf",
+		URL:      "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q3_K_XL.gguf",
+		Size:     "~13.4GB",
+	},
 }
 
 const defaultModel = "gemma-3-1b-it"

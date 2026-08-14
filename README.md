@@ -714,6 +714,10 @@ Models in the registry (`/list` shows download status):
   3B active per token, so it generates at roughly 4B speed. Aimed at code.
 - `gemma-4-26b-a4b-it` (~12.9GB) — the general-purpose MoE counterpart, 26B
   with 4B active.
+- `qwen3.8-27b` (~13.4GB) — Qwen's dense agentic 27B (Aug 2026), the
+  strongest tool-caller in the registry; sits entirely in 16GB of VRAM.
+  Text-only (vision needs an mmproj we don't fetch), and needs a llama.cpp
+  build recent enough to know the architecture.
 - `muse-glimmer-30b` (~15.9GB) — Meta's agentic 30B; wants 24GB+ RAM, and
   needs a llama.cpp build from Aug 2026 or later (`/download engine` refreshes
   an older install).

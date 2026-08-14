@@ -395,8 +395,9 @@ var helpTopics = []helpTopic{
 				"can't loop forever.",
 			"/yesman skips every confirmation for the current session if the " +
 				"prompting gets in the way — read `/help yesman` first.",
-			"Needs a model that can emit tool calls — Qwen3.5-9B or " +
-				"Ministral-3-14B. On Gemma 3 the feature will appear broken.",
+			"Needs a model that can emit tool calls — Qwen3.5-9B, " +
+				"Ministral-3-14B, or qwen3.8-27b (the strongest, needs a " +
+				"16GB card). On Gemma 3 the feature will appear broken.",
 			"/reset clears the agent's message list along with the conversation.",
 		},
 		SeeAlso: []string{"mcp", "model", "yesman"},
