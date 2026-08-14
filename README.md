@@ -44,7 +44,7 @@ they are missing returns an error with the command to run.
 | `/download all`   | Download engine + every model in the registry.                      |
 | `/summarize`      | Summarize the current directory into `SUMMARY.md`.                  |
 | `/grep <query>`   | Semantic grep: ask the local model to find lines matching `<query>`.|
-| `/set [k [v]]`    | Settings: `max_tokens`, `reasoning`, `max_tool_rounds`, `ctx_size`, `gpu_layers`, `engine_variant`, `endpoint`. |
+| `/set [k [v]]`    | Settings: `max_tokens`, `reasoning`, `max_tool_rounds`, `ctx_size`, `gpu_layers`, `engine_variant`, `endpoint`, plus fifteen engine-tuning knobs (`kv_offload`, `cache_type_k/v`, `temperature`, …). |
 | `/config`         | Everything at once: settings, session state, memory, paths.         |
 | `/tools [on\|off\|list]` | Toggle agentic tool-use (off by default). See below.         |
 | `/mcp [...]`      | Connect MCP servers (Slack, Confluence, …). See below.              |
@@ -411,6 +411,34 @@ a real error rather than a bare exit code.
 Changing `gpu_layers` restarts the model server, so it takes effect on your
 next message. `/set` with no arguments shows the current values and which
 engine variant is actually installed.
+
+### Engine tuning
+
+Fifteen further settings expose the most useful llama-server options, each
+with validation, `/help set <key>` documentation, and — where it matters —
+integration with the memory estimator. All default to `auto`, which launches
+exactly as before they existed.
+
+| Setting | llama-server flag | What it does |
+|---------|-------------------|--------------|
+| `kv_offload` | `--no-kv-offload` | `off` keeps all weight layers on the GPU but the KV cache in system RAM. The offload estimator knows, so `gpu_layers auto` fits more layers. |
+| `flash_attn` | `-fa` | Force flash attention on or off (auto forces it on). |
+| `cache_type_k` / `cache_type_v` | `--cache-type-k/v` | KV cache quantization; auto is q8_0. The `/list` fit column and offload planner follow it. |
+| `threads` | `-t` | Engine CPU threads; auto is NumCPU-1 capped at 6. |
+| `batch_size` / `ubatch_size` | `-b` / `-ub` | Prefill batch sizes; smaller `-ub` shrinks VRAM compute buffers. |
+| `parallel` | `--parallel` | Server slots. The KV budget is fixed — more slots divide it. |
+| `cache_reuse` | `--cache-reuse` | KV-chunk salvage threshold; auto is 256 tokens. |
+| `mmap` | `--no-mmap` | `off` copies the weights into RAM instead of mapping them. |
+| `mlock` | `--mlock` | Pin the weights so the OS can't swap them out. |
+| `seed` | `--seed` | Fixed sampling seed for reproducible generations. |
+| `temperature` | *(per request)* | Sampling temperature; needs no restart and applies against remotes too. Auto is 0.2. |
+| `override_tensor` | `-ot` | Raw per-tensor placement regex, e.g. `exps=CPU`. Power tool. |
+| `context_shift` | `--context-shift` | Slide the window when context fills instead of stopping. |
+
+Explicit tuning survives the automatic fallback launch: a user instruction is
+never dropped silently — if an old engine rejects a flag, the launch fails
+loudly instead. Changing any of them (except `temperature`) restarts the
+model server on your next message.
 
 ### Running inference on another machine
 

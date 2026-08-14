@@ -279,7 +279,7 @@ func modelFit(m Model) (share float64, fit Fit) {
 		return 0, FitUnknown
 	}
 	cfg, _ := loadConfig()
-	weights, kv, _ := modelMemoryEstimate(m, resolveCtxSize(cfg))
+	weights, kv, _ := modelMemoryEstimate(m, resolveCtxSize(cfg), cfg)
 	if weights <= 0 {
 		return 0, FitUnknown
 	}
@@ -303,7 +303,7 @@ func modelResourceNote(m Model) string {
 		return ""
 	}
 	cfg, _ := loadConfig()
-	if _, kv, ok := modelMemoryEstimate(m, resolveCtxSize(cfg)); ok && kv > 0 {
+	if _, kv, ok := modelMemoryEstimate(m, resolveCtxSize(cfg), cfg); ok && kv > 0 {
 		return fmt.Sprintf("%.0f%% RAM (+%s ctx), %s", share*100, formatBytes(kv), fit)
 	}
 	return fmt.Sprintf("%.0f%% RAM, %s", share*100, fit)
@@ -325,7 +325,7 @@ func modelSizeBytes(m Model) int64 {
 // modelMemoryEstimate returns weights plus the KV cache at the given context
 // size, for a model that may or may not be downloaded. ok=false when the
 // shape metadata isn't readable, which is the case before download.
-func modelMemoryEstimate(m Model, ctx int) (weights, kv int64, ok bool) {
+func modelMemoryEstimate(m Model, ctx int, cfg Config) (weights, kv int64, ok bool) {
 	weights = modelSizeBytes(m)
 	if weights <= 0 {
 		return 0, 0, false
@@ -338,7 +338,9 @@ func modelMemoryEstimate(m Model, ctx int) (weights, kv int64, ok bool) {
 	if err != nil || !meta.complete() {
 		return weights, 0, false
 	}
-	return weights, meta.kvCacheBytes(ctx), true
+	// The KV figure follows the cache_type settings; on a zero config this
+	// is the q8_0 default the estimate has always assumed.
+	return weights, meta.kvCacheBytesTyped(ctx, kvElemBytesFor(cfg)), true
 }
 
 // renderMemSegment formats the model server's resident memory for the

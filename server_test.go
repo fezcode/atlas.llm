@@ -16,7 +16,7 @@ func TestLaunchClassifiesEarlyExit(t *testing.T) {
 		t.Skip("needs a portable exits-immediately binary; the classification logic is platform-independent")
 	}
 	m := Model{Name: "fake", Filename: "fake.gguf"}
-	_, err := launchLlamaServer("/usr/bin/false", "/nonexistent/fake.gguf", m, 1, 0, 4096, true)
+	_, err := launchLlamaServer("/usr/bin/false", "/nonexistent/fake.gguf", m, 0, 4096, true)
 	if err == nil {
 		t.Fatal("expected an error from a server that exits immediately")
 	}

@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -35,12 +34,16 @@ type llamaServer struct {
 	port     int
 	model    Model
 	ctxN     int // per-slot context — what one conversation can use
+	askedCtx int // the ctx_size the launch was asked for; identity, not capacity
 	slots    int // llama-server slots (-np); total -c is ctxN*slots
 	gpuLayer int
 	cpuMoE   int // --n-cpu-moe layers, 0 when the flag was not passed
 	// gpuSetting is the gpu_layers *setting* this server was started under,
 	// not the resolved layer count. See serverMatches.
 	gpuSetting int
+	// tuning is the tuningFingerprint the server was launched with, so a
+	// changed tuning setting restarts it on the next message.
+	tuning string
 	apiKey     string
 	client     *http.Client
 	waitOnce   sync.Once
@@ -99,9 +102,14 @@ func gpuLayersSetting(cfg Config) int {
 // made it look too big, so the replacement loads at full offload, and the
 // next message repeats it. That loop reloaded the model from disk on every
 // tool round of an agent turn.
-func serverMatches(s *llamaServer, modelName string, ctxN, gpuSetting int) bool {
+// The context compared is askedCtx, not the per-slot share: a parallel
+// setting above the default shrinks each slot's share, and comparing the
+// share against resolveCtxSize would mismatch on every message — the same
+// restart loop, via a different field.
+func serverMatches(s *llamaServer, modelName string, ctxN, gpuSetting int, tuning string) bool {
 	return s != nil && !s.isRemote() &&
-		s.model.Name == modelName && s.ctxN == ctxN && s.gpuSetting == gpuSetting
+		s.model.Name == modelName && s.askedCtx == ctxN &&
+		s.gpuSetting == gpuSetting && s.tuning == tuning
 }
 
 // ensureServer returns a running llamaServer for the current model, spawning
@@ -137,7 +145,7 @@ func ensureServer() (*llamaServer, error) {
 	// Offload only takes effect at process start, so it is part of the
 	// server's identity alongside the model and context.
 	cfg, _ := loadConfig()
-	if activeServer != nil && serverMatches(activeServer, m.Name, resolveCtxSize(cfg), gpuLayersSetting(cfg)) {
+	if activeServer != nil && serverMatches(activeServer, m.Name, resolveCtxSize(cfg), gpuLayersSetting(cfg), tuningFingerprint(cfg)) {
 		return activeServer, nil
 	}
 	if activeServer != nil {
@@ -206,28 +214,21 @@ func startLlamaServerWith(m Model, opts serveOptions) (*llamaServer, error) {
 		return nil, err
 	}
 
-	threads := runtime.NumCPU() - 1
-	if threads < 1 {
-		threads = 1
-	}
-	if threads > 6 {
-		threads = 6
-	}
-
 	cfg, _ := loadConfig()
 	off := resolveOffload(cfg)
 	ctxN := resolveCtxSize(cfg)
 
-	s, err := launchLlamaServerOn(bin, modelPath, m, threads, off, ctxN, true, opts)
+	s, err := launchLlamaServerOn(bin, modelPath, m, off, ctxN, true, opts, cfg)
 	if errors.Is(err, errServerExitedEarly) {
 		// The optimized flag set is rejected by engines that predate the
 		// `-fa on` syntax, by backend/model combos that can't force flash
 		// attention, and by builds older than --n-cpu-moe. The base flags
 		// work everywhere. Dropping --n-cpu-moe means the model may no
 		// longer fit with everything offloaded, so the retry falls back to
-		// plain layer offload too.
+		// plain layer offload too. Explicit tuning settings stay on the
+		// retry — see buildServerArgs.
 		log.Printf("llama-server rejected optimized flags (%v) — retrying with base flags", err)
-		s, err = launchLlamaServerOn(bin, modelPath, m, threads, baseOffload(cfg, off), ctxN, false, opts)
+		s, err = launchLlamaServerOn(bin, modelPath, m, baseOffload(cfg, off), ctxN, false, opts, cfg)
 	}
 	return s, err
 }
@@ -240,15 +241,15 @@ func baseOffload(cfg Config, off offloadPlan) offloadPlan {
 		return off
 	}
 	if m, err := currentModel(); err == nil {
-		if n, total, ok := fitGPULayers(m, resolveCtxSize(cfg)); ok && n < total {
+		if n, total, ok := fitGPULayers(m, resolveCtxSize(cfg), cfg); ok && n < total {
 			return offloadPlan{NGL: n, Setting: off.Setting}
 		}
 	}
 	return offloadPlan{NGL: off.NGL, Setting: off.Setting}
 }
 
-func launchLlamaServer(bin, modelPath string, m Model, threads, ngl, ctxN int, optimized bool) (*llamaServer, error) {
-	return launchLlamaServerOn(bin, modelPath, m, threads, offloadPlan{NGL: ngl}, ctxN, optimized, serveOptions{})
+func launchLlamaServer(bin, modelPath string, m Model, ngl, ctxN int, optimized bool) (*llamaServer, error) {
+	return launchLlamaServerOn(bin, modelPath, m, offloadPlan{NGL: ngl}, ctxN, optimized, serveOptions{}, Config{})
 }
 
 // serveOptions carries the LAN-facing overrides used by `--serve`. The zero
@@ -278,22 +279,23 @@ func (o serveOptions) clientHost() string {
 	return o.bindHost()
 }
 
-func launchLlamaServerOn(bin, modelPath string, m Model, threads int, off offloadPlan, ctxN int, optimized bool, opts serveOptions) (*llamaServer, error) {
-	port := opts.Port
-	if port == 0 {
-		var err error
-		if port, err = pickFreePort(); err != nil {
-			return nil, fmt.Errorf("pick port: %w", err)
-		}
-	}
-
+// buildServerArgs assembles the llama-server command line. Pure on purpose:
+// every flag decision lives here, testable without launching anything.
+// Returns the args plus the slot count and the total -c across slots.
+//
+// The tuning settings apply on BOTH flag sets. The optimized/fallback split
+// exists for flags the launch chooses on its own — a user's explicit /set is
+// an instruction, and dropping it silently on the retry would make the
+// setting a lie. If an old engine rejects an explicit flag, the launch fails
+// loudly and the setting can be unset.
+func buildServerArgs(modelPath string, opts serveOptions, port int, off offloadPlan, ctxN int, optimized bool, cfg Config) ([]string, int, int) {
 	slots := 1
 	serverCtx := ctxN // -c is the total across slots; each slot gets an equal share
 	args := []string{
 		"-m", modelPath,
 		"--host", opts.bindHost(),
 		"--port", fmt.Sprintf("%d", port),
-		"-t", fmt.Sprintf("%d", threads),
+		"-t", fmt.Sprintf("%d", resolveThreads(cfg)),
 		"-ngl", fmt.Sprintf("%d", off.NGL),
 		// Not --log-disable. That discarded llama.cpp's own account of
 		// itself — the model load, the slot layout, and the reason behind a
@@ -307,8 +309,14 @@ func launchLlamaServerOn(bin, modelPath string, m Model, threads int, off offloa
 	if opts.APIKey != "" {
 		args = append(args, "--api-key", opts.APIKey)
 	}
+	// A --serve --slots flag on the command line outranks the persisted
+	// parallel setting; both outrank the default.
+	wantSlots := opts.Slots
+	if wantSlots == 0 {
+		wantSlots = cfg.Parallel
+	}
 	if optimized {
-		slots, serverCtx = serveCapacity(ctxN, opts.Slots)
+		slots, serverCtx = serveCapacity(ctxN, wantSlots)
 		if off.CPUMoE > 0 {
 			// Keep the experts of the first N layers in system RAM while
 			// everything else stays on the GPU. For a mixture-of-experts
@@ -322,19 +330,65 @@ func launchLlamaServerOn(bin, modelPath string, m Model, threads int, off offloa
 			// per-slot context is unchanged on the 16GB machines this
 			// targets. Quantizing V requires flash attention; forcing it
 			// on is also a prefill speedup where supported, and the base
-			// fallback covers where it isn't.
-			"-fa", "on",
-			"--cache-type-k", "q8_0",
-			"--cache-type-v", "q8_0",
+			// fallback covers where it isn't. The cache_type and
+			// flash_attn settings override each auto choice.
+			"-fa", resolveFlashAttn(cfg),
+			"--cache-type-k", resolveCacheType(cfg.CacheTypeK),
+			"--cache-type-v", resolveCacheTypeV(cfg),
 			"--parallel", fmt.Sprintf("%d", slots),
-			// Salvage still-matching KV chunks (min 256 tokens) past the
-			// first divergence instead of reprocessing everything after
-			// it — mainly softens the full re-prefill after /compact
-			// rewrites history. Runtime no-op for SWA models (Gemma).
-			"--cache-reuse", "256",
+			// Salvage still-matching KV chunks past the first divergence
+			// instead of reprocessing everything after it — mainly softens
+			// the full re-prefill after /compact rewrites history. Runtime
+			// no-op for SWA models (Gemma).
+			"--cache-reuse", fmt.Sprintf("%d", resolveCacheReuse(cfg)),
 		)
+	} else {
+		// The fallback set passes only what the user explicitly asked for.
+		if cfg.FlashAttn != "" {
+			args = append(args, "-fa", cfg.FlashAttn)
+		}
+		if cfg.CacheTypeK != "" {
+			args = append(args, "--cache-type-k", cfg.CacheTypeK)
+		}
+		if cfg.CacheTypeV != "" {
+			args = append(args, "--cache-type-v", cfg.CacheTypeV)
+		}
+		if wantSlots > 0 {
+			slots, serverCtx = serveCapacity(ctxN, wantSlots)
+			args = append(args, "--parallel", fmt.Sprintf("%d", slots))
+		}
+		if cfg.CacheReuse != nil {
+			args = append(args, "--cache-reuse", fmt.Sprintf("%d", *cfg.CacheReuse))
+		}
 	}
+	args = append(args, tuningArgs(cfg)...)
 	args = append(args, "-c", fmt.Sprintf("%d", serverCtx))
+	return args, slots, serverCtx
+}
+
+// resolveCacheTypeV is the V type the optimized launch passes: explicit, or
+// q8_0 — degraded to f16 when flash attention is explicitly off, because a
+// quantized V without it is a launch failure, not a preference.
+func resolveCacheTypeV(cfg Config) string {
+	if cfg.CacheTypeV != "" {
+		return cfg.CacheTypeV
+	}
+	if resolveFlashAttn(cfg) == "off" {
+		return "f16"
+	}
+	return "q8_0"
+}
+
+func launchLlamaServerOn(bin, modelPath string, m Model, off offloadPlan, ctxN int, optimized bool, opts serveOptions, cfg Config) (*llamaServer, error) {
+	port := opts.Port
+	if port == 0 {
+		var err error
+		if port, err = pickFreePort(); err != nil {
+			return nil, fmt.Errorf("pick port: %w", err)
+		}
+	}
+
+	args, slots, serverCtx := buildServerArgs(modelPath, opts, port, off, ctxN, optimized, cfg)
 	// -c is the total across slots, so what one conversation actually gets
 	// is the share, not the total.
 	perSlot := serverCtx / slots
@@ -345,8 +399,8 @@ func launchLlamaServerOn(bin, modelPath string, m Model, threads int, off offloa
 	cmd.Env = append(os.Environ(), "OMP_STACKSIZE=64M")
 	applyEngineSysProcAttr(cmd)
 
-	log.Printf("starting llama-server on :%d (model=%s threads=%d ngl=%d cpu_moe=%d ctx=%d slots=%d optimized=%v)",
-		port, m.Name, threads, off.NGL, off.CPUMoE, perSlot, slots, optimized)
+	log.Printf("starting llama-server on :%d (model=%s threads=%d ngl=%d cpu_moe=%d ctx=%d slots=%d optimized=%v tuning=%q)",
+		port, m.Name, resolveThreads(cfg), off.NGL, off.CPUMoE, perSlot, slots, optimized, tuningFingerprint(cfg))
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start llama-server: %w", err)
 	}
@@ -357,10 +411,12 @@ func launchLlamaServerOn(bin, modelPath string, m Model, threads int, off offloa
 		port:       port,
 		model:      m,
 		ctxN:       perSlot,
+		askedCtx:   ctxN,
 		slots:      slots,
 		gpuLayer:   off.NGL,
 		cpuMoE:     off.CPUMoE,
 		gpuSetting: off.Setting,
+		tuning:     tuningFingerprint(cfg),
 		apiKey:     opts.APIKey,
 		client:     &http.Client{Timeout: 10 * time.Minute},
 		waitErr:    make(chan error, 1),
@@ -664,7 +720,7 @@ func (s *llamaServer) chatCompleteCore(ctx context.Context, msgs []ChatMsg, maxT
 	reqBody, _ := json.Marshal(chatRequest{
 		Messages:           msgs,
 		MaxTokens:          maxTokens,
-		Temperature:        0.2,
+		Temperature:        requestTemperature(),
 		Stream:             false,
 		CachePrompt:        true,
 		Tools:              tools,
@@ -865,7 +921,7 @@ func (s *llamaServer) ChatCompleteStreamOpt(ctx context.Context, msgs []ChatMsg,
 	reqBody, _ := json.Marshal(chatRequest{
 		Messages:           msgs,
 		MaxTokens:          maxTokens,
-		Temperature:        0.2,
+		Temperature:        requestTemperature(),
 		Stream:             true,
 		CachePrompt:        true,
 		ChatTemplateKwargs: kwargs,

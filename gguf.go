@@ -314,6 +314,13 @@ const kvCacheElemBytes = 34.0 / 32.0
 // f16 slot did, so the measurement and the formula agree on the shape and
 // the estimate simply sits above it.
 func (m ggufMeta) kvCacheBytes(ctx int) int64 {
+	return m.kvCacheBytesTyped(ctx, kvCacheElemBytes)
+}
+
+// kvCacheBytesTyped is kvCacheBytes with the per-element cost as a
+// parameter, for launches where the cache_type settings changed it from the
+// q8_0 default. elemBytes is the K/V average — kvElemBytesFor(cfg).
+func (m ggufMeta) kvCacheBytesTyped(ctx int, elemBytes float64) int64 {
 	hd := m.headDim()
 	layers := m.kvLayers()
 	if layers <= 0 || m.HeadCountKV <= 0 || hd <= 0 || ctx <= 0 {
@@ -326,7 +333,7 @@ func (m ggufMeta) kvCacheBytes(ctx int) int64 {
 	// "will this fit" figure, erring high is the safe direction.
 	tokens := int64(ctx) * int64(kvCacheSlots)
 	elems := 2 * int64(layers) * tokens * int64(m.HeadCountKV) * int64(hd)
-	return int64(float64(elems) * kvCacheElemBytes)
+	return int64(float64(elems) * elemBytes)
 }
 
 // complete reports whether enough shape metadata was found to size the KV

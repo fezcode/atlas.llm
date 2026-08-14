@@ -892,3 +892,55 @@ Known limitations:
   muse-glimmer-30b).
 - Needs a llama.cpp build recent enough to know the architecture;
   `/download engine` refreshes an older install.
+
+### 32. Engine tuning: fifteen llama-server knobs — SHIPPED (v0.40.0)
+The most useful llama-server options as first-class settings: kv_offload,
+flash_attn, cache_type_k, cache_type_v, threads, batch_size, ubatch_size,
+parallel, cache_reuse, mmap, mlock, seed, temperature, override_tensor,
+context_shift. Chosen over a raw pass-through escape hatch deliberately —
+curated settings can validate conflicts and teach the estimators; a raw
+string can't.
+
+The zero value of every new Config field means "auto", pinned by a test that
+asserts a zero config produces exactly the flag set that shipped before —
+these defaults are measured and documented, and silent drift here changes
+every user's launch.
+
+**One registry entry per setting.** The `setting` struct gained `Apply` and
+`Restart`; new settings live entirely in tuning.go and handleSet gained one
+generic branch, instead of fifteen more bespoke switch cases. The older
+settings keep theirs for their side effects (probes, shutdowns).
+
+**The estimators follow the settings.** kv_offload=off zeroes the KV charge
+in the VRAM fit math (`vramKVCharge`), so `gpu_layers auto` offloads more
+layers — that is the setting's whole point. cache_type_k/v feed per-element
+bytes into `kvCacheBytesTyped`; on a zero config the average is exactly the
+q8_0 constant the estimate always used. override_tensor is explicitly *not*
+modelled, and its help says so.
+
+**Restart identity extended.** `tuningFingerprint` — raw settings, never
+resolved autos, temperature excluded — is compared by `serverMatches`. Two
+traps avoided: comparing resolved values re-creates the v0.28 restart loop,
+and comparing the per-slot context share against resolveCtxSize would loop
+the same way once `parallel` shrinks the share, so identity now compares
+`askedCtx`.
+
+**Conflicts are refused at /set time.** A quantized cache_type_v needs flash
+attention; both orderings of that mistake error immediately instead of at
+launch. When flash_attn is explicitly off and V is on auto, the launch
+degrades V to f16 itself.
+
+**Explicit tuning rides the fallback launch.** The optimized/fallback split
+exists for flags the launch chooses on its own; a user's /set is an
+instruction, and dropping it silently would make the setting a lie. An old
+engine that rejects one fails loudly.
+
+Verified against the real engine: all fourteen flags exist in the installed
+llama-server's --help, and a live launch with a tuned set (--no-kv-offload,
+q8_0 caches, --seed, -ub 256) reached /health OK.
+
+Known limitations:
+- temperature is the only sampling knob; top_p/top_k/min_p would need
+  request-struct fields and were left for when someone asks.
+- batch_size/ubatch_size don't feed the compute-buffer estimate — the
+  estimator's 1GiB headroom absorbs the difference.

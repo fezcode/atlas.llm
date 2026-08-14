@@ -326,6 +326,138 @@ var helpTopics = []helpTopic{
 					"whether a usable Vulkan driver is present. If a GPU build " +
 					"misbehaves, `/set engine_variant cpu` then `/download engine` " +
 					"puts you back."},
+			{Name: "kv_offload", Usage: "/set kv_offload on|off",
+				Detail: "Where the KV cache lives. `on` (the default) keeps it in VRAM " +
+					"next to the offloaded layers. `off` allocates it in system RAM " +
+					"(llama.cpp --no-kv-offload) while every weight layer stays on " +
+					"the GPU — and the offload estimator knows, so `gpu_layers auto` " +
+					"fits more layers.\n\n" +
+					"The trade is speed: attention reads the cache on every generated " +
+					"token, so with the cache behind the PCIe bus generation slows — " +
+					"usually more than spilling one or two weight layers would. It " +
+					"wins when the cache, not the weights, is what doesn't fit: huge " +
+					"contexts on dense models. On hybrid-attention models (Qwen3.5, " +
+					"qwen3.8-27b) the cache is small and this buys little either way."},
+			{Name: "flash_attn", Usage: "/set flash_attn auto|on|off",
+				Detail: "Flash attention (llama.cpp -fa). `auto` forces it on for the " +
+					"optimized launch: it speeds up prompt processing and is what " +
+					"allows the V cache to be quantized. The automatic fallback " +
+					"launch omits it for engines that predate the syntax.\n\n" +
+					"`off` is for backend/model combinations where forcing it breaks " +
+					"the load — the symptom is a launch that dies immediately after " +
+					"a model switch. It conflicts with a quantized cache_type_v, and " +
+					"the conflict is refused at /set time."},
+			{Name: "cache_type_k", Usage: "/set cache_type_k auto|q4_0|q4_1|q5_0|q5_1|q8_0|f16|bf16|f32",
+				Detail: "Quantization of the K half of the KV cache. `auto` is q8_0: " +
+					"half the memory of f16 at no measurable quality cost — it is " +
+					"what pays for the second server slot.\n\n" +
+					"q4_0 halves it again, but K tolerates quantization worse than " +
+					"V; expect degradation on long contexts. f16 is the " +
+					"full-precision fallback if a model misbehaves at q8_0.\n\n" +
+					"The memory estimates in /list and the offload planner follow " +
+					"this setting, so a smaller cache type genuinely raises what " +
+					"`gpu_layers auto` will offload."},
+			{Name: "cache_type_v", Usage: "/set cache_type_v auto|q4_0|q4_1|q5_0|q5_1|q8_0|f16|bf16|f32",
+				Detail: "Quantization of the V half of the KV cache. `auto` is q8_0.\n\n" +
+					"Quantizing V requires flash attention — llama-server refuses " +
+					"the combination at load, so /set refuses it earlier: a " +
+					"quantized value here conflicts with `flash_attn off`.\n\n" +
+					"V tolerates quantization better than K, so if VRAM is desperate " +
+					"q4_0 here is the cheaper of the two halvings."},
+			{Name: "threads", Usage: "/set threads auto|N",
+				Detail: "CPU threads for the engine (llama.cpp -t). `auto` is NumCPU-1 " +
+					"capped at 6 — beyond that, extra threads fight the GPU feeding " +
+					"loop for cache without prompt throughput to show for it.\n\n" +
+					"Raise it on CPU-only setups or big partial offloads, where the " +
+					"CPU genuinely does the generating and the cap costs real " +
+					"speed. Lower it if the machine turns sluggish while a reply " +
+					"streams."},
+			{Name: "batch_size", Usage: "/set batch_size auto|N",
+				Detail: "Logical batch size for prompt processing (llama.cpp -b). " +
+					"`auto` keeps llama.cpp's default, 2048.\n\n" +
+					"Mostly acts as the ceiling for ubatch_size. Lowering both " +
+					"shrinks the compute buffers a launch allocates in VRAM, which " +
+					"can be the difference for a model that almost fits — paid for " +
+					"in slower prefill."},
+			{Name: "ubatch_size", Usage: "/set ubatch_size auto|N",
+				Detail: "Physical batch per engine step (llama.cpp -ub), and the knob " +
+					"that actually sizes the compute buffers in VRAM. `auto` keeps " +
+					"llama.cpp's default, 512.\n\n" +
+					"128 or 256 can recover a few hundred MiB when a model almost " +
+					"fits; prompt processing slows roughly in proportion. Values " +
+					"above batch_size do nothing."},
+			{Name: "parallel", Usage: "/set parallel auto|N",
+				Detail: "Server slots — how many requests are handled concurrently " +
+					"(llama.cpp --parallel). `auto` is 2: one for the conversation, " +
+					"one so a /compact or /summarize doesn't evict the " +
+					"conversation's KV cache.\n\n" +
+					"The KV budget is fixed at what ctx_size implies: more slots " +
+					"divide it, so each slot sees proportionally less context, and " +
+					"VRAM use never grows with this setting. Mainly for --serve " +
+					"machines feeding several clients; a --slots flag on the " +
+					"command line still outranks it."},
+			{Name: "cache_reuse", Usage: "/set cache_reuse auto|off|N",
+				Detail: "Minimum length, in tokens, of a still-matching KV chunk worth " +
+					"salvaging past the first divergence instead of reprocessing " +
+					"everything after it (llama.cpp --cache-reuse). `auto` is 256.\n\n" +
+					"Its main effect here is softening the full re-prefill after " +
+					"/compact rewrites history. `off` disables salvage entirely — " +
+					"try it if a model produces oddities right after a compact. " +
+					"Runtime no-op for sliding-window models such as Gemma."},
+			{Name: "mmap", Usage: "/set mmap on|off",
+				Detail: "How the weights are loaded. `on` (the default) memory-maps " +
+					"the GGUF: startup is instant and the OS pages weights in on " +
+					"demand. `off` (llama.cpp --no-mmap) copies the whole file into " +
+					"RAM up front — slower start, no first-token page-fault stalls, " +
+					"and on some setups measurably faster CPU inference.\n\n" +
+					"`off` needs RAM for the entire model file. Check the fit " +
+					"column in /list first."},
+			{Name: "mlock", Usage: "/set mlock on|off",
+				Detail: "`on` pins the model's pages in memory (llama.cpp --mlock) so " +
+					"the OS cannot swap them out under memory pressure — the cause " +
+					"of a model that answers instantly for an hour and then stalls " +
+					"mid-reply after something else used the RAM.\n\n" +
+					"The price is that the RAM is genuinely gone for everything " +
+					"else, and the model must actually fit. Some systems also need " +
+					"a raised memlock limit; a launch failure right after enabling " +
+					"this is that limit."},
+			{Name: "seed", Usage: "/set seed auto|N",
+				Detail: "Sampling seed (llama.cpp --seed). `auto` picks a fresh seed " +
+					"per generation. A fixed number makes the same prompt at the " +
+					"same settings reproduce the same output — useful when " +
+					"comparing models or debugging a prompt, pointless for normal " +
+					"chat.\n\n" +
+					"Reproducibility also needs identical context: any difference " +
+					"in history changes the output regardless of the seed."},
+			{Name: "temperature", Usage: "/set temperature auto|X",
+				Detail: "Sampling temperature, sent with every request rather than " +
+					"bound at server launch — so it needs no restart, and it is the " +
+					"one tuning setting that still applies when inference runs on a " +
+					"remote endpoint.\n\n" +
+					"`auto` is 0.2: low, because tool calls and code want " +
+					"determinism. 0.7–0.9 is the usual range for creative prose; 0 " +
+					"is greedy decoding — the same continuation every time. Range 0 " +
+					"to 2."},
+			{Name: "override_tensor", Usage: "/set override_tensor PATTERN=BACKEND | off",
+				Detail: "Raw per-tensor placement (llama.cpp -ot), the power tool " +
+					"behind most \"run a huge MoE on a small card\" recipes: " +
+					"`exps=CPU` keeps every expert tensor in system RAM while all " +
+					"attention stays on the GPU — finer-grained than the automatic " +
+					"--n-cpu-moe, which moves experts whole layers at a time.\n\n" +
+					"The pattern is a regex matched against tensor names, and the " +
+					"engine — not atlas.llm — interprets it. The offload estimator " +
+					"does not model it, so /config's VRAM arithmetic can be wrong " +
+					"while one is set. A bad pattern fails at launch, loudly. `off` " +
+					"clears it."},
+			{Name: "context_shift", Usage: "/set context_shift on|off",
+				Detail: "`on` lets the server slide the window when the context " +
+					"fills — the oldest tokens are dropped and generation " +
+					"continues (llama.cpp --context-shift). The model silently " +
+					"forgets the start of the conversation.\n\n" +
+					"`off` (the default) surfaces the limit instead, and /compact " +
+					"does the same job while telling you what it kept. Needs an " +
+					"engine recent enough to know the flag, and some models are " +
+					"incompatible with shifting."},
 		},
 		Notes: []string{
 			"`auto` never selects a GPU build on Windows or Linux. A GPU build " +

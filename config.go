@@ -428,7 +428,10 @@ func autoGPULayers(variant string) int {
 		return maxGPULayers
 	}
 	cfg, _ := loadConfig()
-	return planOffload(m, resolveCtxSize(cfg), variant).NGL
+	// The caller's variant wins over the persisted one — resolveGPULayers
+	// passes cfg.EngineVariant anyway, but tests probe other variants.
+	cfg.EngineVariant = variant
+	return planOffload(m, resolveCtxSize(cfg), cfg).NGL
 }
 
 // effectiveEngineVariant is the build inference will actually run against,
@@ -510,6 +513,26 @@ type Config struct {
 	// EndpointKey is the bearer token for Endpoint, for a server started
 	// with --api-key. Empty is the normal case on a trusted LAN.
 	EndpointKey string `json:"endpoint_key,omitempty"`
+
+	// Engine tuning. Each field maps onto one llama-server flag; the zero
+	// value always means "auto" — launch exactly as before the setting
+	// existed. Pointer types are for settings where an explicit zero is a
+	// real choice distinct from auto (the GPULayers lesson).
+	KVOffload      string   `json:"kv_offload,omitempty"`      // "off" → --no-kv-offload
+	FlashAttn      string   `json:"flash_attn,omitempty"`      // "on"/"off" → -fa; "" = auto
+	CacheTypeK     string   `json:"cache_type_k,omitempty"`    // --cache-type-k; "" = auto
+	CacheTypeV     string   `json:"cache_type_v,omitempty"`    // --cache-type-v; "" = auto
+	Threads        int      `json:"threads,omitempty"`         // -t; 0 = auto
+	BatchSize      int      `json:"batch_size,omitempty"`      // -b; 0 = auto
+	UBatchSize     int      `json:"ubatch_size,omitempty"`     // -ub; 0 = auto
+	Parallel       int      `json:"parallel,omitempty"`        // --parallel; 0 = auto
+	CacheReuse     *int     `json:"cache_reuse,omitempty"`     // --cache-reuse; nil = auto, 0 = off
+	Mmap           string   `json:"mmap,omitempty"`            // "off" → --no-mmap
+	Mlock          string   `json:"mlock,omitempty"`           // "on" → --mlock
+	Seed           *int     `json:"seed,omitempty"`            // --seed; nil = auto
+	Temperature    *float64 `json:"temperature,omitempty"`     // per-request; nil = 0.2
+	OverrideTensor string   `json:"override_tensor,omitempty"` // -ot
+	ContextShift   string   `json:"context_shift,omitempty"`   // "on" → --context-shift
 }
 
 // Reasoning settings.
@@ -1044,7 +1067,13 @@ func endpointDisplay(cfg Config) string {
 // llama-server at spawn, so a client cannot change them over HTTP.
 func remoteDecidesSetting(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "ctx_size", "gpu_layers", "engine_variant":
+	case "ctx_size", "gpu_layers", "engine_variant",
+		// The engine-tuning settings all bind at server launch, which a
+		// remote did on its own machine. temperature is the exception:
+		// it rides on each request, so it applies against a remote too.
+		"kv_offload", "flash_attn", "cache_type_k", "cache_type_v",
+		"threads", "batch_size", "ubatch_size", "parallel", "cache_reuse",
+		"mmap", "mlock", "seed", "override_tensor", "context_shift":
 		return true
 	}
 	return false

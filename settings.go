@@ -24,6 +24,14 @@ type setting struct {
 	// does, what the limits are, and what it costs. The long-form prose
 	// lives in help.go and is reachable via `/help set <key>`.
 	Detail func(Config) string
+	// Apply validates a value and writes it into the config. Settings with
+	// an Apply are handled by handleSet's generic path; the older settings
+	// keep their bespoke cases in tui.go for their side effects (probes,
+	// server shutdowns), so they leave this nil.
+	Apply func(*Config, string) error
+	// Restart marks settings that only take effect through a server
+	// relaunch, so the confirmation message can say so.
+	Restart bool
 }
 
 var settingsRegistry = []setting{

@@ -155,44 +155,57 @@ func TestKVEstimateCoversBothLaunchPaths(t *testing.T) {
 // which freed that VRAM, so the replacement loaded at full offload and the
 // next message did it again. Every tool round reloaded the model from disk.
 func TestServerIdentityIgnoresResolvedLayers(t *testing.T) {
+	baseTuning := tuningFingerprint(Config{})
 	// A non-nil cmd is what makes a server local rather than remote; no
 	// process is started for it.
 	s := &llamaServer{
 		cmd:   &exec.Cmd{},
-		model: Model{Name: "qwen3.5-9b"}, ctxN: 16384,
-		gpuLayer: maxGPULayers, gpuSetting: gpuSettingAuto,
+		model: Model{Name: "qwen3.5-9b"}, ctxN: 16384, askedCtx: 16384,
+		gpuLayer: maxGPULayers, gpuSetting: gpuSettingAuto, tuning: baseTuning,
 	}
-	if !serverMatches(s, "qwen3.5-9b", 16384, gpuSettingAuto) {
+	if !serverMatches(s, "qwen3.5-9b", 16384, gpuSettingAuto, baseTuning) {
 		t.Fatal("a server matching its own settings was rejected")
 	}
 	// The estimator now says 14 layers, because the model it is measuring is
 	// loaded. That must not evict the server that loaded it.
 	s.gpuLayer = 14
-	if !serverMatches(s, "qwen3.5-9b", 16384, gpuSettingAuto) {
+	if !serverMatches(s, "qwen3.5-9b", 16384, gpuSettingAuto, baseTuning) {
 		t.Error("identity depends on the resolved layer count — this is the restart loop")
 	}
+	// Nor may the per-slot share: a parallel setting above the default
+	// shrinks ctxN below what was asked, and comparing the share would be
+	// the same loop through a different field.
+	s.gpuLayer = maxGPULayers
+	s.ctxN = 8192
+	if !serverMatches(s, "qwen3.5-9b", 16384, gpuSettingAuto, baseTuning) {
+		t.Error("identity depends on the per-slot share instead of the asked context")
+	}
+	s.ctxN = 16384
 
 	// Things the user actually changed must still force a restart.
-	s.gpuLayer = maxGPULayers
-	if serverMatches(s, "ministral-3-14b-instruct", 16384, gpuSettingAuto) {
+	if serverMatches(s, "ministral-3-14b-instruct", 16384, gpuSettingAuto, baseTuning) {
 		t.Error("a different model reused the server")
 	}
-	if serverMatches(s, "qwen3.5-9b", 32768, gpuSettingAuto) {
+	if serverMatches(s, "qwen3.5-9b", 32768, gpuSettingAuto, baseTuning) {
 		t.Error("a context change reused the server")
 	}
-	if serverMatches(s, "qwen3.5-9b", 16384, 20) {
+	if serverMatches(s, "qwen3.5-9b", 16384, 20, baseTuning) {
 		t.Error("switching gpu_layers from auto to 20 reused the server")
+	}
+	if serverMatches(s, "qwen3.5-9b", 16384, gpuSettingAuto, tuningFingerprint(Config{KVOffload: "off"})) {
+		t.Error("a tuning change reused the server")
 	}
 	// A remote server (no subprocess) must never satisfy local identity, or
 	// clearing the endpoint would leave the session pointed at the remote.
-	remote := &llamaServer{model: Model{Name: "qwen3.5-9b"}, ctxN: 16384, gpuSetting: gpuSettingAuto}
+	remote := &llamaServer{model: Model{Name: "qwen3.5-9b"}, ctxN: 16384, askedCtx: 16384,
+		gpuSetting: gpuSettingAuto, tuning: baseTuning}
 	if !remote.isRemote() {
 		t.Fatal("test setup: a server with no cmd should read as remote")
 	}
-	if serverMatches(remote, "qwen3.5-9b", 16384, gpuSettingAuto) {
+	if serverMatches(remote, "qwen3.5-9b", 16384, gpuSettingAuto, baseTuning) {
 		t.Error("a remote server satisfied local identity")
 	}
-	if serverMatches(nil, "qwen3.5-9b", 16384, gpuSettingAuto) {
+	if serverMatches(nil, "qwen3.5-9b", 16384, gpuSettingAuto, baseTuning) {
 		t.Error("nil matched")
 	}
 }

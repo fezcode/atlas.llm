@@ -225,8 +225,8 @@ const vramHeadroomMiB = 1024
 // ok=false means "don't clamp": something needed was unknown, and a guessed
 // clamp is a permanent silent slowdown, which is worse than attempting a full
 // offload and getting a loud failure.
-func fitGPULayers(m Model, ctx int) (layers, totalLayers int, ok bool) {
-	weights, kv, estOK := modelMemoryEstimate(m, ctx)
+func fitGPULayers(m Model, ctx int, cfg Config) (layers, totalLayers int, ok bool) {
+	weights, kv, estOK := modelMemoryEstimate(m, ctx, cfg)
 	if !estOK || weights <= 0 {
 		return 0, 0, false
 	}
@@ -243,7 +243,9 @@ func fitGPULayers(m Model, ctx int) (layers, totalLayers int, ok bool) {
 		return 0, 0, false
 	}
 
-	n, ok := layersThatFit(weights, kv, meta.BlockCount, used, total)
+	// With kv_offload off the cache lives in system RAM and costs VRAM
+	// nothing — which is why more layers fit.
+	n, ok := layersThatFit(weights, vramKVCharge(cfg, kv), meta.BlockCount, used, total)
 	return n, meta.BlockCount, ok
 }
 
@@ -328,11 +330,11 @@ func cpuMoELayers(weights, expertPerLayer, kv int64, blockCount, usedMiB, totalM
 //
 // Only consulted when gpu_layers is on auto: an explicit setting is the
 // user's instruction and is passed through untouched.
-func planOffload(m Model, ctx int, variant string) offloadPlan {
-	if runtime.GOOS != "darwin" && !engineVariantIsGPU(effectiveEngineVariant(variant)) {
+func planOffload(m Model, ctx int, cfg Config) offloadPlan {
+	if runtime.GOOS != "darwin" && !engineVariantIsGPU(effectiveEngineVariant(cfg.EngineVariant)) {
 		return offloadPlan{NGL: 0}
 	}
-	weights, kv, estOK := modelMemoryEstimate(m, ctx)
+	weights, rawKV, estOK := modelMemoryEstimate(m, ctx, cfg)
 	p, perr := modelPath(m)
 	used, total, memOK := gpuMemoryNow()
 	if !estOK || perr != nil || !memOK || total <= 0 {
@@ -344,6 +346,9 @@ func planOffload(m Model, ctx int, variant string) offloadPlan {
 	if err != nil || meta.BlockCount <= 0 {
 		return offloadPlan{NGL: maxGPULayers}
 	}
+	// Zero when kv_offload is off: the cache is in system RAM, so the VRAM
+	// arithmetic below must not budget for it.
+	kv := vramKVCharge(cfg, rawKV)
 
 	if meta.isMoE() {
 		if per := meta.expertBytesPerLayer(weights); per > 0 {
@@ -378,7 +383,7 @@ func resolveOffload(cfg Config) offloadPlan {
 	if err != nil {
 		return offloadPlan{NGL: resolveGPULayers(cfg), Setting: setting}
 	}
-	plan := planOffload(m, resolveCtxSize(cfg), cfg.EngineVariant)
+	plan := planOffload(m, resolveCtxSize(cfg), cfg)
 	plan.Setting = setting
 	return plan
 }
@@ -436,7 +441,7 @@ func renderGPUSection(cfg Config) string {
 			reason = "auto — model exceeds free VRAM"
 		}
 		if m, err := currentModel(); err == nil {
-			if _, total, ok := fitGPULayers(m, resolveCtxSize(cfg)); ok && total > 0 {
+			if _, total, ok := fitGPULayers(m, resolveCtxSize(cfg), cfg); ok && total > 0 {
 				fmt.Fprintf(&b, "  %-14s  %d of %d layers (%s)\n", "offload", n, total, reason)
 				return b.String()
 			}

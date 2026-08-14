@@ -755,7 +755,30 @@ func (m *chatModel) handleSet(args []string) {
 		m.pushSystem("endpoint_key set.\nTakes effect on your next message.")
 
 	default:
-		m.pushError(fmt.Sprintf("unknown setting: %s (supported: %s)", key, strings.Join(settingKeys(), ", ")))
+		// Settings that registered an Apply are handled generically: the
+		// registry validates and writes, this branch persists and confirms.
+		// The older settings keep bespoke cases above for their side
+		// effects (probes, server shutdowns).
+		s, ok := findSetting(key)
+		if !ok || s.Apply == nil {
+			m.pushError(fmt.Sprintf("unknown setting: %s (supported: %s)", key, strings.Join(settingKeys(), ", ")))
+			return
+		}
+		if err := s.Apply(&cfg, args[1]); err != nil {
+			m.pushError(err.Error())
+			return
+		}
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		msg := fmt.Sprintf("%s = %s", s.Key, s.Value(cfg))
+		if s.Restart {
+			msg += "\nTakes effect on the next message (the model server restarts)."
+		} else {
+			msg += "\nApplies to your next message."
+		}
+		m.pushSystem(msg)
 	}
 }
 
