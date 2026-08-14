@@ -671,6 +671,37 @@ var helpTopics = []helpTopic{
 		SeeAlso: []string{"tools", "mcp"},
 	},
 	{
+		Name:    "ama",
+		Summary: "Let the agent ask you questions with interactive lists.",
+		Usage:   []string{"/ama", "/ama on", "/ama off"},
+		Detail: "\"Ask me anything\" — with it on, the agent gains one extra tool, " +
+			"ask_user, that turns a decision back to you as an interactive picker " +
+			"instead of guessing. Use it when you'd rather be consulted on " +
+			"ambiguous requests than have the model pick a direction on its own.\n\n" +
+			"With no argument it shows the current state; `on` and `off` set it. " +
+			"The preference is saved, so it carries across restarts.\n\n" +
+			"It only does anything while tools are on (`/tools on`) — ask_user is " +
+			"a tool, and it's offered to the model only during an agent turn. When " +
+			"tools are off the setting is remembered but dormant.\n\n" +
+			"Four kinds of question, chosen by the model to fit the moment:\n" +
+			"  radio          pick exactly one option\n" +
+			"  checkbox       pick any number (space toggles, enter submits)\n" +
+			"  confirm        a yes/no step confirmation before it acts\n" +
+			"  answer_confirm approve a drafted answer or plan, or ask for changes\n\n" +
+			"In the picker: ↑/↓ move, space toggles a checkbox, enter submits, " +
+			"esc dismisses. Dismissing isn't a dead end — the model is told to " +
+			"proceed with its best judgment, so a turn never hangs on a question " +
+			"you'd rather skip.",
+		Notes: []string{
+			"The agent decides when to ask. A capable model asks only when a " +
+				"choice is genuinely yours; a weaker one may ask too often or not " +
+				"at all — turning it off restores decide-on-its-own behavior.",
+			"Your answer is fed back as the tool result, so it steers the rest " +
+				"of the turn exactly like any other tool output.",
+		},
+		SeeAlso: []string{"tools", "yesman"},
+	},
+	{
 		Name:    "compact",
 		Summary: "Summarize older turns to free up the context window.",
 		Usage:   []string{"/compact"},

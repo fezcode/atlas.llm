@@ -145,6 +145,36 @@ whole file.
 | `browser_upload` | ✓       | Attach a local file to a page's file-upload field.              |
 | `browser_close`|           | Close the window and discard its profile.                       |
 
+#### Ask me anything (`/ama`)
+
+By default the agent decides on its own and only stops for a destructive-tool
+confirmation. Turn on `/ama` and it gains one more tool, `ask_user`, that
+hands a decision back to **you** as an interactive list instead of guessing —
+for ambiguous requests, a branch it can't settle from the code, or a plan
+worth confirming before it acts.
+
+```
+/tools on      # ask_user is a tool, so tools must be on
+/ama on        # saved across restarts
+```
+
+Four kinds of question, picked by the model to fit the moment:
+
+| Kind             | Widget                                             |
+| ---------------- | -------------------------------------------------- |
+| `radio`          | pick exactly one option                            |
+| `checkbox`       | pick any number — space toggles, enter submits     |
+| `confirm`        | a yes/no step confirmation before it acts          |
+| `answer_confirm` | approve a drafted answer or plan, or ask for changes |
+
+In the picker: **↑/↓** move, **space** toggles a checkbox, **enter** submits,
+**esc** dismisses. Your choice is fed back as the tool result, so it steers
+the rest of the turn like any other tool output. Dismissing is never a dead
+end — the model is told to proceed with its best judgment, so a turn can't
+hang on a question you'd rather skip. `/ama off` restores decide-on-its-own
+behavior. How often it asks depends on the model: a capable one asks only
+when the choice is genuinely yours.
+
 `web_fetch` needs confirmation because it is outbound, not because it
 changes anything. It strips navigation and boilerplate, keeps links absolute
 so the model can follow one, and reads text formats only — it does not run

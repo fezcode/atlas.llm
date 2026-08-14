@@ -176,6 +176,14 @@ type chatModel struct {
 	confirmCall  *ToolCall
 	confirmIdx   int // 0 = approve, 1 = deny
 
+	// AMA (/ama) state. When the agent calls ask_user, the call is parked in
+	// amaCall and rendered as an interactive picker (picking == "ama"); the
+	// cursor rides on pickerIdx, and amaChecked tracks the toggles for a
+	// checkbox question. Resolving feeds the choice back as the tool result.
+	amaCall    *ToolCall
+	amaSpec    amaSpec
+	amaChecked []bool
+
 	// repeatedCalls counts identical tool calls within the current turn, so
 	// a model stuck retrying the same failing call is caught early instead
 	// of silently burning the whole round budget.
@@ -235,6 +243,9 @@ func newChatModel() chatModel {
 	pr.Width = 40
 
 	cfg, _ := loadConfig()
+	// Mirror the persisted /ama preference into the global the tool layer
+	// reads, so ask_user is advertised from the first turn if it was left on.
+	amaOn.Store(cfg.AMAEnabled)
 
 	cm := chatModel{
 		viewport:     vp,
@@ -309,6 +320,7 @@ func welcomeText() string {
 			{"/set [k [v]]", "settings: max_tokens, ctx_size, gpu_layers, engine_variant"},
 			{"/config", "everything at once: settings, session state, memory, paths"},
 			{"/tools [on|off|list]", "agentic tool-use (read/write/grep/run_cmd; off by default)"},
+			{"/ama [on|off]", "let the agent ask you questions with interactive lists"},
 			{"/mcp [connect|tools]", "connect MCP servers (Slack, Confluence, …); /mcp help for setup"},
 			{"/quit  /exit", "leave chat (or press ctrl+c)"},
 			{"tab", "complete slash commands and their arguments"},
@@ -1003,6 +1015,27 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 		}
+		if m.picking == "ama" {
+			// The agent's ask_user picker. ↑/↓ move, space toggles a checkbox,
+			// Enter submits, Esc dismisses (the model is told to proceed).
+			switch msg.Type {
+			case tea.KeyCtrlC, tea.KeyEsc:
+				if c := m.resolveAMA(false); c != nil {
+					cmds = append(cmds, c)
+				}
+			case tea.KeyUp:
+				m.amaMove(-1)
+			case tea.KeyDown:
+				m.amaMove(1)
+			case tea.KeySpace:
+				m.amaToggle()
+			case tea.KeyEnter:
+				if c := m.resolveAMA(true); c != nil {
+					cmds = append(cmds, c)
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
 		if m.picking != "" {
 			// While the picker is open, swallow key events and don't let the
 			// textarea see them. ↑/↓ move, Enter selects, Esc/Ctrl+C cancels.
@@ -1302,6 +1335,10 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 		m.handleYesman(args)
 		return nil
 
+	case "/ama":
+		m.handleAMA(args)
+		return nil
+
 	case "/list":
 		var b strings.Builder
 		b.WriteString("Available models:\n")
@@ -1411,7 +1448,7 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 
 // slashCommands is the canonical list of completable command names.
 var slashCommands = []string{
-	"/clear", "/download", "/exit", "/grep", "/help", "/list",
+	"/ama", "/clear", "/download", "/exit", "/grep", "/help", "/list",
 	"/compact", "/config", "/mcp", "/model", "/quit", "/reset", "/set",
 	"/summarize", "/tools", "/yesman",
 }
@@ -1454,7 +1491,7 @@ func (m *chatModel) tabComplete() bool {
 		pool = settingKeys()
 	case "/tools":
 		pool = []string{"on", "off", "list"}
-	case "/yesman":
+	case "/yesman", "/ama":
 		pool = []string{"on", "off"}
 	case "/mcp":
 		pool = []string{"add", "catalog", "connect", "disconnect", "env",
@@ -1870,6 +1907,10 @@ func (m *chatModel) dispatchNextTool() tea.Cmd {
 		m.renderToolTrace(call, "(unknown tool)", true)
 		m.appendToolResult(call, fmt.Sprintf("unknown tool: %s", call.Function.Name))
 		return m.dispatchNextTool()
+	}
+	// ask_user is answered by a person, not run: hand it to the AMA picker.
+	if call.Function.Name == askUserToolName {
+		return m.startAMA(call)
 	}
 	if t.Destructive && !m.yesman {
 		m.confirmCall = &call
@@ -2407,6 +2448,7 @@ func (m *chatModel) configState() configState {
 	return configState{
 		toolsEnabled: m.agentEnabled,
 		yesman:       m.yesman,
+		ama:          amaOn.Load(),
 		mcpServers:   len(configuredMCPNames()),
 		mcpConnected: connected,
 		mcpTools:     tools,

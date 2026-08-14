@@ -231,9 +231,14 @@ func toolNames() []string {
 // plus whatever the connected MCP servers are contributing. Built-ins sort
 // first so the namespaced MCP tools don't bury them.
 func activeTools() []Tool {
-	out := make([]Tool, 0, len(toolRegistry))
+	out := make([]Tool, 0, len(toolRegistry)+1)
 	for _, n := range toolNames() {
 		out = append(out, toolRegistry[n])
+	}
+	// ask_user rides along only while /ama is on, so the model doesn't reach
+	// for it when there is no interactive picker to answer it.
+	if amaOn.Load() {
+		out = append(out, askUserTool)
 	}
 	return append(out, mcpToolSnapshot()...)
 }

@@ -185,6 +185,11 @@ func lookupTool(name string) (Tool, bool) {
 	if t, ok := toolRegistry[name]; ok {
 		return t, true
 	}
+	// ask_user isn't in the registry (it's mode-gated and intercepted, not
+	// run), but it must still resolve by name so a stray call is handled.
+	if name == askUserToolName {
+		return askUserTool, true
+	}
 	mcpMu.RLock()
 	defer mcpMu.RUnlock()
 	t, ok := mcpTools[name]

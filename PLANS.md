@@ -1020,3 +1020,33 @@ surprise of Enter moving the cursor mid-generation, so Enter is now swallowed
 outright while busy. Other keys still reach the textarea, so a next message
 can be drafted while the reply streams and sent once it ends. The busy-draft
 test flipped to assert the draft is unchanged.
+
+### 34. Ask me anything (/ama) — SHIPPED (v0.42.0)
+A mode that lets the agent turn a decision back to the user through an
+interactive picker instead of guessing. `/ama on|off`, persisted like /tools.
+
+One tool, `ask_user`, with four `kind`s: radio (pick one), checkbox (pick
+any — space toggles), confirm (yes/no step), answer_confirm (approve a
+drafted answer/plan). The picker mirrors the existing model/confirm modals;
+the choice is fed back as the tool result and steers the rest of the turn.
+
+Design notes:
+- `ask_user` is deliberately NOT in toolRegistry, so the "sixteen built-in
+  tools" count and its help/destructive lists are untouched. It's a mode-gated
+  pseudo-tool: `activeTools` appends it only while `amaOn` is set, `lookupTool`
+  resolves it by name so a stray call is still handled, and its Run is a
+  non-interactive fallback that errors (it's intercepted in the agent loop, so
+  Run is never reached in the TUI).
+- `amaOn` is an `atomic.Bool` — the tool layer (activeTools, called at config
+  time on any goroutine) reads it, the UI writes it, no model lock needed. It
+  mirrors the persisted cfg.AMAEnabled, initialised in newChatModel.
+- dispatchNextTool intercepts `ask_user` before the destructive/run path and
+  hands it to startAMA, which parses+validates the spec and opens the picker.
+  resolveAMA feeds the selection (or, on Esc, a proceed-anyway note) back and
+  continues the loop — the same shape as resolveConfirm.
+- A dismissal never stalls the turn: the model is told to proceed with its
+  best judgment. Malformed args or a call while /ama is off likewise get a
+  synthesized result rather than hanging.
+
+Only effective while /tools is on, since ask_user is only offered during an
+agent turn; /config and the enable message both say so when tools are off.

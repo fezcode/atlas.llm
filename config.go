@@ -514,6 +514,10 @@ type Config struct {
 	// with --api-key. Empty is the normal case on a trusted LAN.
 	EndpointKey string `json:"endpoint_key,omitempty"`
 
+	// AMAEnabled toggles /ama: whether the agent may ask the user questions
+	// through the interactive ask_user picker instead of deciding alone.
+	AMAEnabled bool `json:"ama_enabled,omitempty"`
+
 	// Engine tuning. Each field maps onto one llama-server flag; the zero
 	// value always means "auto" — launch exactly as before the setting
 	// existed. Pointer types are for settings where an explicit zero is a

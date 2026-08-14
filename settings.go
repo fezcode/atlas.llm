@@ -261,6 +261,7 @@ func renderSettingDetail(s setting, cfg Config) string {
 type configState struct {
 	toolsEnabled bool
 	yesman       bool
+	ama          bool
 	mcpServers   int
 	mcpConnected int
 	mcpTools     int
@@ -320,6 +321,11 @@ func renderConfig(cfg Config, st configState) string {
 		yes += "  ⚠ destructive tools run without confirmation"
 	}
 	fmt.Fprintf(&b, "  %-14s  %s\n", "yesman", yes)
+	ama := onOff(st.ama)
+	if st.ama && !st.toolsEnabled {
+		ama += "  (needs /tools on to take effect)"
+	}
+	fmt.Fprintf(&b, "  %-14s  %s\n", "ama", ama)
 	fmt.Fprintf(&b, "  %-14s  %d configured, %d connected, %d tools\n",
 		"mcp", st.mcpServers, st.mcpConnected, st.mcpTools)
 
