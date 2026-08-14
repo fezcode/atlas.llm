@@ -91,7 +91,8 @@ func TestFormatAMASelection(t *testing.T) {
 // ask_user is advertised to the model only while /ama is on, but is always
 // resolvable by name so a stray call can be handled rather than 500'd.
 func TestAskUserToolGatedByAMA(t *testing.T) {
-	defer amaOn.Store(amaOn.Load())
+	prev := amaOn.Load()
+	defer amaOn.Store(prev)
 	amaOn.Store(false)
 	if toolNamesContain(activeTools(), askUserToolName) {
 		t.Error("ask_user advertised while /ama is off")

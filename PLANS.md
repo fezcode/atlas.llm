@@ -1050,3 +1050,11 @@ Design notes:
 
 Only effective while /tools is on, since ask_user is only offered during an
 agent turn; /config and the enable message both say so when tools are off.
+
+#### Added: Ctrl+J / Alt+Enter compose a multi-line prompt — (v0.42.1)
+Enter submits, so once the empty/submit/busy Enter fixes landed there was no
+way left to type a newline. bubbletea v1.3.10 has no Shift key field and most
+terminals collapse Shift+Enter to Enter, so the portable newline keys are
+Ctrl+J (a reliable distinct key everywhere) and Alt+Enter (detected via the
+Alt bit on the Enter key). Both insert a newline via textarea.InsertRune and
+swallow the key so nothing submits. Surfaced in the welcome key list.

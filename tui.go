@@ -324,6 +324,7 @@ func welcomeText() string {
 			{"/mcp [connect|tools]", "connect MCP servers (Slack, Confluence, …); /mcp help for setup"},
 			{"/quit  /exit", "leave chat (or press ctrl+c)"},
 			{"tab", "complete slash commands and their arguments"},
+			{"ctrl+j  /  alt+enter", "insert a newline for a multi-line prompt"},
 			{"↑ / ↓", "recall previous / next input (cursor keys inside multi-line)"},
 			{"esc", "stop generation in progress"},
 			{"pgup / pgdn", "scroll the transcript"},
@@ -1095,7 +1096,19 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pushSystem(fmt.Sprintf("Copied last reply (%d chars) to clipboard.", len(content)))
 			}
 			return m, tea.Batch(cmds...)
+		case tea.KeyCtrlJ:
+			// Ctrl+J inserts a newline for a multi-line prompt. Enter submits,
+			// so this is the portable way to compose across lines (terminals
+			// can't tell Shift+Enter from Enter).
+			m.textarea.InsertRune('\n')
+			return m, tea.Batch(cmds...)
 		case tea.KeyEnter:
+			if msg.Alt {
+				// Alt+Enter is the other multi-line key: compose a newline
+				// instead of submitting.
+				m.textarea.InsertRune('\n')
+				return m, tea.Batch(cmds...)
+			}
 			input := strings.TrimSpace(m.textarea.Value())
 			if input == "" {
 				// Swallow the key instead of breaking: falling through hands

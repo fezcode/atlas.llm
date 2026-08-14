@@ -247,6 +247,12 @@ func TestToolRunCmdNonZeroExit(t *testing.T) {
 }
 
 func TestToolDefsJSONShape(t *testing.T) {
+	// ask_user rides along only while /ama is on, and that global is seeded
+	// from the user's real config — pin it off so the count is deterministic.
+	prev := amaOn.Load()
+	amaOn.Store(false)
+	defer amaOn.Store(prev)
+
 	defs := toolDefsJSON()
 	if len(defs) != len(toolRegistry) {
 		t.Fatalf("expected %d tool defs, got %d", len(toolRegistry), len(defs))

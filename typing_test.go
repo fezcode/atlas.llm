@@ -94,6 +94,30 @@ func TestEnterSubmitsWithoutLeavingNewline(t *testing.T) {
 	}
 }
 
+// Multi-line prompts: Ctrl+J and Alt+Enter insert a newline instead of
+// submitting, so a prompt can span several lines. (Enter alone still sends;
+// terminals can't distinguish Shift+Enter, so these are the portable keys.)
+func TestNewlineKeysComposeMultiline(t *testing.T) {
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyCtrlJ},
+		{Type: tea.KeyEnter, Alt: true},
+	} {
+		m := newChatModel()
+		m.busy = false
+		m.agentEnabled = false
+		m.textarea.SetValue("line one")
+		var model tea.Model = m
+		model, _ = model.Update(key)
+		got := model.(chatModel)
+		if v := got.textarea.Value(); v != "line one\n" {
+			t.Errorf("%v: textarea = %q, want %q", key.Type, v, "line one\n")
+		}
+		if got.busy {
+			t.Errorf("%v: started a turn — it should only add a newline", key.Type)
+		}
+	}
+}
+
 // The viewport must never carry scroll bindings, or the bug returns the
 // moment key forwarding is reinstated.
 func TestViewportHasNoKeyBindings(t *testing.T) {
