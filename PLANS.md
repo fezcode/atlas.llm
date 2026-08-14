@@ -999,3 +999,13 @@ since-136 refusal to debug the *real* default data dir never applies.
 
 Verified live on Chrome: launch persist → close → dir survives → relaunch on
 the leftover dir comes up clean (proving the stale-state prep).
+
+#### Fixed: a submitted prompt left a stray newline in the input — (v0.41.1)
+The same fall-through as the empty-prompt fix (v0.40.1), on the other branch.
+The send path resets the textarea, but KeyEnter then fell through to the
+shared `m.textarea.Update(msg)` at the bottom of Update, which typed the Enter
+into the now-empty box — so after every send the cursor sat on a blank second
+line. The v0.40.1 fix only returned early on the *empty* path; the submit path
+still fell through. It now returns right after queueing the send. Pinned by a
+test asserting the textarea is empty (not "\n") after an Enter that starts a
+turn.

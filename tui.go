@@ -1107,6 +1107,10 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				hist := append([]ChatMessage(nil), m.history[:len(m.history)-1]...)
 				cmds = append(cmds, runChatStreamCmd(m.newInflight(), hist, input), m.spinner.Tick)
 			}
+			// Return here: the textarea was just reset, and falling through to
+			// the shared textarea.Update below would type this Enter into the
+			// empty box, leaving a stray newline that drops the cursor a line.
+			return m, tea.Batch(cmds...)
 		}
 
 	case assistantDeltaMsg:

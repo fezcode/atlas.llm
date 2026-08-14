@@ -73,6 +73,26 @@ func TestEnterOnEmptyPromptDoesNothing(t *testing.T) {
 	}
 }
 
+// Submitting a prompt must leave the input box empty. The send path resets
+// the textarea, but the KeyEnter event then fell through to the shared
+// textarea.Update at the bottom of Update, which typed a newline into the
+// now-empty box — so after every send the cursor sat on a blank second line.
+func TestEnterSubmitsWithoutLeavingNewline(t *testing.T) {
+	m := newChatModel()
+	m.busy = false
+	m.agentEnabled = false // force the plain-chat path, not the agent loop
+	m.textarea.SetValue("hello")
+	var model tea.Model = m
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := model.(chatModel)
+	if v := got.textarea.Value(); v != "" {
+		t.Errorf("after submit the textarea holds %q, want empty (a stray newline drops the cursor a line)", v)
+	}
+	if !got.busy {
+		t.Error("submit did not start a turn")
+	}
+}
+
 // The viewport must never carry scroll bindings, or the bug returns the
 // moment key forwarding is reinstated.
 func TestViewportHasNoKeyBindings(t *testing.T) {
