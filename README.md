@@ -163,9 +163,11 @@ tool call comes from a model reading text it did not write.
 `browser_open` launches a real, headed browser window — you watch every page
 it visits. Chrome, Chromium, and Edge are driven over the DevTools protocol;
 Firefox over WebDriver BiDi. No driver binaries (chromedriver/geckodriver)
-are needed. The window runs on a **fresh throwaway profile**: none of your
-cookies, logins, or history are visible to the model, and the profile is
-deleted when the window closes (via `browser_close`, `/quit`, or Ctrl+C).
+are needed. By default the window runs on a **fresh throwaway profile**: none
+of your cookies, logins, or history are visible to the model, and the profile
+is deleted when the window closes (via `browser_close`, `/quit`, or Ctrl+C).
+Two other profile modes — a copy of your real profile, and a persistent one
+that survives across runs — are covered below.
 
 Launching requires approval in the confirm modal; once you've approved the
 window, navigation and page interaction run freely — you can see (and close)
@@ -218,6 +220,21 @@ a crash or stray click from touching your real data), which also means it's a
 point-in-time snapshot — new logins made in the window aren't written back.
 Caches and lock files are left out of the copy, so it's quick and doesn't
 clash with a browser you already have open.
+
+**A persistent profile for sites you revisit.** Both profiles above are
+discarded on close, which means a fresh window can't get past a site that
+remembers you — most visibly a Cloudflare "verify you are human" check,
+which scores a brand-new profile with no history and hands its clearance out
+as a cookie the throwaway then throws away. Ask to keep the session — "open
+Chrome and remember this" — and the model passes `profile="persist"`. That
+launches on a dedicated profile atlas.llm owns, under
+`~/.atlas/atlas.llm.data/browser-profiles/<chrome|firefox>/`, which is **not
+deleted on close**. Cookies accumulate, so a sign-in or a passed challenge is
+still valid next launch. It's still separate from your real browser profile,
+and the previous run's stale debug-port and lock files are cleared before
+each relaunch so an earlier crash can't wedge it. (It won't defeat a *live*
+challenge on its own — but once you or the model clears one, it stays
+cleared.)
 
 The agent is told the project root and its top-level layout at the start of
 each turn, so it doesn't guess directory names. `run_cmd` also lifts a

@@ -21,6 +21,7 @@ type bidiSession struct {
 	cmd     *exec.Cmd
 	exited  chan struct{}
 	profile string
+	persist bool // profile is a persistent dir; keep it across Close
 	conn    *websocket.Conn
 	context string // top-level browsing context (the tab we drive)
 
@@ -41,28 +42,31 @@ user_pref("datareporting.policy.dataSubmissionEnabled", false);
 user_pref("app.update.auto", false);
 `
 
-// launchFirefox starts a visible Firefox window on a throwaway profile with
-// the remote agent on an ephemeral port, and opens a BiDi session to it.
-// When useDefault is set, the throwaway profile is seeded with a copy of the
-// user's real Firefox profile so their logins are available; we run on the
-// copy rather than the original so a still-open Firefox keeps its lock and
-// the real profile is never touched.
-func launchFirefox(useDefault bool) (*bidiSession, error) {
+// launchFirefox starts a visible Firefox window with the remote agent on an
+// ephemeral port, and opens a BiDi session to it.
+//
+// The profile depends on mode: fresh is an empty throwaway; default seeds a
+// throwaway with a copy of the user's real Firefox profile (we run on the copy
+// so a still-open Firefox keeps its lock and the real profile is untouched);
+// persist is a stable dir atlas.llm reuses so cookies survive across runs. The
+// blank-window prefs go in for fresh and persist alike — a persistent profile
+// is empty on its first launch.
+func launchFirefox(mode profileMode) (*bidiSession, error) {
 	exe, err := firefoxExecutable()
 	if err != nil {
 		return nil, err
 	}
-	profile, err := browserTempProfile("atlas-firefox-")
+	profile, persist, err := resolveBrowserProfile(mode, "atlas-firefox-", "firefox")
 	if err != nil {
 		return nil, err
 	}
-	if useDefault {
+	if mode == profileDefault {
 		if err := seedFirefoxDefaultProfile(profile); err != nil {
-			killAndCleanup(nil, nil, profile)
+			killAndCleanup(nil, nil, profile, !persist)
 			return nil, err
 		}
 	} else if err := os.WriteFile(filepath.Join(profile, "user.js"), []byte(firefoxPrefs), 0644); err != nil {
-		killAndCleanup(nil, nil, profile)
+		killAndCleanup(nil, nil, profile, !persist)
 		return nil, err
 	}
 	cmd := exec.Command(exe,
@@ -75,14 +79,14 @@ func launchFirefox(useDefault bool) (*bidiSession, error) {
 		"about:blank",
 	)
 	if err := cmd.Start(); err != nil {
-		killAndCleanup(nil, nil, profile)
+		killAndCleanup(nil, nil, profile, !persist)
 		return nil, fmt.Errorf("start firefox: %w", err)
 	}
 	exited := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(exited) }()
 
 	fail := func(err error) (*bidiSession, error) {
-		killAndCleanup(cmd, exited, profile)
+		killAndCleanup(cmd, exited, profile, !persist)
 		return nil, err
 	}
 
@@ -103,7 +107,7 @@ func launchFirefox(useDefault bool) (*bidiSession, error) {
 	}
 	conn.SetReadLimit(32 << 20)
 
-	s := &bidiSession{cmd: cmd, exited: exited, profile: profile, conn: conn}
+	s := &bidiSession{cmd: cmd, exited: exited, profile: profile, persist: persist, conn: conn}
 	if _, err := s.call("session.new", map[string]any{"capabilities": map[string]any{}}, 15*time.Second); err != nil {
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 		return fail(fmt.Errorf("open BiDi session: %w", err))
@@ -389,5 +393,5 @@ func (s *bidiSession) Close() {
 	// Graceful first so the profile isn't mid-write when it's removed.
 	_, _ = s.call("browser.close", map[string]any{}, 3*time.Second)
 	_ = s.conn.Close(websocket.StatusNormalClosure, "")
-	killAndCleanup(s.cmd, s.exited, s.profile)
+	killAndCleanup(s.cmd, s.exited, s.profile, !s.persist)
 }

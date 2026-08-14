@@ -167,7 +167,7 @@ func TestActJSBuildersEmbedGuidance(t *testing.T) {
 }
 
 func TestLaunchBrowserUnknownKind(t *testing.T) {
-	if _, err := launchBrowser("safari", false); err == nil || !strings.Contains(err.Error(), "safari") {
+	if _, err := launchBrowser("safari", profileFresh); err == nil || !strings.Contains(err.Error(), "safari") {
 		t.Fatalf("unknown kind should name itself in the error, got %v", err)
 	}
 }
@@ -408,11 +408,11 @@ func testLiveSession(t *testing.T, launch func() (browserSession, error)) {
 }
 
 func TestLiveChrome(t *testing.T) {
-	testLiveSession(t, func() (browserSession, error) { return launchChrome(false) })
+	testLiveSession(t, func() (browserSession, error) { return launchChrome(profileFresh) })
 }
 
 func TestLiveFirefox(t *testing.T) {
-	testLiveSession(t, func() (browserSession, error) { return launchFirefox(false) })
+	testLiveSession(t, func() (browserSession, error) { return launchFirefox(profileFresh) })
 }
 
 // Live default-profile tests: gated by a second env var so they only run
@@ -422,14 +422,44 @@ func TestLiveChromeDefaultProfile(t *testing.T) {
 	if os.Getenv("ATLAS_BROWSER_LIVE_DEFAULT") == "" {
 		t.Skip("set ATLAS_BROWSER_LIVE_DEFAULT=1 to run default-profile live tests")
 	}
-	testLiveSession(t, func() (browserSession, error) { return launchChrome(true) })
+	testLiveSession(t, func() (browserSession, error) { return launchChrome(profileDefault) })
 }
 
 func TestLiveFirefoxDefaultProfile(t *testing.T) {
 	if os.Getenv("ATLAS_BROWSER_LIVE_DEFAULT") == "" {
 		t.Skip("set ATLAS_BROWSER_LIVE_DEFAULT=1 to run default-profile live tests")
 	}
-	testLiveSession(t, func() (browserSession, error) { return launchFirefox(true) })
+	testLiveSession(t, func() (browserSession, error) { return launchFirefox(profileDefault) })
+}
+
+// Persist live test: the two integration facts unit tests can't cover — the
+// profile dir survives Close (so state can accumulate), and a second launch
+// on the leftover dir comes up cleanly (so prepPersistentProfile really does
+// clear the stale port and lock files the first run left behind).
+func TestLivePersistProfile(t *testing.T) {
+	if os.Getenv("ATLAS_BROWSER_LIVE") == "" {
+		t.Skip("set ATLAS_BROWSER_LIVE=1 to run live browser tests")
+	}
+	dir, err := persistentBrowserProfileDir("chrome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("persistent profile at %s", dir)
+
+	s1, err := launchChrome(profilePersist)
+	if err != nil {
+		t.Fatalf("first launch: %v", err)
+	}
+	s1.Close()
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("persistent profile was deleted on Close: %v", err)
+	}
+
+	s2, err := launchChrome(profilePersist)
+	if err != nil {
+		t.Fatalf("relaunch on the persisted dir failed — stale state not cleared? %v", err)
+	}
+	s2.Close()
 }
 
 func TestBrowserOpenRejectsUnknownProfile(t *testing.T) {

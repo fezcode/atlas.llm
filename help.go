@@ -513,6 +513,13 @@ var helpTopics = []helpTopic{
 			"browser profile instead, so your existing logins are available. It " +
 			"is always a copy — your actual profile is never opened or changed, " +
 			"and new logins in the window are not saved back to it.\n\n" +
+			"For a site you return to, ask to keep the session and it launches on " +
+			"a persistent profile atlas.llm owns (under the data dir, one per " +
+			"browser family). Unlike the throwaway, this one is not deleted on " +
+			"close, so cookies survive — a sign-in, or a Cloudflare check you " +
+			"pass once, is still good on the next launch. It is separate from " +
+			"your real profile; the stale debug-port and lock files from the last " +
+			"run are cleared before each relaunch so a crash can't wedge it.\n\n" +
 			"This switch also governs MCP tools. /mcp manages connections; /tools " +
 			"decides whether the model may call anything at all.",
 		Subcommands: []helpSub{

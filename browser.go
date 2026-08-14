@@ -117,6 +117,8 @@ func init() {
 			"The user watches the window. By default it uses a fresh temporary profile with none of their logins. " +
 			"Set profile=\"default\" only when the user explicitly asks to use their own/logged-in profile: that copies " +
 			"their real browser profile so their existing logins are available. " +
+			"Set profile=\"persist\" to reuse a dedicated atlas.llm profile that is kept across runs — cookies and " +
+			"any sign-in or Cloudflare check survive to the next launch; good for a site you visit repeatedly. " +
 			"If a browser is already open this just navigates it. Confirmation required.",
 		Destructive: true,
 		Parameters: map[string]any{
@@ -133,10 +135,12 @@ func init() {
 				},
 				"profile": map[string]any{
 					"type": "string",
-					"enum": []string{"fresh", "default"},
+					"enum": []string{"fresh", "default", "persist"},
 					"description": "Which profile to launch on. 'fresh' (default) is an empty throwaway profile with no logins. " +
 						"'default' copies the user's real browser profile so their existing logins and cookies are available — " +
-						"use it only when the user explicitly asks to browse as themselves / signed in.",
+						"use it only when the user explicitly asks to browse as themselves / signed in. " +
+						"'persist' is a dedicated atlas.llm profile kept across runs, so cookies and a passed Cloudflare " +
+						"check survive to the next launch — use it for a site the user returns to that blocks fresh profiles.",
 				},
 			},
 		},
@@ -237,21 +241,19 @@ func toolBrowserOpen(args map[string]any) (string, error) {
 	url, _ := argString(args, "url", false)
 	url = normalizeURL(url)
 
-	profile, _ := argString(args, "profile", false)
-	profileSet := profile != ""
-	if profile == "" {
-		profile = "fresh"
+	profileArg, _ := argString(args, "profile", false)
+	profileSet := profileArg != ""
+	mode, err := browserProfileMode(profileArg)
+	if err != nil {
+		return "", err
 	}
-	if profile != "fresh" && profile != "default" {
-		return "", fmt.Errorf("unknown profile %q (expected fresh or default)", profile)
-	}
-	useDefault := profile == "default"
+	profile := mode.String()
 
 	browserMu.Lock()
 	defer browserMu.Unlock()
 
 	// Already running: reuse the window unless the model asked for a
-	// different browser, or explicitly asked for the other profile mode.
+	// different browser, or explicitly asked for a different profile mode.
 	if activeBrowser != nil {
 		kindMismatch := kind != "" && kind != activeBrowser.Kind()
 		profileMismatch := profileSet && profile != activeBrowserProfile
@@ -269,7 +271,7 @@ func toolBrowserOpen(args map[string]any) (string, error) {
 		}
 	}
 
-	sess, err := launchBrowser(kind, useDefault)
+	sess, err := launchBrowser(kind, mode)
 	if err != nil {
 		return "", err
 	}
@@ -282,29 +284,35 @@ func toolBrowserOpen(args map[string]any) (string, error) {
 	activeBrowser = sess
 	activeBrowserProfile = profile
 
-	profileNote := "a fresh temporary profile"
-	if useDefault {
+	var profileNote string
+	switch mode {
+	case profileDefault:
 		profileNote = "a copy of your default " + sess.Kind() + " profile — your existing logins are available, " +
 			"but changes are not written back to your real profile"
+	case profilePersist:
+		profileNote = "a persistent atlas.llm profile — cookies and logins are kept for next time, " +
+			"so a site you sign in to (or a Cloudflare check you pass) stays that way on the next launch"
+	default:
+		profileNote = "a fresh temporary profile"
 	}
 	return fmt.Sprintf("Launched %s in a visible window with %s. %s", sess.Kind(), profileNote, pageSummary(sess)), nil
 }
 
 // launchBrowser starts the requested browser, or picks one: chrome first,
-// firefox as fallback. useDefault copies the user's real profile instead of
-// starting from an empty one.
-func launchBrowser(kind string, useDefault bool) (browserSession, error) {
+// firefox as fallback. mode selects the profile — fresh, a copy of the user's
+// real one, or a persistent one atlas.llm reuses.
+func launchBrowser(kind string, mode profileMode) (browserSession, error) {
 	switch kind {
 	case "chrome":
-		return launchChrome(useDefault)
+		return launchChrome(mode)
 	case "firefox":
-		return launchFirefox(useDefault)
+		return launchFirefox(mode)
 	case "":
 		if _, err := chromeExecutable(); err == nil {
-			return launchChrome(useDefault)
+			return launchChrome(mode)
 		}
 		if _, err := firefoxExecutable(); err == nil {
-			return launchFirefox(useDefault)
+			return launchFirefox(mode)
 		}
 		return nil, fmt.Errorf("no supported browser found — install Google Chrome, Chromium, Edge, or Firefox, " +
 			"or point ATLAS_CHROME/ATLAS_FIREFOX at a browser binary")
@@ -971,6 +979,78 @@ func browserTempProfile(prefix string) (string, error) {
 	return dir, nil
 }
 
+// profileMode is which profile a launched browser runs on.
+type profileMode int
+
+const (
+	// profileFresh is an empty throwaway profile, discarded on close.
+	profileFresh profileMode = iota
+	// profileDefault copies the user's real profile into a throwaway dir,
+	// discarded on close — their logins are available, their real profile
+	// is never touched.
+	profileDefault
+	// profilePersist is a stable profile atlas.llm owns and keeps across
+	// runs, so cookies (a Cloudflare cf_clearance among them) and any
+	// challenge already solved survive to the next launch.
+	profilePersist
+)
+
+// browserProfileMode parses the browser_open profile argument. Empty defaults
+// to fresh.
+func browserProfileMode(s string) (profileMode, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "fresh":
+		return profileFresh, nil
+	case "default":
+		return profileDefault, nil
+	case "persist":
+		return profilePersist, nil
+	}
+	return profileFresh, fmt.Errorf("unknown profile %q (expected fresh, default, or persist)", s)
+}
+
+func (m profileMode) String() string {
+	switch m {
+	case profileDefault:
+		return "default"
+	case profilePersist:
+		return "persist"
+	}
+	return "fresh"
+}
+
+// persistentBrowserProfileDir is the stable per-family profile directory under
+// the atlas data dir. family is "chrome" or "firefox" — the two profile
+// formats are incompatible, so they can't share one. Created if absent.
+func persistentBrowserProfileDir(family string) (string, error) {
+	base, err := atlasDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(base, "browser-profiles", family)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("create persistent profile dir: %w", err)
+	}
+	return dir, nil
+}
+
+// resolveBrowserProfile returns the directory a launch should run on and
+// whether it is persistent (must survive Close). fresh and default get a new
+// throwaway temp dir; persist gets the stable per-family dir, cleared of the
+// previous run's stale port and lock files first.
+func resolveBrowserProfile(mode profileMode, tempPrefix, family string) (dir string, persist bool, err error) {
+	if mode == profilePersist {
+		dir, err = persistentBrowserProfileDir(family)
+		if err != nil {
+			return "", false, err
+		}
+		prepPersistentProfile(dir)
+		return dir, true, nil
+	}
+	dir, err = browserTempProfile(tempPrefix)
+	return dir, false, err
+}
+
 // waitForBrowserFile polls for a file the launching browser writes (Chrome's
 // DevToolsActivePort, Firefox's WebDriverBiDiServer.json), giving up when
 // the browser process dies or the deadline passes. exited is closed by the
@@ -990,9 +1070,11 @@ func waitForBrowserFile(path string, exited <-chan struct{}, timeout time.Durati
 	return nil, fmt.Errorf("browser did not report its debugging port within %s", timeout)
 }
 
-// killAndCleanup force-stops the browser process and removes its profile.
-// The graceful path (protocol-level close) happens before this in Close.
-func killAndCleanup(cmd *exec.Cmd, exited <-chan struct{}, profile string) {
+// killAndCleanup force-stops the browser process and, when remove is set,
+// deletes its profile. The graceful path (protocol-level close) happens
+// before this in Close. remove is false for a persistent profile, whose whole
+// point is to outlive the session.
+func killAndCleanup(cmd *exec.Cmd, exited <-chan struct{}, profile string, remove bool) {
 	if cmd != nil && cmd.Process != nil {
 		select {
 		case <-exited:
@@ -1001,7 +1083,7 @@ func killAndCleanup(cmd *exec.Cmd, exited <-chan struct{}, profile string) {
 			<-exited
 		}
 	}
-	if profile != "" {
+	if profile != "" && remove {
 		// The browser may still be flushing the profile as it exits; retry
 		// briefly rather than leaving the directory behind.
 		for i := 0; i < 5; i++ {

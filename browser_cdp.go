@@ -30,6 +30,9 @@ type cdpSession struct {
 	// is the tab the WebSocket currently drives.
 	port     int
 	targetID string
+	// persist is true when profile is a persistent dir that must survive
+	// Close rather than being deleted with the session.
+	persist bool
 
 	mu     sync.Mutex
 	nextID int64
@@ -37,24 +40,28 @@ type cdpSession struct {
 
 func (s *cdpSession) Kind() string { return "chrome" }
 
-// launchChrome starts a visible Chrome/Chromium/Edge window on a throwaway
-// profile with an ephemeral DevTools port, and connects to its first tab.
-// When useDefault is set, the throwaway profile is seeded with a copy of the
-// user's real profile so their logins are available. Chrome (since 136)
-// refuses remote debugging on the actual default data dir, so a copy is the
-// only way to drive a logged-in Chrome — and it keeps the real profile safe.
-func launchChrome(useDefault bool) (*cdpSession, error) {
+// launchChrome starts a visible Chrome/Chromium/Edge window with an ephemeral
+// DevTools port, and connects to its first tab.
+//
+// The profile depends on mode: fresh is an empty throwaway; default copies the
+// user's real profile into a throwaway so their logins are available (Chrome
+// since 136 refuses remote debugging on the actual default data dir, so a copy
+// is the only way to drive a logged-in Chrome, and it keeps the real profile
+// safe); persist is a stable dir atlas.llm owns and reuses, so cookies survive
+// across runs. Either way remote debugging runs against our own directory,
+// which the 136 restriction does not cover.
+func launchChrome(mode profileMode) (*cdpSession, error) {
 	exe, err := chromeExecutable()
 	if err != nil {
 		return nil, err
 	}
-	profile, err := browserTempProfile("atlas-chrome-")
+	profile, persist, err := resolveBrowserProfile(mode, "atlas-chrome-", "chrome")
 	if err != nil {
 		return nil, err
 	}
-	if useDefault {
+	if mode == profileDefault {
 		if err := seedChromeDefaultProfile(exe, profile); err != nil {
-			killAndCleanup(nil, nil, profile)
+			killAndCleanup(nil, nil, profile, !persist)
 			return nil, err
 		}
 	}
@@ -70,14 +77,14 @@ func launchChrome(useDefault bool) (*cdpSession, error) {
 		"about:blank",
 	)
 	if err := cmd.Start(); err != nil {
-		killAndCleanup(nil, nil, profile)
+		killAndCleanup(nil, nil, profile, !persist)
 		return nil, fmt.Errorf("start %s: %w", filepath.Base(exe), err)
 	}
 	exited := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(exited) }()
 
 	fail := func(err error) (*cdpSession, error) {
-		killAndCleanup(cmd, exited, profile)
+		killAndCleanup(cmd, exited, profile, !persist)
 		return nil, err
 	}
 
@@ -103,7 +110,7 @@ func launchChrome(useDefault bool) (*cdpSession, error) {
 	// Big pages and chatty targets can exceed the 32KB default.
 	conn.SetReadLimit(32 << 20)
 
-	s := &cdpSession{cmd: cmd, exited: exited, profile: profile, conn: conn, port: port, targetID: target.ID}
+	s := &cdpSession{cmd: cmd, exited: exited, profile: profile, persist: persist, conn: conn, port: port, targetID: target.ID}
 	s.installShim()
 	return s, nil
 }
@@ -464,5 +471,5 @@ func (s *cdpSession) Close() {
 	// Graceful first: Browser.close lets Chrome flush and exit cleanly.
 	_, _ = s.call("Browser.close", map[string]any{}, 3*time.Second)
 	_ = s.conn.Close(websocket.StatusNormalClosure, "")
-	killAndCleanup(s.cmd, s.exited, s.profile)
+	killAndCleanup(s.cmd, s.exited, s.profile, !s.persist)
 }

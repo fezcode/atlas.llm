@@ -59,6 +59,31 @@ func seedFirefoxDefaultProfile(dst string) error {
 	return nil
 }
 
+// prepPersistentProfile clears the transient files a previous run left in a
+// persistent profile dir, so a relaunch starts clean without touching real
+// profile data (cookies, Local State, history). Two classes matter:
+//
+//   - The browser's own port announcement — Chrome's DevToolsActivePort,
+//     Firefox's WebDriverBiDiServer.json. Left in place, waitForBrowserFile
+//     would read the *previous* port and connect to a dead endpoint.
+//   - Singleton/lock files. After an unclean exit these linger and can make
+//     the browser forward to nothing or refuse to open the profile.
+//
+// Everything else is deliberately preserved — that data is the feature.
+// Best-effort: a file that can't be removed is left for the browser to sort
+// out, which it usually does.
+func prepPersistentProfile(dir string) {
+	transient := []string{
+		"DevToolsActivePort",       // Chrome debug port
+		"WebDriverBiDiServer.json", // Firefox remote agent
+		"SingletonLock", "SingletonCookie", "SingletonSocket", // Chrome
+		"lock", ".parentlock", "parent.lock", // Firefox
+	}
+	for _, name := range transient {
+		_ = os.Remove(filepath.Join(dir, name))
+	}
+}
+
 // chromeUserDataDir returns the user-data directory for the Chromium-family
 // browser at exe, inferring the flavour from the executable path.
 func chromeUserDataDir(exe string) (string, error) {

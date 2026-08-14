@@ -963,3 +963,39 @@ continues while a reply streams, and that is how a multi-line message is
 composed. The test pins all three behaviours, and runs the empty case under
 both busy states so it can't silently depend on what happens to be
 downloaded on the machine running it.
+
+### 33. Persistent browser profile — SHIPPED (v0.41.0)
+A third profile mode for browser_open: `persist`, alongside `fresh` and
+`default`. It launches on a stable directory atlas.llm owns —
+`~/.atlas/atlas.llm.data/browser-profiles/<chrome|firefox>/` — that is *not*
+deleted on close, so cookies survive across runs.
+
+The motivating case is Cloudflare. A fresh throwaway profile scores badly
+(no history, no prior challenge cleared) and the `cf_clearance` cookie it
+would earn is discarded on close, so every launch starts back at the wall.
+A persistent profile keeps that cookie: clear the challenge once, stay
+cleared. It does not defeat a live challenge — that surface is the CDP
+attachment and is deliberately hard — but it stops re-earning the same pass.
+
+Design:
+- `profileMode` enum (fresh/default/persist) replaces the `useDefault bool`
+  threaded through launchChrome/launchFirefox/launchBrowser. `browserProfileMode`
+  parses the tool argument.
+- `resolveBrowserProfile` returns (dir, persist): fresh/default get a temp
+  dir, persist gets the stable per-family dir. Family matters — the two
+  profile formats are incompatible, so chrome and firefox can't share one.
+- `killAndCleanup` gained a `remove bool`; every call passes `!persist`, so
+  a persistent dir survives Close and every failure path, while throwaways
+  are still cleaned up exactly as before.
+- `prepPersistentProfile` clears the previous run's transient files before
+  relaunch — the browser's own port announcement (DevToolsActivePort /
+  WebDriverBiDiServer.json, which waitForBrowserFile would otherwise read
+  stale and connect to a dead port) and the Singleton/lock files an unclean
+  exit leaves behind. Real profile data (cookies, Local State) is preserved;
+  that data is the feature.
+
+Remote debugging runs against our own directory either way, so Chrome's
+since-136 refusal to debug the *real* default data dir never applies.
+
+Verified live on Chrome: launch persist → close → dir survives → relaunch on
+the leftover dir comes up clean (proving the stale-state prep).
