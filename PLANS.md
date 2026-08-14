@@ -944,3 +944,22 @@ Known limitations:
   request-struct fields and were left for when someone asks.
 - batch_size/ubatch_size don't feed the compute-buffer estimate — the
   estimator's 1GiB headroom absorbs the difference.
+
+#### Fixed: Enter on an empty prompt inserted a newline — (v0.40.1)
+The KeyEnter handler `break`s on empty input, and the event then falls
+through to the shared `m.textarea.Update(msg)` at the bottom of Update —
+which inserts a newline. The cursor dropped a line and the placeholder tip
+vanished until the stray "\n" was backspaced away.
+
+The first fix attempt swallowed the key only on the idle path and the test
+still failed — which is how the real shape surfaced: `newChatModel` starts
+in the busy state while the server warms up, and the busy guard sat *before*
+the empty check, so the warm-up window (and any streaming reply) hit the
+fall-through first. The empty check now runs before the busy check and
+returns early in both states.
+
+Deliberately kept: Enter on a busy *draft* still inserts a newline — typing
+continues while a reply streams, and that is how a multi-line message is
+composed. The test pins all three behaviours, and runs the empty case under
+both busy states so it can't silently depend on what happens to be
+downloaded on the machine running it.

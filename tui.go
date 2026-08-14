@@ -1063,11 +1063,19 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 		case tea.KeyEnter:
-			if m.busy {
-				break
-			}
 			input := strings.TrimSpace(m.textarea.Value())
 			if input == "" {
+				// Swallow the key instead of breaking: falling through hands
+				// Enter to the textarea, which inserts a newline — the cursor
+				// dropped a line and the placeholder tip vanished. An empty
+				// prompt has nothing to send, so the key means nothing here,
+				// busy or not — busy just made it easy to hit, since the
+				// model starts in the busy state while the server warms up.
+				return m, tea.Batch(cmds...)
+			}
+			if m.busy {
+				// Typing is allowed while a reply streams; Enter extends the
+				// draft with a newline via the textarea below.
 				break
 			}
 			m.textarea.Reset()

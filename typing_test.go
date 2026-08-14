@@ -36,6 +36,43 @@ func TestVimKeysAreTypedNotScrolled(t *testing.T) {
 	}
 }
 
+// Enter on an empty prompt used to fall through to the textarea, which
+// inserted a newline: the cursor dropped a line and the placeholder tip
+// vanished until the stray "\n" was backspaced away. An empty prompt has
+// nothing to send, so the key must mean nothing.
+func TestEnterOnEmptyPromptDoesNothing(t *testing.T) {
+	// busy is part of the test matrix: newChatModel starts busy while the
+	// server warms up, which is exactly when an idle Enter was easiest to
+	// hit — the empty prompt must swallow the key in both states.
+	for _, busy := range []bool{false, true} {
+		m := newChatModel()
+		m.busy = busy
+		var model tea.Model = m
+		model, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if got := model.(chatModel).textarea.Value(); got != "" {
+			t.Errorf("busy=%v: empty-prompt Enter left %q in the textarea, want empty", busy, got)
+		}
+		// Whitespace-only input is the same non-message.
+		m2 := model.(chatModel)
+		m2.textarea.SetValue("   ")
+		model = m2
+		model, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if got := model.(chatModel).textarea.Value(); got != "   " {
+			t.Errorf("busy=%v: whitespace-prompt Enter changed the textarea to %q", busy, got)
+		}
+	}
+	// Enter on a busy draft still inserts a newline — that is how a
+	// multi-line message is composed while a reply streams.
+	m := newChatModel()
+	m.busy = true
+	m.textarea.SetValue("draft")
+	var model tea.Model = m
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := model.(chatModel).textarea.Value(); got != "draft\n" {
+		t.Errorf("busy draft Enter = %q, want %q", got, "draft\n")
+	}
+}
+
 // The viewport must never carry scroll bindings, or the bug returns the
 // moment key forwarding is reinstated.
 func TestViewportHasNoKeyBindings(t *testing.T) {
