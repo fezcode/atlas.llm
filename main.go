@@ -137,6 +137,7 @@ func installSignalCleanup() {
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigs
+		closeActiveBrowser()
 		shutdownServer()
 		os.Exit(130)
 	}()
@@ -148,6 +149,8 @@ func main() {
 	// the first inference call. Make sure we kill it before process exit so
 	// a crashed or Ctrl+C'd CLI never orphans the backend.
 	defer shutdownServer()
+	// Same story for a browser the agent launched: never orphan it.
+	defer closeActiveBrowser()
 	var (
 		versionFlag       bool
 		helpFlag          bool

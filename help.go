@@ -341,11 +341,11 @@ var helpTopics = []helpTopic{
 		Detail: "Off by default. When on, the model can call tools instead of " +
 			"guessing — reading files, searching, editing, running commands — and " +
 			"loops until it has what it needs before answering.\n\n" +
-			"Eight built-in tools. read_file, list_dir, and grep are read-only " +
-			"and run silently. write_file, edit_file, multi_edit, run_cmd, and " +
-			"web_fetch are destructive and open a confirmation modal first: Enter " +
-			"approves, Esc denies. A denial is fed back to the model as a tool " +
-			"error so it adapts instead of retrying the same call.\n\n" +
+			"Thirteen built-in tools. read_file, list_dir, and grep are read-only " +
+			"and run silently. write_file, edit_file, multi_edit, run_cmd, " +
+			"web_fetch, and browser_open are destructive and open a confirmation " +
+			"modal first: Enter approves, Esc denies. A denial is fed back to the " +
+			"model as a tool error so it adapts instead of retrying the same call.\n\n" +
 			"Edits are partial: edit_file replaces one unique string and " +
 			"multi_edit applies a batch of them atomically, both leaving the rest " +
 			"of the file untouched. Only write_file rewrites a whole file.\n\n" +
@@ -356,6 +356,13 @@ var helpTopics = []helpTopic{
 			"addresses are refused, at every redirect hop as well as the first. " +
 			"It reads text formats and does not run JavaScript, so a page that " +
 			"builds itself in the browser comes back empty and says so.\n\n" +
+			"browser_open launches a visible Chrome or Firefox window on a " +
+			"throwaway profile — none of your logins or history — and only the " +
+			"launch needs confirmation. From there browser_navigate loads pages, " +
+			"browser_read returns their text, links, or HTML, browser_act clicks, " +
+			"types, and runs page JavaScript, and browser_close ends the session " +
+			"and deletes the profile. You watch the window the whole time; pages " +
+			"that need JavaScript work here, unlike web_fetch.\n\n" +
 			"This switch also governs MCP tools. /mcp manages connections; /tools " +
 			"decides whether the model may call anything at all.",
 		Subcommands: []helpSub{

@@ -136,18 +136,39 @@ whole file.
 | `multi_edit` | ✓           | Apply several edits to one file atomically — all or nothing.    |
 | `run_cmd`    | ✓           | Execute a shell command (30s timeout).                          |
 | `web_fetch`  | ✓           | Read one web page as text (20s timeout).                        |
+| `browser_open` | ✓         | Launch a visible Chrome or Firefox window the model can drive.  |
+| `browser_navigate` |       | Load a URL in that window and return the page's title + text.   |
+| `browser_read` |           | Read the current page: visible text, links, or raw HTML.        |
+| `browser_act`  |           | Click, type into, or send keys to page elements; run page JS.   |
+| `browser_close`|           | Close the window and discard its profile.                       |
 
 `web_fetch` needs confirmation because it is outbound, not because it
 changes anything. It strips navigation and boilerplate, keeps links absolute
 so the model can follow one, and reads text formats only — it does not run
 JavaScript, so a page that assembles itself in the browser comes back empty
-and says why.
+and says why. For pages that do need JavaScript — or anything interactive —
+use the browser tools below instead.
 
 It reaches the **public internet only**. Loopback, LAN and link-local
 addresses are refused, and the check runs against the IP actually being
 dialled — so it holds at every redirect hop, not just the URL you approved.
 Pointing it at your own dev server will not work, by design; the URL in a
 tool call comes from a model reading text it did not write.
+
+#### Browser control
+
+`browser_open` launches a real, headed browser window — you watch every page
+it visits. Chrome, Chromium, and Edge are driven over the DevTools protocol;
+Firefox over WebDriver BiDi. No driver binaries (chromedriver/geckodriver)
+are needed. The window runs on a **fresh throwaway profile**: none of your
+cookies, logins, or history are visible to the model, and the profile is
+deleted when the window closes (via `browser_close`, `/quit`, or Ctrl+C).
+
+Launching requires approval in the confirm modal; once you've approved the
+window, navigation and page interaction run freely — you can see (and close)
+the window at any time, and closing it by hand simply makes the next browser
+tool call tell the model to relaunch. If a browser lives somewhere unusual,
+point `ATLAS_CHROME` or `ATLAS_FIREFOX` at the binary.
 
 The agent is told the project root and its top-level layout at the start of
 each turn, so it doesn't guess directory names. `run_cmd` also lifts a

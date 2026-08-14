@@ -1714,7 +1714,7 @@ func (m *chatModel) handleTools(args []string) {
 			return
 		}
 		m.agentEnabled = true
-		m.pushSystem("Agentic tools enabled. Destructive actions (write/edit/run_cmd) will prompt for confirmation. Smaller models (e.g. Gemma 3 1B) may not reliably emit tool calls.")
+		m.pushSystem("Agentic tools enabled. Destructive actions (write/edit/run_cmd/browser_open) will prompt for confirmation. Smaller models (e.g. Gemma 3 1B) may not reliably emit tool calls.")
 	case "off":
 		cfg.ToolsEnabled = false
 		if err := saveConfig(cfg); err != nil {
