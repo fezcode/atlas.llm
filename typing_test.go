@@ -61,15 +61,16 @@ func TestEnterOnEmptyPromptDoesNothing(t *testing.T) {
 			t.Errorf("busy=%v: whitespace-prompt Enter changed the textarea to %q", busy, got)
 		}
 	}
-	// Enter on a busy draft still inserts a newline — that is how a
-	// multi-line message is composed while a reply streams.
+	// Enter on a busy draft is swallowed too — while the model is generating,
+	// Enter must not drop the cursor a line. The draft is preserved for the
+	// user to send once generation ends.
 	m := newChatModel()
 	m.busy = true
 	m.textarea.SetValue("draft")
 	var model tea.Model = m
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if got := model.(chatModel).textarea.Value(); got != "draft\n" {
-		t.Errorf("busy draft Enter = %q, want %q", got, "draft\n")
+	if got := model.(chatModel).textarea.Value(); got != "draft" {
+		t.Errorf("busy draft Enter = %q, want %q (Enter must not add a newline while generating)", got, "draft")
 	}
 }
 

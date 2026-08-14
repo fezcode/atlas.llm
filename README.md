@@ -222,19 +222,15 @@ Caches and lock files are left out of the copy, so it's quick and doesn't
 clash with a browser you already have open.
 
 **A persistent profile for sites you revisit.** Both profiles above are
-discarded on close, which means a fresh window can't get past a site that
-remembers you — most visibly a Cloudflare "verify you are human" check,
-which scores a brand-new profile with no history and hands its clearance out
-as a cookie the throwaway then throws away. Ask to keep the session — "open
-Chrome and remember this" — and the model passes `profile="persist"`. That
-launches on a dedicated profile atlas.llm owns, under
-`~/.atlas/atlas.llm.data/browser-profiles/<chrome|firefox>/`, which is **not
-deleted on close**. Cookies accumulate, so a sign-in or a passed challenge is
-still valid next launch. It's still separate from your real browser profile,
-and the previous run's stale debug-port and lock files are cleared before
-each relaunch so an earlier crash can't wedge it. (It won't defeat a *live*
-challenge on its own — but once you or the model clears one, it stays
-cleared.)
+discarded on close, so a fresh window arrives signed into nothing every time —
+a nuisance for a site you come back to repeatedly and want to stay logged in
+to. Ask to keep the session — "open Chrome and remember this" — and the model
+passes `profile="persist"`. That launches on a dedicated profile atlas.llm
+owns, under `~/.atlas/atlas.llm.data/browser-profiles/<chrome|firefox>/`,
+which is **not deleted on close**. Cookies and signed-in sessions accumulate,
+so signing in once carries over to the next launch. It's still separate from
+your real browser profile, and the previous run's stale debug-port and lock
+files are cleared before each relaunch so an earlier crash can't wedge it.
 
 The agent is told the project root and its top-level layout at the start of
 each turn, so it doesn't guess directory names. `run_cmd` also lifts a

@@ -1074,9 +1074,12 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(cmds...)
 			}
 			if m.busy {
-				// Typing is allowed while a reply streams; Enter extends the
-				// draft with a newline via the textarea below.
-				break
+				// While the model is generating, swallow Enter entirely: it
+				// can't submit yet, and falling through to the textarea would
+				// just type a newline and drop the cursor a line. Other keys
+				// still reach the textarea, so a next message can be drafted
+				// while the reply streams; Enter sends it once generation ends.
+				return m, tea.Batch(cmds...)
 			}
 			m.textarea.Reset()
 			m.recordHistory(input)

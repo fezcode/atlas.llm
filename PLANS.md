@@ -970,12 +970,13 @@ A third profile mode for browser_open: `persist`, alongside `fresh` and
 `~/.atlas/atlas.llm.data/browser-profiles/<chrome|firefox>/` — that is *not*
 deleted on close, so cookies survive across runs.
 
-The motivating case is Cloudflare. A fresh throwaway profile scores badly
-(no history, no prior challenge cleared) and the `cf_clearance` cookie it
-would earn is discarded on close, so every launch starts back at the wall.
-A persistent profile keeps that cookie: clear the challenge once, stay
-cleared. It does not defeat a live challenge — that surface is the CDP
-attachment and is deliberately hard — but it stops re-earning the same pass.
+The motivating case is staying signed in. A fresh throwaway profile carries
+no cookies, so a site the user returns to has to be logged into again on
+every launch. A persistent profile keeps the session cookies, so signing in
+once carries over. Sites that gate access on a profile's reputation (aged
+cookies, real history) also fare better on a profile that accumulates that
+state than on a blank one — though a live automation check is a separate
+surface (the CDP attachment) that a profile alone doesn't change.
 
 Design:
 - `profileMode` enum (fresh/default/persist) replaces the `useDefault bool`
@@ -1009,3 +1010,13 @@ line. The v0.40.1 fix only returned early on the *empty* path; the submit path
 still fell through. It now returns right after queueing the send. Pinned by a
 test asserting the textarea is empty (not "\n") after an Enter that starts a
 turn.
+
+#### Fixed: Enter added a newline while the model was generating — (v0.41.2)
+The third and last face of the same fall-through. Enter on a busy session
+(a reply streaming) hit `break` and fell through to the textarea, typing a
+newline and dropping the cursor a line. The earlier rationale — "compose a
+multi-line message while a reply streams" — was not worth the everyday
+surprise of Enter moving the cursor mid-generation, so Enter is now swallowed
+outright while busy. Other keys still reach the textarea, so a next message
+can be drafted while the reply streams and sent once it ends. The busy-draft
+test flipped to assert the draft is unchanged.

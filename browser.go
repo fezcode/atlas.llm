@@ -118,8 +118,8 @@ func init() {
 			"Set profile=\"default\" only when the user explicitly asks to use their own/logged-in profile: that copies " +
 			"their real browser profile so their existing logins are available. " +
 			"Set profile=\"persist\" to reuse a dedicated atlas.llm profile that is kept across runs — cookies and " +
-			"any sign-in or Cloudflare check survive to the next launch; good for a site you visit repeatedly. " +
-			"If a browser is already open this just navigates it. Confirmation required.",
+			"signed-in sessions survive to the next launch; good for a site the user visits repeatedly and wants to " +
+			"stay logged in to. If a browser is already open this just navigates it. Confirmation required.",
 		Destructive: true,
 		Parameters: map[string]any{
 			"type": "object",
@@ -139,8 +139,8 @@ func init() {
 					"description": "Which profile to launch on. 'fresh' (default) is an empty throwaway profile with no logins. " +
 						"'default' copies the user's real browser profile so their existing logins and cookies are available — " +
 						"use it only when the user explicitly asks to browse as themselves / signed in. " +
-						"'persist' is a dedicated atlas.llm profile kept across runs, so cookies and a passed Cloudflare " +
-						"check survive to the next launch — use it for a site the user returns to that blocks fresh profiles.",
+						"'persist' is a dedicated atlas.llm profile kept across runs, so cookies and signed-in sessions " +
+						"survive to the next launch — use it for a site the user returns to and wants to stay logged in to.",
 				},
 			},
 		},
@@ -291,7 +291,7 @@ func toolBrowserOpen(args map[string]any) (string, error) {
 			"but changes are not written back to your real profile"
 	case profilePersist:
 		profileNote = "a persistent atlas.llm profile — cookies and logins are kept for next time, " +
-			"so a site you sign in to (or a Cloudflare check you pass) stays that way on the next launch"
+			"so a site you sign in to stays signed in on the next launch"
 	default:
 		profileNote = "a fresh temporary profile"
 	}
@@ -990,8 +990,8 @@ const (
 	// is never touched.
 	profileDefault
 	// profilePersist is a stable profile atlas.llm owns and keeps across
-	// runs, so cookies (a Cloudflare cf_clearance among them) and any
-	// challenge already solved survive to the next launch.
+	// runs, so cookies and signed-in sessions survive to the next launch
+	// instead of being discarded with the window.
 	profilePersist
 )
 

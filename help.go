@@ -516,10 +516,10 @@ var helpTopics = []helpTopic{
 			"For a site you return to, ask to keep the session and it launches on " +
 			"a persistent profile atlas.llm owns (under the data dir, one per " +
 			"browser family). Unlike the throwaway, this one is not deleted on " +
-			"close, so cookies survive — a sign-in, or a Cloudflare check you " +
-			"pass once, is still good on the next launch. It is separate from " +
-			"your real profile; the stale debug-port and lock files from the last " +
-			"run are cleared before each relaunch so a crash can't wedge it.\n\n" +
+			"close, so cookies and signed-in sessions survive — sign in once and " +
+			"the next launch is still logged in. It is separate from your real " +
+			"profile; the stale debug-port and lock files from the last run are " +
+			"cleared before each relaunch so a crash can't wedge it.\n\n" +
 			"This switch also governs MCP tools. /mcp manages connections; /tools " +
 			"decides whether the model may call anything at all.",
 		Subcommands: []helpSub{

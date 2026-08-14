@@ -53,8 +53,8 @@ func TestPersistentProfileDirIsStableAndUnderData(t *testing.T) {
 		t.Errorf("persistent dir = %q, want %q", dir, want)
 	}
 	// It must be created, and stable across calls — that stability is the
-	// whole feature: the cf_clearance cookie has to land in the same place
-	// next launch.
+	// whole feature: a session cookie has to land in the same place next
+	// launch.
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		t.Errorf("persistent dir not created: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestKillAndCleanupRespectsRemoveFlag(t *testing.T) {
 	// remove=false leaves the directory — this is what keeps a persistent
 	// profile alive across sessions.
 	keep := t.TempDir()
-	marker := filepath.Join(keep, "cf_clearance")
+	marker := filepath.Join(keep, "session-cookie")
 	if err := os.WriteFile(marker, []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
