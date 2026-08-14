@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -123,7 +124,7 @@ func TestBrowserActValidation(t *testing.T) {
 }
 
 func TestLaunchBrowserUnknownKind(t *testing.T) {
-	if _, err := launchBrowser("safari"); err == nil || !strings.Contains(err.Error(), "safari") {
+	if _, err := launchBrowser("safari", false); err == nil || !strings.Contains(err.Error(), "safari") {
 		t.Fatalf("unknown kind should name itself in the error, got %v", err)
 	}
 }
@@ -212,11 +213,145 @@ func testLiveSession(t *testing.T, launch func() (browserSession, error)) {
 }
 
 func TestLiveChrome(t *testing.T) {
-	testLiveSession(t, func() (browserSession, error) { return launchChrome() })
+	testLiveSession(t, func() (browserSession, error) { return launchChrome(false) })
 }
 
 func TestLiveFirefox(t *testing.T) {
-	testLiveSession(t, func() (browserSession, error) { return launchFirefox() })
+	testLiveSession(t, func() (browserSession, error) { return launchFirefox(false) })
+}
+
+// Live default-profile tests: gated by a second env var so they only run
+// when someone explicitly wants a real profile copied. They just verify the
+// session comes up on the seeded copy; they don't assert on any login.
+func TestLiveChromeDefaultProfile(t *testing.T) {
+	if os.Getenv("ATLAS_BROWSER_LIVE_DEFAULT") == "" {
+		t.Skip("set ATLAS_BROWSER_LIVE_DEFAULT=1 to run default-profile live tests")
+	}
+	testLiveSession(t, func() (browserSession, error) { return launchChrome(true) })
+}
+
+func TestLiveFirefoxDefaultProfile(t *testing.T) {
+	if os.Getenv("ATLAS_BROWSER_LIVE_DEFAULT") == "" {
+		t.Skip("set ATLAS_BROWSER_LIVE_DEFAULT=1 to run default-profile live tests")
+	}
+	testLiveSession(t, func() (browserSession, error) { return launchFirefox(true) })
+}
+
+func TestBrowserOpenRejectsUnknownProfile(t *testing.T) {
+	browserMu.Lock()
+	activeBrowser = nil
+	browserMu.Unlock()
+	if _, err := toolBrowserOpen(map[string]any{"profile": "mine"}); err == nil || !strings.Contains(err.Error(), "profile") {
+		t.Fatalf("unknown profile should error naming the arg, got %v", err)
+	}
+}
+
+func TestChromeUserDataDir(t *testing.T) {
+	// Path-based flavour detection, checked by a lowercased token that appears
+	// in that flavour's data dir on every OS (chrome/chromium/edge/brave) but
+	// not in the others'.
+	cases := map[string]string{
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome":   "chrome",
+		"/opt/google/chrome/chrome":                                      "chrome",
+		"/usr/bin/chromium-browser":                                      "chromium",
+		"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge": "edge",
+		"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser":   "brave",
+	}
+	for exe, want := range cases {
+		dir, err := chromeUserDataDir(exe)
+		if err != nil {
+			t.Fatalf("chromeUserDataDir(%q): %v", exe, err)
+		}
+		if !strings.Contains(strings.ToLower(dir), want) {
+			t.Errorf("chromeUserDataDir(%q) = %q, want it to contain %q", exe, dir, want)
+		}
+	}
+}
+
+func TestParseFirefoxDefaultProfile(t *testing.T) {
+	// Install section wins over Profile flags.
+	ini := []byte(`[Profile1]
+Name=default
+IsRelative=1
+Path=Profiles/aaaa.default
+Default=1
+
+[Profile0]
+Name=default-release
+IsRelative=1
+Path=Profiles/bbbb.default-release
+
+[Install123]
+Default=Profiles/bbbb.default-release
+Locked=1
+`)
+	path, absolute := parseFirefoxDefaultProfile(ini)
+	if path != "Profiles/bbbb.default-release" || absolute {
+		t.Fatalf("install default: got %q absolute=%v", path, absolute)
+	}
+
+	// No Install section → fall back to the Default=1 profile.
+	ini = []byte("[Profile0]\nIsRelative=1\nPath=Profiles/only.default\nDefault=1\n")
+	if path, absolute = parseFirefoxDefaultProfile(ini); path != "Profiles/only.default" || absolute {
+		t.Fatalf("profile default: got %q absolute=%v", path, absolute)
+	}
+
+	// Absolute path is reported as such.
+	ini = []byte("[Profile0]\nIsRelative=0\nPath=/custom/place\nDefault=1\n")
+	if path, absolute = parseFirefoxDefaultProfile(ini); path != "/custom/place" || !absolute {
+		t.Fatalf("absolute: got %q absolute=%v", path, absolute)
+	}
+
+	// Nothing marked default.
+	if path, _ = parseFirefoxDefaultProfile([]byte("[General]\nVersion=2\n")); path != "" {
+		t.Fatalf("no default should be empty, got %q", path)
+	}
+}
+
+func TestProfileSkipPredicates(t *testing.T) {
+	if !skipChromeProfileEntry("Cache", true) || !skipChromeProfileEntry("SingletonLock", false) {
+		t.Error("chrome skip should drop caches and singleton locks")
+	}
+	if skipChromeProfileEntry("Cookies", false) || skipChromeProfileEntry("Login Data", false) {
+		t.Error("chrome skip must keep cookies and login data")
+	}
+	if !skipFirefoxProfileEntry("cache2", true) || !skipFirefoxProfileEntry(".parentlock", false) {
+		t.Error("firefox skip should drop cache and lock")
+	}
+	if skipFirefoxProfileEntry("cookies.sqlite", false) || skipFirefoxProfileEntry("logins.json", false) {
+		t.Error("firefox skip must keep cookies and logins")
+	}
+}
+
+func TestCopyTreeFiltersAndCopies(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	mustWriteTree(t, filepath.Join(src, "Cookies"), "keepme")
+	mustWriteTree(t, filepath.Join(src, "Cache", "big.bin"), "dropme")
+	mustWriteTree(t, filepath.Join(src, "sub", "Login Data"), "nested")
+
+	if err := copyTree(src, dst, skipChromeProfileEntry); err != nil {
+		t.Fatalf("copyTree: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "Cookies")); err != nil || string(b) != "keepme" {
+		t.Errorf("Cookies not copied: %q err=%v", b, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "sub", "Login Data")); err != nil || string(b) != "nested" {
+		t.Errorf("nested file not copied: %q err=%v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "Cache")); !os.IsNotExist(err) {
+		t.Error("Cache directory should have been skipped")
+	}
+}
+
+func mustWriteTree(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestReadPageUsesEval(t *testing.T) {

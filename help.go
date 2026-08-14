@@ -363,6 +363,10 @@ var helpTopics = []helpTopic{
 			"types, and runs page JavaScript, and browser_close ends the session " +
 			"and deletes the profile. You watch the window the whole time; pages " +
 			"that need JavaScript work here, unlike web_fetch.\n\n" +
+			"Ask to browse as yourself and it opens on a copy of your real " +
+			"browser profile instead, so your existing logins are available. It " +
+			"is always a copy — your actual profile is never opened or changed, " +
+			"and new logins in the window are not saved back to it.\n\n" +
 			"This switch also governs MCP tools. /mcp manages connections; /tools " +
 			"decides whether the model may call anything at all.",
 		Subcommands: []helpSub{

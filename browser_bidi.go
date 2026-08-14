@@ -42,7 +42,11 @@ user_pref("app.update.auto", false);
 
 // launchFirefox starts a visible Firefox window on a throwaway profile with
 // the remote agent on an ephemeral port, and opens a BiDi session to it.
-func launchFirefox() (*bidiSession, error) {
+// When useDefault is set, the throwaway profile is seeded with a copy of the
+// user's real Firefox profile so their logins are available; we run on the
+// copy rather than the original so a still-open Firefox keeps its lock and
+// the real profile is never touched.
+func launchFirefox(useDefault bool) (*bidiSession, error) {
 	exe, err := firefoxExecutable()
 	if err != nil {
 		return nil, err
@@ -51,7 +55,12 @@ func launchFirefox() (*bidiSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(profile, "user.js"), []byte(firefoxPrefs), 0644); err != nil {
+	if useDefault {
+		if err := seedFirefoxDefaultProfile(profile); err != nil {
+			killAndCleanup(nil, nil, profile)
+			return nil, err
+		}
+	} else if err := os.WriteFile(filepath.Join(profile, "user.js"), []byte(firefoxPrefs), 0644); err != nil {
 		killAndCleanup(nil, nil, profile)
 		return nil, err
 	}

@@ -43,6 +43,10 @@ var errBrowserGone = fmt.Errorf("browser is no longer running")
 var (
 	browserMu     sync.Mutex
 	activeBrowser browserSession
+	// activeBrowserProfile records how the open window was launched
+	// ("fresh" or "default"), so a browser_open asking for the other kind
+	// relaunches instead of silently reusing the wrong profile.
+	activeBrowserProfile string
 )
 
 // closeActiveBrowser tears down the launched browser (if any). Called on
@@ -54,6 +58,7 @@ func closeActiveBrowser() {
 	if activeBrowser != nil {
 		activeBrowser.Close()
 		activeBrowser = nil
+		activeBrowserProfile = ""
 	}
 }
 
@@ -70,6 +75,7 @@ func withBrowser(fn func(browserSession) (string, error)) (string, error) {
 	if err != nil && strings.Contains(err.Error(), errBrowserGone.Error()) {
 		activeBrowser.Close()
 		activeBrowser = nil
+		activeBrowserProfile = ""
 		return "", fmt.Errorf("the browser window was closed — call browser_open to relaunch it")
 	}
 	return out, err
@@ -79,7 +85,9 @@ func init() {
 	toolRegistry["browser_open"] = Tool{
 		Name: "browser_open",
 		Description: "Launch a visible Chrome or Firefox window that you can then drive with the other browser_* tools. " +
-			"The user watches the window; it uses a fresh temporary profile with none of their logins. " +
+			"The user watches the window. By default it uses a fresh temporary profile with none of their logins. " +
+			"Set profile=\"default\" only when the user explicitly asks to use their own/logged-in profile: that copies " +
+			"their real browser profile so their existing logins are available. " +
 			"If a browser is already open this just navigates it. Confirmation required.",
 		Destructive: true,
 		Parameters: map[string]any{
@@ -93,6 +101,13 @@ func init() {
 				"url": map[string]any{
 					"type":        "string",
 					"description": "Page to open right away. Optional; defaults to a blank tab.",
+				},
+				"profile": map[string]any{
+					"type": "string",
+					"enum": []string{"fresh", "default"},
+					"description": "Which profile to launch on. 'fresh' (default) is an empty throwaway profile with no logins. " +
+						"'default' copies the user's real browser profile so their existing logins and cookies are available — " +
+						"use it only when the user explicitly asks to browse as themselves / signed in.",
 				},
 			},
 		},
@@ -170,15 +185,28 @@ func toolBrowserOpen(args map[string]any) (string, error) {
 	url, _ := argString(args, "url", false)
 	url = normalizeURL(url)
 
+	profile, _ := argString(args, "profile", false)
+	profileSet := profile != ""
+	if profile == "" {
+		profile = "fresh"
+	}
+	if profile != "fresh" && profile != "default" {
+		return "", fmt.Errorf("unknown profile %q (expected fresh or default)", profile)
+	}
+	useDefault := profile == "default"
+
 	browserMu.Lock()
 	defer browserMu.Unlock()
 
-	// Already running: reuse the window unless the model asked for the other
-	// browser by name.
+	// Already running: reuse the window unless the model asked for a
+	// different browser, or explicitly asked for the other profile mode.
 	if activeBrowser != nil {
-		if kind != "" && kind != activeBrowser.Kind() {
+		kindMismatch := kind != "" && kind != activeBrowser.Kind()
+		profileMismatch := profileSet && profile != activeBrowserProfile
+		if kindMismatch || profileMismatch {
 			activeBrowser.Close()
 			activeBrowser = nil
+			activeBrowserProfile = ""
 		} else {
 			if url != "" {
 				if err := activeBrowser.Navigate(url); err != nil {
@@ -189,7 +217,7 @@ func toolBrowserOpen(args map[string]any) (string, error) {
 		}
 	}
 
-	sess, err := launchBrowser(kind)
+	sess, err := launchBrowser(kind, useDefault)
 	if err != nil {
 		return "", err
 	}
@@ -200,23 +228,31 @@ func toolBrowserOpen(args map[string]any) (string, error) {
 		}
 	}
 	activeBrowser = sess
-	return fmt.Sprintf("Launched %s in a visible window with a fresh temporary profile. %s", sess.Kind(), pageSummary(sess)), nil
+	activeBrowserProfile = profile
+
+	profileNote := "a fresh temporary profile"
+	if useDefault {
+		profileNote = "a copy of your default " + sess.Kind() + " profile — your existing logins are available, " +
+			"but changes are not written back to your real profile"
+	}
+	return fmt.Sprintf("Launched %s in a visible window with %s. %s", sess.Kind(), profileNote, pageSummary(sess)), nil
 }
 
 // launchBrowser starts the requested browser, or picks one: chrome first,
-// firefox as fallback.
-func launchBrowser(kind string) (browserSession, error) {
+// firefox as fallback. useDefault copies the user's real profile instead of
+// starting from an empty one.
+func launchBrowser(kind string, useDefault bool) (browserSession, error) {
 	switch kind {
 	case "chrome":
-		return launchChrome()
+		return launchChrome(useDefault)
 	case "firefox":
-		return launchFirefox()
+		return launchFirefox(useDefault)
 	case "":
 		if _, err := chromeExecutable(); err == nil {
-			return launchChrome()
+			return launchChrome(useDefault)
 		}
 		if _, err := firefoxExecutable(); err == nil {
-			return launchFirefox()
+			return launchFirefox(useDefault)
 		}
 		return nil, fmt.Errorf("no supported browser found — install Google Chrome, Chromium, Edge, or Firefox, " +
 			"or point ATLAS_CHROME/ATLAS_FIREFOX at a browser binary")

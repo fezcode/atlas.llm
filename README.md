@@ -170,6 +170,17 @@ the window at any time, and closing it by hand simply makes the next browser
 tool call tell the model to relaunch. If a browser lives somewhere unusual,
 point `ATLAS_CHROME` or `ATLAS_FIREFOX` at the binary.
 
+**Using your own logged-in profile.** By default the window is signed into
+nothing. If you ask to browse as yourself — "open Chrome with my profile" —
+the model passes `profile="default"`, and atlas launches on a **copy of your
+real browser profile**, so your existing logins and cookies come along. It's
+always a copy: your actual profile is never opened or modified (modern Chrome
+refuses remote control of the live default profile anyway, and copying keeps
+a crash or stray click from touching your real data), which also means it's a
+point-in-time snapshot — new logins made in the window aren't written back.
+Caches and lock files are left out of the copy, so it's quick and doesn't
+clash with a browser you already have open.
+
 The agent is told the project root and its top-level layout at the start of
 each turn, so it doesn't guess directory names. `run_cmd` also lifts a
 leading `cd` into its working directory — each call is a fresh shell, so

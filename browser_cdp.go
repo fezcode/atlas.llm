@@ -33,7 +33,11 @@ func (s *cdpSession) Kind() string { return "chrome" }
 
 // launchChrome starts a visible Chrome/Chromium/Edge window on a throwaway
 // profile with an ephemeral DevTools port, and connects to its first tab.
-func launchChrome() (*cdpSession, error) {
+// When useDefault is set, the throwaway profile is seeded with a copy of the
+// user's real profile so their logins are available. Chrome (since 136)
+// refuses remote debugging on the actual default data dir, so a copy is the
+// only way to drive a logged-in Chrome — and it keeps the real profile safe.
+func launchChrome(useDefault bool) (*cdpSession, error) {
 	exe, err := chromeExecutable()
 	if err != nil {
 		return nil, err
@@ -41,6 +45,12 @@ func launchChrome() (*cdpSession, error) {
 	profile, err := browserTempProfile("atlas-chrome-")
 	if err != nil {
 		return nil, err
+	}
+	if useDefault {
+		if err := seedChromeDefaultProfile(exe, profile); err != nil {
+			killAndCleanup(nil, nil, profile)
+			return nil, err
+		}
 	}
 	cmd := exec.Command(exe,
 		// Port 0: Chrome picks a free port and writes it to
