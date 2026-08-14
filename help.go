@@ -359,10 +359,14 @@ var helpTopics = []helpTopic{
 			"browser_open launches a visible Chrome or Firefox window on a " +
 			"throwaway profile — none of your logins or history — and only the " +
 			"launch needs confirmation. From there browser_navigate loads pages, " +
-			"browser_read returns their text, links, or HTML, browser_act clicks, " +
-			"types, and runs page JavaScript, and browser_close ends the session " +
-			"and deletes the profile. You watch the window the whole time; pages " +
-			"that need JavaScript work here, unlike web_fetch.\n\n" +
+			"browser_read returns their text, links, or HTML, browser_act drives " +
+			"the page (click, type, hover, select, clear, get, scroll, wait, " +
+			"back/forward/reload, or raw eval), and browser_close ends the session " +
+			"and deletes the profile. browser_act targets elements by their " +
+			"visible text — click \"Sign in\", type into \"Search\" — not just CSS " +
+			"selectors, and a target it can't find comes back as an error naming " +
+			"the miss instead of failing silently. You watch the window the whole " +
+			"time; pages that need JavaScript work here, unlike web_fetch.\n\n" +
 			"Ask to browse as yourself and it opens on a copy of your real " +
 			"browser profile instead, so your existing logins are available. It " +
 			"is always a copy — your actual profile is never opened or changed, " +

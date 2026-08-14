@@ -110,16 +110,57 @@ func TestBrowserToolsWithoutSession(t *testing.T) {
 }
 
 func TestBrowserActValidation(t *testing.T) {
+	// These fail on argument validation before any browser is needed.
 	cases := []map[string]any{
-		{"action": "click"},                  // no selector
-		{"action": "type"},                   // no selector
-		{"action": "eval"},                   // no js
-		{"action": "hover", "selector": "a"}, // unknown action
+		{"action": "click"},                    // no text or selector
+		{"action": "type", "text": "q"},        // missing value
+		{"action": "type", "value": "hi"},      // missing target
+		{"action": "select", "selector": "#s"}, // missing value
+		{"action": "hover"},                    // no target
+		{"action": "get"},                      // no target
+		{"action": "clear"},                    // no target
+		{"action": "wait"},                     // nothing to wait for
+		{"action": "eval"},                     // no js
+		{"action": "teleport"},                 // unknown action
 	}
 	for _, args := range cases {
 		if _, err := toolBrowserAct(args); err == nil {
 			t.Errorf("toolBrowserAct(%v) should error", args)
 		}
+	}
+}
+
+func TestDecodeActResult(t *testing.T) {
+	out, err := decodeActResult(`{"ok":true,"msg":"clicked <a>"}`)
+	if err != nil || !strings.Contains(out, "clicked") {
+		t.Errorf("ok envelope: got %q err=%v", out, err)
+	}
+	// A miss (ok:false) must surface as a Go error carrying the guidance.
+	if _, err = decodeActResult(`{"ok":false,"msg":"no clickable element found"}`); err == nil ||
+		!strings.Contains(err.Error(), "no clickable element") {
+		t.Errorf("miss should be an error, got %v", err)
+	}
+	// Non-envelope output is passed through rather than swallowed.
+	if out, err = decodeActResult("raw string"); err != nil || out != "raw string" {
+		t.Errorf("raw passthrough: got %q err=%v", out, err)
+	}
+}
+
+// The action JS builders must embed the target and, on a miss, the directive
+// hint — that hint is what stops the model repeating a failed call.
+func TestActJSBuildersEmbedGuidance(t *testing.T) {
+	if js := clickJS("", "Sign in"); !strings.Contains(js, "Sign in") ||
+		!strings.Contains(js, "do not repeat this exact call") {
+		t.Error("clickJS should embed the text and the do-not-repeat hint")
+	}
+	if js := typeJS("#q", "", "hello"); !strings.Contains(js, "hello") || !strings.Contains(js, "__findField") {
+		t.Error("typeJS should embed the value and use the field finder")
+	}
+	if js := scrollJS("", "bottom"); !strings.Contains(js, "scrollHeight") {
+		t.Error("scrollJS should handle the bottom direction")
+	}
+	if js := selectJS("", "Country", "France"); !strings.Contains(js, "France") {
+		t.Error("selectJS should embed the option")
 	}
 }
 
@@ -175,8 +216,13 @@ func TestWithBrowserClearsDeadSession(t *testing.T) {
 }
 
 // liveBrowserPage is a self-contained page for the live tests below, so
-// they don't depend on the network.
-const liveBrowserPage = `data:text/html,<title>atlas live test</title><form><input id="q" name="q"></form><a id="l" href="%23x">a link</a>`
+// they don't depend on the network. It carries a labelled field, a
+// button, a dropdown, and a link so every action has something to hit.
+const liveBrowserPage = `data:text/html,<title>atlas live test</title>` +
+	`<form><label>Search <input id="q" name="q"></label>` +
+	`<select id="country"><option>France</option><option>Spain</option></select>` +
+	`<button type="button">Sign in</button></form>` +
+	`<a id="l" href="%23x">a link</a><p id="p">hello world</p>`
 
 // testLiveSession runs the full drive cycle — navigate, read, type, click —
 // against a real browser window. Gated behind ATLAS_BROWSER_LIVE=1 because
@@ -198,14 +244,45 @@ func testLiveSession(t *testing.T, launch func() (browserSession, error)) {
 	if err != nil || !strings.Contains(out, "atlas live test") {
 		t.Fatalf("readPage: got %q err=%v", out, err)
 	}
-	if out, err = s.Eval(typeJS("#q", "hello")); err != nil || !strings.Contains(out, "typed into") {
-		t.Fatalf("type: got %q err=%v", out, err)
+	// Each action is exercised through the same envelope the tool decodes.
+	okEval := func(label, js string) {
+		t.Helper()
+		out, err := s.Eval(js)
+		if err != nil {
+			t.Fatalf("%s: eval error: %v", label, err)
+		}
+		if res, derr := decodeActResult(out); derr != nil {
+			t.Fatalf("%s: not ok: %v (raw %q)", label, derr, out)
+		} else if res == "" {
+			t.Fatalf("%s: empty ok message", label)
+		}
 	}
+
+	// Type into a field located by its label text, not a selector.
+	okEval("type by label", typeJS("", "Search", "hello"))
 	if out, err = s.Eval(`document.querySelector("#q").value`); err != nil || out != "hello" {
 		t.Fatalf("typed value: got %q err=%v", out, err)
 	}
-	if out, err = s.Eval(clickJS("#l")); err != nil || !strings.Contains(out, "clicked") {
-		t.Fatalf("click: got %q err=%v", out, err)
+	okEval("clear", clearJS("", "Search"))
+	if out, err = s.Eval(`document.querySelector("#q").value`); err != nil || out != "" {
+		t.Fatalf("clear left value: got %q err=%v", out, err)
+	}
+	okEval("select option by text", selectJS("#country", "", "Spain"))
+	if out, err = s.Eval(`document.querySelector("#country").value`); err != nil || out != "Spain" {
+		t.Fatalf("select value: got %q err=%v", out, err)
+	}
+	okEval("hover button", hoverJS("", "Sign in"))
+	okEval("get paragraph", getJS("#p", ""))
+	okEval("scroll to bottom", scrollJS("", "bottom"))
+	okEval("click by text", clickJS("", "a link"))
+
+	// A miss must be ok:false so the tool layer turns it into an error.
+	if out, err = s.Eval(clickJS("", "no such button")); err != nil || !strings.Contains(out, `"ok":false`) {
+		t.Fatalf("click miss should be ok:false: got %q err=%v", out, err)
+	}
+	// wait finds text that is already present.
+	if out, err = waitForPage(s, "", "hello world"); err != nil || !strings.Contains(out, "found") {
+		t.Fatalf("wait for present text: got %q err=%v", out, err)
 	}
 	if out, err = readPage(s, "links"); err != nil || !strings.Contains(out, "a link") {
 		t.Fatalf("links: got %q err=%v", out, err)

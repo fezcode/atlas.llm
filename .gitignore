@@ -2,3 +2,5 @@ build/
 project_context.md
 SUMMARY.md
 *.exe
+# `go build ./...` drops the compiled main package here as a bare binary.
+/atlas.llm

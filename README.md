@@ -139,7 +139,7 @@ whole file.
 | `browser_open` | ✓         | Launch a visible Chrome or Firefox window the model can drive.  |
 | `browser_navigate` |       | Load a URL in that window and return the page's title + text.   |
 | `browser_read` |           | Read the current page: visible text, links, or raw HTML.        |
-| `browser_act`  |           | Click, type into, or send keys to page elements; run page JS.   |
+| `browser_act`  |           | Click, type, hover, select, scroll, wait, go back/forward, run JS — target by visible text or CSS. |
 | `browser_close`|           | Close the window and discard its profile.                       |
 
 `web_fetch` needs confirmation because it is outbound, not because it
@@ -169,6 +169,19 @@ window, navigation and page interaction run freely — you can see (and close)
 the window at any time, and closing it by hand simply makes the next browser
 tool call tell the model to relaunch. If a browser lives somewhere unusual,
 point `ATLAS_CHROME` or `ATLAS_FIREFOX` at the binary.
+
+**Targeting by what you see.** `browser_act` takes a target either as a CSS
+selector or as the element's **visible text** — `text="Sign in"` clicks the
+Sign in button, `text="Search"` finds the field with that label or
+placeholder. Text is preferred because a small model can read a page and name
+what it wants far more reliably than it can hand-write a selector. Its actions
+cover the usual browsing verbs: `click`, `type`, `press`, `hover`, `select`
+(dropdowns), `clear`, `get` (read one element's text/value/link), `scroll`,
+`wait` (block until text or a selector appears — useful for pages that load
+content after the first paint), `back`/`forward`/`reload`, and `eval` for raw
+page JavaScript. When a target isn't found the call comes back as an **error**
+naming what was searched for and telling the model to read the page rather
+than repeat the same call — so a wrong guess self-corrects instead of looping.
 
 **Using your own logged-in profile.** By default the window is signed into
 nothing. If you ask to browse as yourself — "open Chrome with my profile" —
