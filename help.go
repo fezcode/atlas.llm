@@ -341,11 +341,12 @@ var helpTopics = []helpTopic{
 		Detail: "Off by default. When on, the model can call tools instead of " +
 			"guessing — reading files, searching, editing, running commands — and " +
 			"loops until it has what it needs before answering.\n\n" +
-			"Thirteen built-in tools. read_file, list_dir, and grep are read-only " +
+			"Sixteen built-in tools. read_file, list_dir, and grep are read-only " +
 			"and run silently. write_file, edit_file, multi_edit, run_cmd, " +
-			"web_fetch, and browser_open are destructive and open a confirmation " +
-			"modal first: Enter approves, Esc denies. A denial is fed back to the " +
-			"model as a tool error so it adapts instead of retrying the same call.\n\n" +
+			"web_fetch, browser_open, and browser_upload are destructive and open " +
+			"a confirmation modal first: Enter approves, Esc denies. A denial is " +
+			"fed back to the model as a tool error so it adapts instead of " +
+			"retrying the same call.\n\n" +
 			"Edits are partial: edit_file replaces one unique string and " +
 			"multi_edit applies a batch of them atomically, both leaving the rest " +
 			"of the file untouched. Only write_file rewrites a whole file.\n\n" +
@@ -359,13 +360,22 @@ var helpTopics = []helpTopic{
 			"browser_open launches a visible Chrome or Firefox window on a " +
 			"throwaway profile — none of your logins or history — and only the " +
 			"launch needs confirmation. From there browser_navigate loads pages, " +
-			"browser_read returns their text, links, or HTML, browser_act drives " +
-			"the page (click, type, hover, select, clear, get, scroll, wait, " +
-			"back/forward/reload, or raw eval), and browser_close ends the session " +
-			"and deletes the profile. browser_act targets elements by their " +
+			"browser_read returns their text, links, HTML, or console output " +
+			"(including JavaScript errors, and any alert/confirm/prompt dialogs, " +
+			"which are auto-answered so they can never hang the session), " +
+			"browser_act drives the page (click, type, hover, select, clear, get, " +
+			"scroll, wait, back/forward/reload, or raw eval), browser_screenshot " +
+			"saves a PNG of the page or of one element, browser_tabs lists, " +
+			"switches, opens, and closes tabs, browser_upload attaches a local " +
+			"file to a file-upload field (confirmed first, since it hands the " +
+			"file to a website), and browser_close ends the session and deletes " +
+			"the profile. browser_act targets elements by their " +
 			"visible text — click \"Sign in\", type into \"Search\" — not just CSS " +
 			"selectors, and a target it can't find comes back as an error naming " +
-			"the miss instead of failing silently. You watch the window the whole " +
+			"the miss instead of failing silently. Every element-targeted action " +
+			"first glides a small fake cursor to its target and flashes a " +
+			"highlight ring around it, so you can follow what the model is doing. " +
+			"You watch the window the whole " +
 			"time; pages that need JavaScript work here, unlike web_fetch.\n\n" +
 			"Ask to browse as yourself and it opens on a copy of your real " +
 			"browser profile instead, so your existing logins are available. It " +

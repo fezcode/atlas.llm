@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +26,10 @@ type cdpSession struct {
 	exited  chan struct{}
 	profile string
 	conn    *websocket.Conn
+	// port is the DevTools HTTP endpoint, used for tab management; targetID
+	// is the tab the WebSocket currently drives.
+	port     int
+	targetID string
 
 	mu     sync.Mutex
 	nextID int64
@@ -84,50 +90,92 @@ func launchChrome(useDefault bool) (*cdpSession, error) {
 		return fail(fmt.Errorf("parse DevToolsActivePort: %w", err))
 	}
 
-	wsURL, err := cdpFirstPageTarget(port, 10*time.Second)
+	target, err := cdpFirstPageTarget(port, 10*time.Second)
 	if err != nil {
 		return fail(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	conn, _, err := websocket.Dial(ctx, target.wsURL, nil)
 	if err != nil {
 		return fail(fmt.Errorf("connect to DevTools: %w", err))
 	}
 	// Big pages and chatty targets can exceed the 32KB default.
 	conn.SetReadLimit(32 << 20)
 
-	return &cdpSession{cmd: cmd, exited: exited, profile: profile, conn: conn}, nil
+	s := &cdpSession{cmd: cmd, exited: exited, profile: profile, conn: conn, port: port, targetID: target.ID}
+	s.installShim()
+	return s, nil
+}
+
+// installShim injects browserShimBody into the current document and registers
+// it for every future one. Best-effort: a page that blocks it just loses
+// console capture, not the whole session. Preload registration is per-target
+// in CDP, so this runs again after every tab switch.
+func (s *cdpSession) installShim() {
+	// New-document scripts are only injected while the Page domain is
+	// enabled; its events arrive on the socket and are discarded by call().
+	_, _ = s.call("Page.enable", map[string]any{}, 5*time.Second)
+	_, _ = s.call("Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": browserShimJS()}, 5*time.Second)
+	_, _ = s.Eval(browserShimJS())
 }
 
 // cdpFirstPageTarget asks the DevTools HTTP endpoint for the tab list and
-// returns the WebSocket URL of the first page. Retries while the endpoint
-// warms up.
-func cdpFirstPageTarget(port int, timeout time.Duration) (string, error) {
+// returns the first page target. Retries while the endpoint warms up.
+func cdpFirstPageTarget(port int, timeout time.Duration) (browserTab, error) {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/json/list", port))
+		targets, err := cdpListTargets(port)
 		if err == nil {
-			var targets []struct {
-				Type  string `json:"type"`
-				WSURL string `json:"webSocketDebuggerUrl"`
-			}
-			err = json.NewDecoder(resp.Body).Decode(&targets)
-			resp.Body.Close()
-			if err == nil {
-				for _, t := range targets {
-					if t.Type == "page" && t.WSURL != "" {
-						return t.WSURL, nil
-					}
+			for _, t := range targets {
+				if t.wsURL != "" {
+					return t, nil
 				}
-				err = fmt.Errorf("no page target yet")
 			}
+			err = fmt.Errorf("no page target yet")
 		}
 		lastErr = err
 		time.Sleep(200 * time.Millisecond)
 	}
-	return "", fmt.Errorf("locate DevTools page target: %w", lastErr)
+	return browserTab{}, fmt.Errorf("locate DevTools page target: %w", lastErr)
+}
+
+// cdpListTargets fetches and parses the DevTools /json/list tab list.
+func cdpListTargets(port int) ([]browserTab, error) {
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/json/list", port))
+	if err != nil {
+		return nil, fmt.Errorf("%w (%v)", errBrowserGone, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return parseCDPTargets(data)
+}
+
+// parseCDPTargets decodes a DevTools target list, keeping only real pages —
+// extensions, service workers, and devtools windows are not driveable tabs.
+func parseCDPTargets(data []byte) ([]browserTab, error) {
+	var raw []struct {
+		ID    string `json:"id"`
+		Type  string `json:"type"`
+		Title string `json:"title"`
+		URL   string `json:"url"`
+		WS    string `json:"webSocketDebuggerUrl"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse DevTools target list: %w", err)
+	}
+	var out []browserTab
+	for _, t := range raw {
+		if t.Type != "page" {
+			continue
+		}
+		out = append(out, browserTab{ID: t.ID, URL: t.URL, Title: t.Title, wsURL: t.WS})
+	}
+	return out, nil
 }
 
 // call sends one CDP command and waits for the response with a matching id,
@@ -257,6 +305,159 @@ func rawJSValueToString(typ string, value json.RawMessage, description string) s
 		return description
 	}
 	return "(" + typ + ")"
+}
+
+func (s *cdpSession) Screenshot(clip *screenshotClip) ([]byte, error) {
+	params := map[string]any{"format": "png"}
+	if clip != nil {
+		params["clip"] = map[string]any{
+			"x": clip.X, "y": clip.Y, "width": clip.Width, "height": clip.Height, "scale": 1,
+		}
+		// The clip is in document coordinates; without this, regions outside
+		// the current viewport come back blank.
+		params["captureBeyondViewport"] = true
+	}
+	res, err := s.call("Page.captureScreenshot", params, 20*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil {
+		return nil, err
+	}
+	return base64.StdEncoding.DecodeString(out.Data)
+}
+
+func (s *cdpSession) Tabs() ([]browserTab, error) {
+	tabs, err := cdpListTargets(s.port)
+	if err != nil {
+		return nil, err
+	}
+	for i := range tabs {
+		tabs[i].Active = tabs[i].ID == s.targetID
+	}
+	return tabs, nil
+}
+
+// attach points the session's WebSocket at another tab. Safe without extra
+// locking: every entry point already serializes on browserMu.
+func (s *cdpSession) attach(t browserTab) error {
+	if t.wsURL == "" {
+		return fmt.Errorf("tab %q has no DevTools socket — another debugger may be attached to it", t.ID)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, t.wsURL, nil)
+	if err != nil {
+		return fmt.Errorf("connect to tab: %w", err)
+	}
+	conn.SetReadLimit(32 << 20)
+	_ = s.conn.Close(websocket.StatusNormalClosure, "")
+	s.conn = conn
+	s.targetID = t.ID
+	// Bring the tab forward so the user sees what is being driven, and
+	// re-arm the shim — both preload registration and the live document are
+	// per-target in CDP.
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/json/activate/%s", s.port, t.ID))
+	if err == nil {
+		resp.Body.Close()
+	}
+	s.installShim()
+	return nil
+}
+
+func (s *cdpSession) SwitchTab(id string) error {
+	tabs, err := cdpListTargets(s.port)
+	if err != nil {
+		return err
+	}
+	for _, t := range tabs {
+		if t.ID == id {
+			return s.attach(t)
+		}
+	}
+	return fmt.Errorf("tab %q no longer exists", id)
+}
+
+func (s *cdpSession) NewTab(url string) error {
+	// The tab is created blank and navigated over the protocol afterwards:
+	// /json/new takes the target URL raw on the request line, which breaks
+	// on anything with spaces or quotes. Creation requires PUT since
+	// Chrome 111.
+	req, err := http.NewRequest(http.MethodPut,
+		fmt.Sprintf("http://127.0.0.1:%d/json/new", s.port), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w (%v)", errBrowserGone, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	var t struct {
+		ID string `json:"id"`
+		WS string `json:"webSocketDebuggerUrl"`
+	}
+	if err := json.Unmarshal(data, &t); err != nil || t.ID == "" {
+		return fmt.Errorf("open new tab: unexpected response %q", strings.TrimSpace(string(data)))
+	}
+	if err := s.attach(browserTab{ID: t.ID, wsURL: t.WS}); err != nil {
+		return err
+	}
+	if url != "" && url != "about:blank" {
+		return s.Navigate(url)
+	}
+	return nil
+}
+
+func (s *cdpSession) CloseTab(id string) error {
+	if id == s.targetID {
+		return fmt.Errorf("cannot close the tab being driven — switch to another tab first")
+	}
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/json/close/%s", s.port, id))
+	if err != nil {
+		return fmt.Errorf("%w (%v)", errBrowserGone, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+func (s *cdpSession) SetFiles(paths []string) error {
+	res, err := s.call("DOM.getDocument", map[string]any{"depth": 0}, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	var doc struct {
+		Root struct {
+			NodeID int64 `json:"nodeId"`
+		} `json:"root"`
+	}
+	if err := json.Unmarshal(res, &doc); err != nil {
+		return err
+	}
+	res, err = s.call("DOM.querySelector", map[string]any{
+		"nodeId": doc.Root.NodeID, "selector": "[data-atlas-upload]",
+	}, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	var q struct {
+		NodeID int64 `json:"nodeId"`
+	}
+	if err := json.Unmarshal(res, &q); err != nil {
+		return err
+	}
+	if q.NodeID == 0 {
+		return fmt.Errorf("could not locate the marked file input")
+	}
+	_, err = s.call("DOM.setFileInputFiles", map[string]any{"files": paths, "nodeId": q.NodeID}, 10*time.Second)
+	return err
 }
 
 func (s *cdpSession) Close() {

@@ -138,8 +138,11 @@ whole file.
 | `web_fetch`  | ✓           | Read one web page as text (20s timeout).                        |
 | `browser_open` | ✓         | Launch a visible Chrome or Firefox window the model can drive.  |
 | `browser_navigate` |       | Load a URL in that window and return the page's title + text.   |
-| `browser_read` |           | Read the current page: visible text, links, or raw HTML.        |
+| `browser_read` |           | Read the current page: visible text, links, raw HTML, or console output. |
 | `browser_act`  |           | Click, type, hover, select, scroll, wait, go back/forward, run JS — target by visible text or CSS. |
+| `browser_screenshot` |     | Save a PNG of the page — or one element — to a file.            |
+| `browser_tabs` |           | List, switch, open, and close tabs.                             |
+| `browser_upload` | ✓       | Attach a local file to a page's file-upload field.              |
 | `browser_close`|           | Close the window and discard its profile.                       |
 
 `web_fetch` needs confirmation because it is outbound, not because it
@@ -182,6 +185,28 @@ content after the first paint), `back`/`forward`/`reload`, and `eval` for raw
 page JavaScript. When a target isn't found the call comes back as an **error**
 naming what was searched for and telling the model to read the page rather
 than repeat the same call — so a wrong guess self-corrects instead of looping.
+
+**Watch the cursor.** Every element-targeted action first glides a small
+fake cursor across the window to its target and flashes a highlight ring
+around it, then acts. The window is headed precisely so you can supervise;
+the overlay makes each step legible — you see what the model is about to
+click before it clicks it.
+
+**Screenshots, tabs, uploads, console.** `browser_screenshot` saves the
+visible page — or a single element, targeted by text or selector — as a PNG
+next to your project (existing files are never overwritten). `browser_tabs`
+handles pages that open in new tabs: list them, switch which one is driven,
+open and close them. `browser_upload` attaches a local file to a
+`<input type=file>` field the way a user picking it from the file dialog
+would; it needs confirmation, because it hands a file from your disk to a
+website. And `browser_read what="console"` returns the page's console
+output, JavaScript errors, and dialogs — handy when the model is testing a
+web app it just wrote.
+
+**Dialogs never hang the session.** `alert`, `confirm`, and `prompt` are
+auto-answered (dismissed / accepted / given their default) and recorded in
+the console log, so a page throwing modal dialogs can't freeze the tools
+waiting for a click that will never come.
 
 **Using your own logged-in profile.** By default the window is signed into
 nothing. If you ask to browse as yourself — "open Chrome with my profile" —

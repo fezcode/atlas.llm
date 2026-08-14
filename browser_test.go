@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -182,12 +184,46 @@ type fakeSession struct {
 	evalResult string
 	evalErr    error
 	closed     bool
+
+	shot      []byte
+	gotClip   *screenshotClip
+	tabs      []browserTab
+	switched  string
+	openedURL string
+	closedTab string
+	files     []string
 }
 
 func (f *fakeSession) Kind() string                { return "chrome" }
 func (f *fakeSession) Navigate(string) error       { return nil }
 func (f *fakeSession) Eval(string) (string, error) { return f.evalResult, f.evalErr }
 func (f *fakeSession) Close()                      { f.closed = true }
+func (f *fakeSession) Screenshot(clip *screenshotClip) ([]byte, error) {
+	f.gotClip = clip
+	return f.shot, nil
+}
+func (f *fakeSession) Tabs() ([]browserTab, error) { return f.tabs, nil }
+func (f *fakeSession) SwitchTab(id string) error   { f.switched = id; return nil }
+func (f *fakeSession) NewTab(url string) error     { f.openedURL = url; return nil }
+func (f *fakeSession) CloseTab(id string) error    { f.closedTab = id; return nil }
+func (f *fakeSession) SetFiles(paths []string) error {
+	f.files = paths
+	return nil
+}
+
+// setFakeBrowser installs a fake session as the active browser and returns a
+// cleanup that removes it again.
+func setFakeBrowser(t *testing.T, f *fakeSession) {
+	t.Helper()
+	browserMu.Lock()
+	activeBrowser = f
+	browserMu.Unlock()
+	t.Cleanup(func() {
+		browserMu.Lock()
+		activeBrowser = nil
+		browserMu.Unlock()
+	})
+}
 
 func TestWithBrowserClearsDeadSession(t *testing.T) {
 	fake := &fakeSession{evalErr: fmt.Errorf("read: %w", errBrowserGone)}
@@ -222,7 +258,8 @@ const liveBrowserPage = `data:text/html,<title>atlas live test</title>` +
 	`<form><label>Search <input id="q" name="q"></label>` +
 	`<select id="country"><option>France</option><option>Spain</option></select>` +
 	`<button type="button">Sign in</button></form>` +
-	`<a id="l" href="%23x">a link</a><p id="p">hello world</p>`
+	`<a id="l" href="%23x">a link</a><p id="p">hello world</p>` +
+	`<input type="file" id="up">`
 
 // testLiveSession runs the full drive cycle — navigate, read, type, click —
 // against a real browser window. Gated behind ATLAS_BROWSER_LIVE=1 because
@@ -286,6 +323,87 @@ func testLiveSession(t *testing.T, launch func() (browserSession, error)) {
 	}
 	if out, err = readPage(s, "links"); err != nil || !strings.Contains(out, "a link") {
 		t.Fatalf("links: got %q err=%v", out, err)
+	}
+
+	// The shim must capture console output and neuter alert — an unshimmed
+	// alert would hang this Eval until its timeout.
+	if _, err = s.Eval(`console.error("boom-live"); alert("hi there")`); err != nil {
+		t.Fatalf("console/alert eval: %v", err)
+	}
+	if out, err = readPage(s, "console"); err != nil ||
+		!strings.Contains(out, "boom-live") || !strings.Contains(out, "alert") {
+		t.Fatalf("console read: got %q err=%v", out, err)
+	}
+
+	// Screenshots: full viewport, then one element via its measured rect.
+	shot, err := s.Screenshot(nil)
+	if err != nil {
+		t.Fatalf("screenshot: %v", err)
+	}
+	if w, h, err := pngDimensions(shot); err != nil || w <= 0 || h <= 0 {
+		t.Fatalf("screenshot dims: %dx%d err=%v", w, h, err)
+	}
+	out, err = s.Eval(elementRectJS("#p", ""))
+	if err != nil {
+		t.Fatalf("element rect: %v", err)
+	}
+	msg, derr := decodeActResult(out)
+	if derr != nil {
+		t.Fatalf("element rect envelope: %v", derr)
+	}
+	var rect struct{ X, Y, W, H float64 }
+	if err := json.Unmarshal([]byte(msg), &rect); err != nil || rect.W <= 0 {
+		t.Fatalf("element rect payload: %q err=%v", msg, err)
+	}
+	shot, err = s.Screenshot(&screenshotClip{X: rect.X, Y: rect.Y, Width: rect.W, Height: rect.H})
+	if err != nil {
+		t.Fatalf("element screenshot: %v", err)
+	}
+	if w, h, err := pngDimensions(shot); err != nil || w <= 0 || h <= 0 {
+		t.Fatalf("element screenshot dims: %dx%d err=%v", w, h, err)
+	}
+
+	// Upload: mark the file input, attach a real temp file, and confirm the
+	// page sees it.
+	up := filepath.Join(t.TempDir(), "up.txt")
+	if err := os.WriteFile(up, []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	okEval("mark upload target", markUploadTargetJS("#up", ""))
+	if err := s.SetFiles([]string{up}); err != nil {
+		t.Fatalf("SetFiles: %v", err)
+	}
+	if out, err = s.Eval(`String(document.querySelector("#up").files.length)`); err != nil || out != "1" {
+		t.Fatalf("attached file count: got %q err=%v", out, err)
+	}
+
+	// Tabs: open a second one, switch back, close it.
+	if err := s.NewTab(liveBrowserPage); err != nil {
+		t.Fatalf("NewTab: %v", err)
+	}
+	tabs, err := s.Tabs()
+	if err != nil || len(tabs) < 2 {
+		t.Fatalf("tabs after open: %+v err=%v", tabs, err)
+	}
+	var active, other string
+	for _, tb := range tabs {
+		if tb.Active {
+			active = tb.ID
+		} else {
+			other = tb.ID
+		}
+	}
+	if active == "" || other == "" {
+		t.Fatalf("expected one active and one background tab: %+v", tabs)
+	}
+	if err := s.SwitchTab(other); err != nil {
+		t.Fatalf("SwitchTab: %v", err)
+	}
+	if err := s.CloseTab(active); err != nil {
+		t.Fatalf("CloseTab: %v", err)
+	}
+	if tabs, err = s.Tabs(); err != nil || len(tabs) != 1 || !tabs[0].Active {
+		t.Fatalf("tabs after close: %+v err=%v", tabs, err)
 	}
 }
 
@@ -436,5 +554,266 @@ func TestReadPageUsesEval(t *testing.T) {
 	out, err := readPage(fake, "text")
 	if err != nil || !strings.Contains(out, "Example") {
 		t.Fatalf("readPage: got %q err=%v", out, err)
+	}
+}
+
+// --- new capabilities: screenshot, tabs, upload, console, overlay ------------
+
+func TestNewBrowserToolsRegistered(t *testing.T) {
+	wantDestructive := map[string]bool{
+		"browser_screenshot": false,
+		"browser_tabs":       false,
+		"browser_upload":     true, // sends a local file to a page — outbound, like web_fetch
+	}
+	for name, destructive := range wantDestructive {
+		tool, ok := toolRegistry[name]
+		if !ok {
+			t.Fatalf("%s missing from toolRegistry", name)
+		}
+		if tool.Destructive != destructive {
+			t.Errorf("%s: Destructive = %v, want %v", name, tool.Destructive, destructive)
+		}
+		if tool.Run == nil {
+			t.Errorf("%s has no Run func", name)
+		}
+	}
+}
+
+func TestBrowserUploadValidation(t *testing.T) {
+	if _, err := toolBrowserUpload(map[string]any{"file": "x.txt"}); err == nil {
+		t.Error("upload without a target should error")
+	}
+	if _, err := toolBrowserUpload(map[string]any{"selector": "#f"}); err == nil {
+		t.Error("upload without file should error")
+	}
+	// A path that doesn't exist is rejected by name, before touching the browser.
+	missing := filepath.Join(t.TempDir(), "missing.bin")
+	if _, err := toolBrowserUpload(map[string]any{"selector": "#f", "file": missing}); err == nil ||
+		!strings.Contains(err.Error(), "missing.bin") {
+		t.Errorf("nonexistent file should error naming it, got %v", err)
+	}
+}
+
+func TestBrowserUploadCallsSetFiles(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "up-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	fake := &fakeSession{evalResult: `{"ok":true,"msg":"marked <input>"}`}
+	setFakeBrowser(t, fake)
+	out, err := toolBrowserUpload(map[string]any{"selector": "#f", "file": f.Name()})
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	if len(fake.files) != 1 || fake.files[0] != f.Name() {
+		t.Fatalf("SetFiles got %v, want [%s]", fake.files, f.Name())
+	}
+	if !strings.Contains(out, "1 file") {
+		t.Errorf("result should mention the file count, got %q", out)
+	}
+}
+
+func TestBrowserTabsValidation(t *testing.T) {
+	for _, args := range []map[string]any{
+		{},                       // no action
+		{"action": "levitate"},   // unknown action
+		{"action": "switch"},     // switch needs a tab number
+	} {
+		if _, err := toolBrowserTabs(args); err == nil {
+			t.Errorf("toolBrowserTabs(%v) should error", args)
+		}
+	}
+}
+
+func TestBrowserTabsListSwitchClose(t *testing.T) {
+	fake := &fakeSession{tabs: []browserTab{
+		{ID: "A", Title: "One", URL: "https://one.test", Active: true},
+		{ID: "B", Title: "Two", URL: "https://two.test"},
+	}}
+	setFakeBrowser(t, fake)
+
+	out, err := toolBrowserTabs(map[string]any{"action": "list"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(out, "1.") || !strings.Contains(out, "2.") ||
+		!strings.Contains(out, "One") || !strings.Contains(out, "active") {
+		t.Errorf("list should number tabs and mark the active one, got %q", out)
+	}
+
+	if _, err := toolBrowserTabs(map[string]any{"action": "switch", "tab": float64(2)}); err != nil {
+		t.Fatalf("switch: %v", err)
+	}
+	if fake.switched != "B" {
+		t.Errorf("switch tab=2 should target B, got %q", fake.switched)
+	}
+	if _, err := toolBrowserTabs(map[string]any{"action": "switch", "tab": float64(9)}); err == nil {
+		t.Error("out-of-range tab should error")
+	}
+
+	// Closing the only remaining tab must refuse and point at browser_close.
+	fake.tabs = fake.tabs[:1]
+	if _, err := toolBrowserTabs(map[string]any{"action": "close"}); err == nil ||
+		!strings.Contains(err.Error(), "browser_close") {
+		t.Errorf("closing the last tab should point at browser_close, got %v", err)
+	}
+}
+
+func TestBrowserReadConsole(t *testing.T) {
+	if _, err := toolBrowserRead(map[string]any{"what": "bogus"}); err == nil ||
+		!strings.Contains(err.Error(), "console") {
+		t.Errorf("invalid what should list console as an option, got %v", err)
+	}
+	fake := &fakeSession{evalResult: "URL: x\ntitle: y\n\n[error] boom"}
+	setFakeBrowser(t, fake)
+	out, err := toolBrowserRead(map[string]any{"what": "console"})
+	if err != nil || !strings.Contains(out, "[error] boom") {
+		t.Fatalf("console read: got %q err=%v", out, err)
+	}
+}
+
+func TestPNGDimensions(t *testing.T) {
+	shot := fakePNG(640, 480)
+	w, h, err := pngDimensions(shot)
+	if err != nil || w != 640 || h != 480 {
+		t.Fatalf("got %dx%d err=%v", w, h, err)
+	}
+	if _, _, err := pngDimensions([]byte("not a png")); err == nil {
+		t.Error("garbage should error")
+	}
+}
+
+// fakePNG builds just enough of a PNG header for pngDimensions.
+func fakePNG(w, h int) []byte {
+	b := make([]byte, 24)
+	copy(b, "\x89PNG\r\n\x1a\n")
+	binary.BigEndian.PutUint32(b[16:20], uint32(w))
+	binary.BigEndian.PutUint32(b[20:24], uint32(h))
+	return b
+}
+
+func TestScreenshotPath(t *testing.T) {
+	p, err := screenshotPath("")
+	if err != nil || !strings.Contains(p, "atlas-shot-") || !strings.HasSuffix(p, ".png") {
+		t.Fatalf("default path: got %q err=%v", p, err)
+	}
+	// An explicit path that already exists is refused, never overwritten.
+	existing := filepath.Join(t.TempDir(), "have.png")
+	if err := os.WriteFile(existing, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := screenshotPath(existing); err == nil {
+		t.Error("existing file should be refused")
+	}
+	// A missing .png extension is added.
+	if p, err = screenshotPath(filepath.Join(t.TempDir(), "shot")); err != nil || !strings.HasSuffix(p, ".png") {
+		t.Errorf("extension: got %q err=%v", p, err)
+	}
+}
+
+func TestToolBrowserScreenshotWritesFile(t *testing.T) {
+	fake := &fakeSession{shot: fakePNG(4, 5)}
+	setFakeBrowser(t, fake)
+	dest := filepath.Join(t.TempDir(), "out.png")
+	out, err := toolBrowserScreenshot(map[string]any{"file": dest})
+	if err != nil {
+		t.Fatalf("screenshot: %v", err)
+	}
+	if b, err := os.ReadFile(dest); err != nil || len(b) != 24 {
+		t.Fatalf("file not written: %v", err)
+	}
+	if !strings.Contains(out, "4x5") || !strings.Contains(out, "out.png") {
+		t.Errorf("result should mention dimensions and path, got %q", out)
+	}
+	if fake.gotClip != nil {
+		t.Error("full-page shot should pass a nil clip")
+	}
+}
+
+func TestToolBrowserScreenshotElementClip(t *testing.T) {
+	fake := &fakeSession{
+		shot:       fakePNG(10, 20),
+		evalResult: `{"ok":true,"msg":"{\"x\":1,\"y\":2,\"w\":10,\"h\":20}"}`,
+	}
+	setFakeBrowser(t, fake)
+	dest := filepath.Join(t.TempDir(), "el.png")
+	if _, err := toolBrowserScreenshot(map[string]any{"file": dest, "text": "Sign in"}); err != nil {
+		t.Fatalf("element screenshot: %v", err)
+	}
+	if fake.gotClip == nil || fake.gotClip.X != 1 || fake.gotClip.Y != 2 ||
+		fake.gotClip.Width != 10 || fake.gotClip.Height != 20 {
+		t.Fatalf("clip = %+v, want {1 2 10 20}", fake.gotClip)
+	}
+}
+
+func TestParseCDPTargets(t *testing.T) {
+	list := []byte(`[
+		{"id":"T1","type":"page","title":"One","url":"https://one.test","webSocketDebuggerUrl":"ws://x/1"},
+		{"id":"BG","type":"background_page","title":"ext","url":"chrome-extension://x","webSocketDebuggerUrl":"ws://x/bg"},
+		{"id":"T2","type":"page","title":"Two","url":"https://two.test","webSocketDebuggerUrl":"ws://x/2"}
+	]`)
+	targets, err := parseCDPTargets(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 2 || targets[0].ID != "T1" || targets[1].Title != "Two" {
+		t.Fatalf("got %+v", targets)
+	}
+	if targets[0].wsURL != "ws://x/1" {
+		t.Errorf("wsURL not kept: %+v", targets[0])
+	}
+	if _, err := parseCDPTargets([]byte("nope")); err == nil {
+		t.Error("garbage should error")
+	}
+}
+
+// Element-targeted actions glide the fake cursor to the target and highlight
+// it before acting; press has no element target so it must not animate.
+func TestActJSBuildersAnimate(t *testing.T) {
+	// The helpers (and thus the __animateTo definition) ride along in every
+	// script, so what distinguishes an animating action is the await call.
+	for name, js := range map[string]string{
+		"click":  clickJS("", "Sign in"),
+		"type":   typeJS("", "Search", "hi"),
+		"hover":  hoverJS("", "Menu"),
+		"select": selectJS("", "Country", "France"),
+		"clear":  clearJS("", "Search"),
+	} {
+		if !strings.Contains(js, "await __animateTo") || !strings.Contains(js, "async") {
+			t.Errorf("%sJS should animate the cursor to its target", name)
+		}
+	}
+	if js := pressJS("Enter"); strings.Contains(js, "await __animateTo") {
+		t.Error("pressJS has no element target and should not animate")
+	}
+}
+
+func TestElementRectJS(t *testing.T) {
+	js := elementRectJS("", "Sign in")
+	if !strings.Contains(js, "Sign in") || !strings.Contains(js, "getBoundingClientRect") ||
+		!strings.Contains(js, "__err") {
+		t.Error("elementRectJS should embed the target, measure it, and use the envelope")
+	}
+}
+
+func TestMarkUploadTargetJS(t *testing.T) {
+	js := markUploadTargetJS("", "Resume")
+	if !strings.Contains(js, "data-atlas-upload") || !strings.Contains(js, "file") ||
+		!strings.Contains(js, "Resume") {
+		t.Error("markUploadTargetJS should tag a file input by its visible text")
+	}
+}
+
+// The shim is injected into every page: it must capture console output and
+// errors, and neuter blocking dialogs so an alert() can never hang Eval.
+func TestBrowserShim(t *testing.T) {
+	for _, want := range []string{"__atlasLog", "window.alert", "window.confirm", "window.prompt", "unhandledrejection"} {
+		if !strings.Contains(browserShimBody, want) {
+			t.Errorf("browserShimBody should contain %q", want)
+		}
+	}
+	if !strings.Contains(consoleLogJS(), "__atlasLog") {
+		t.Error("consoleLogJS should read the shim's buffer")
 	}
 }

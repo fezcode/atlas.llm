@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -40,7 +41,12 @@ func TestRunCmdLiftsCdAndExplains(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sub, "marker.txt"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := toolRunCmd(map[string]any{"command": "cd sub && ls"})
+	// run_cmd uses `cmd /C` on Windows, where `ls` does not exist.
+	list := "ls"
+	if runtime.GOOS == "windows" {
+		list = "dir"
+	}
+	out, err := toolRunCmd(map[string]any{"command": "cd sub && " + list})
 	if err != nil {
 		t.Fatalf("run_cmd: %v", err)
 	}
@@ -51,7 +57,7 @@ func TestRunCmdLiftsCdAndExplains(t *testing.T) {
 		t.Errorf("result should explain the cwd argument: %q", out)
 	}
 	// Escaping via cd is still refused.
-	if _, err := toolRunCmd(map[string]any{"command": "cd .. && ls"}); err == nil {
+	if _, err := toolRunCmd(map[string]any{"command": "cd .. && " + list}); err == nil {
 		t.Error("cd .. escaped the jail")
 	}
 }

@@ -32,8 +32,37 @@ type browserSession interface {
 	// Eval runs a JavaScript expression in the active tab and returns its
 	// result rendered as a string.
 	Eval(js string) (string, error)
+	// Screenshot captures the driven tab as a PNG. A nil clip captures the
+	// visible viewport; a clip captures that region in document coordinates.
+	Screenshot(clip *screenshotClip) ([]byte, error)
+	// Tabs lists the open tabs, the driven one marked Active.
+	Tabs() ([]browserTab, error)
+	// SwitchTab makes the tab with the given ID the driven one.
+	SwitchTab(id string) error
+	// NewTab opens a tab (at url, or blank) and switches to it.
+	NewTab(url string) error
+	// CloseTab closes the tab with the given ID. Callers must not close the
+	// driven tab — switch away first.
+	CloseTab(id string) error
+	// SetFiles attaches local files to the file input previously marked with
+	// the data-atlas-upload attribute (see markUploadTargetJS).
+	SetFiles(paths []string) error
 	// Close shuts the browser down and removes its throwaway profile.
 	Close()
+}
+
+// screenshotClip is a document-coordinate region to capture, in CSS pixels.
+type screenshotClip struct {
+	X, Y, Width, Height float64
+}
+
+// browserTab describes one open tab for browser_tabs.
+type browserTab struct {
+	ID     string
+	URL    string
+	Title  string
+	Active bool
+	wsURL  string // CDP only: the tab's DevTools socket, needed to switch
 }
 
 // errBrowserGone marks transport failures — the user closed the window, the
@@ -130,14 +159,15 @@ func init() {
 	}
 	toolRegistry["browser_read"] = Tool{
 		Name:        "browser_read",
-		Description: "Read the page currently shown in the browser: its visible text (default), its links, or its raw HTML.",
+		Description: "Read the page currently shown in the browser: its visible text (default), its links, its raw HTML, or its console output.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"what": map[string]any{
-					"type":        "string",
-					"enum":        []string{"text", "links", "html"},
-					"description": "What to return. 'text' is the visible page text, 'links' lists anchor text with hrefs (useful to decide where to click), 'html' is the raw markup. Defaults to text.",
+					"type": "string",
+					"enum": []string{"text", "links", "html", "console"},
+					"description": "What to return. 'text' is the visible page text, 'links' lists anchor text with hrefs (useful to decide where to click), 'html' is the raw markup, " +
+						"'console' is the page's console.log/warn/error output, JavaScript errors, and any alert/confirm/prompt dialogs that were auto-handled — useful when testing a web app. Defaults to text.",
 				},
 			},
 		},
@@ -302,8 +332,8 @@ func toolBrowserRead(args map[string]any) (string, error) {
 	if what == "" {
 		what = "text"
 	}
-	if what != "text" && what != "links" && what != "html" {
-		return "", fmt.Errorf("unknown what %q (expected text, links, or html)", what)
+	if what != "text" && what != "links" && what != "html" && what != "console" {
+		return "", fmt.Errorf("unknown what %q (expected text, links, html, or console)", what)
 	}
 	return withBrowser(func(s browserSession) (string, error) {
 		return readPage(s, what)
@@ -493,6 +523,8 @@ const browserPageTextCap = 5 * 1024
 func readPage(s browserSession, what string) (string, error) {
 	var body string
 	switch what {
+	case "console":
+		body = consoleLogJS()
 	case "links":
 		body = `Array.from(document.querySelectorAll("a[href]")).slice(0, 100)
 			.map(a => ((a.innerText || "").trim().replace(/\s+/g, " ").slice(0, 80) || "(no text)") + " -> " + a.href)
@@ -582,15 +614,44 @@ const actJSHelpers = `
 			|| __findField(null, text)
 			|| all.find(el => label(el).includes(want))
 			|| null;
-	};`
+	};
+	// __animateTo(el): the watchability layer. Glides a fake cursor to the
+	// element and flashes a highlight ring around it, resolving once the user
+	// has had a moment to see what is about to be acted on. Never throws — a
+	// page that blocks DOM insertion just skips the show.
+	const __animateTo = (el) => new Promise((done) => { try {
+		let cur = document.getElementById("__atlas_cursor");
+		if (!cur) {
+			cur = document.createElement("div");
+			cur.id = "__atlas_cursor";
+			cur.style.cssText = "position:fixed;left:36px;top:36px;width:16px;height:16px;border-radius:50% 50% 50% 0;" +
+				"background:rgba(255,90,60,.92);border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.45);" +
+				"transform:rotate(-45deg);z-index:2147483647;pointer-events:none;" +
+				"transition:left .35s cubic-bezier(.4,0,.2,1),top .35s cubic-bezier(.4,0,.2,1);";
+		}
+		if (cur.parentNode !== document.body) document.body.appendChild(cur);
+		const r = el.getBoundingClientRect();
+		const ring = document.createElement("div");
+		ring.style.cssText = "position:fixed;left:" + (r.left - 4) + "px;top:" + (r.top - 4) + "px;" +
+			"width:" + (r.width + 8) + "px;height:" + (r.height + 8) + "px;" +
+			"border:3px solid rgba(255,90,60,.85);border-radius:6px;box-shadow:0 0 10px rgba(255,90,60,.5);" +
+			"z-index:2147483646;pointer-events:none;transition:opacity .3s;";
+		document.body.appendChild(ring);
+		requestAnimationFrame(() => {
+			cur.style.left = (r.left + Math.min(24, r.width / 2)) + "px";
+			cur.style.top = (r.top + r.height / 2) + "px";
+		});
+		setTimeout(() => { ring.style.opacity = "0"; setTimeout(() => ring.remove(), 350); done(); }, 480);
+	} catch (e) { done(); } });`
 
 // clickJS clicks an element found by selector or visible text, returning the
 // {ok,msg} envelope. A miss is ok:false with guidance to read the page first.
 func clickJS(selector, text string) string {
-	return fmt.Sprintf(`(() => {%s
+	return fmt.Sprintf(`(async () => {%s
 		const el = __findClickable(%s, %s);
 		if (!el) return __err(%s);
 		el.scrollIntoView({block: "center"});
+		await __animateTo(el);
 		el.click();
 		return __ok("clicked <" + el.tagName.toLowerCase() + "> " + (__norm(el.innerText || el.value).slice(0, 60)));
 	})()`, actJSHelpers, jsStr(selector), jsStr(text), jsStr(notFoundHint("clickable element", selector, text)))
@@ -599,10 +660,11 @@ func clickJS(selector, text string) string {
 // typeJS sets the value through the prototype setter so framework-controlled
 // inputs (React et al.) see the change, then fires input/change.
 func typeJS(selector, text, value string) string {
-	return fmt.Sprintf(`(() => {%s
+	return fmt.Sprintf(`(async () => {%s
 		const el = __findField(%s, %s);
 		if (!el) return __err(%s);
 		el.scrollIntoView({block: "center"});
+		await __animateTo(el);
 		el.focus();
 		if (el.isContentEditable) {
 			el.textContent = %s;
@@ -651,10 +713,11 @@ func notFoundHint(kind, selector, text string) string {
 // hoverJS dispatches the pointer/mouse-enter sequence real hover menus listen
 // for; a plain :hover can't be forced, but these events open most menus.
 func hoverJS(selector, text string) string {
-	return fmt.Sprintf(`(() => {%s
+	return fmt.Sprintf(`(async () => {%s
 		const el = __findAny(%s, %s);
 		if (!el) return __err(%s);
 		el.scrollIntoView({block: "center"});
+		await __animateTo(el);
 		for (const t of ["pointerover","mouseover","mouseenter","pointermove","mousemove"]) {
 			el.dispatchEvent(new MouseEvent(t, {bubbles: true, cancelable: true, view: window}));
 		}
@@ -665,9 +728,11 @@ func hoverJS(selector, text string) string {
 // selectJS chooses an option in a <select> by visible label or value, firing
 // input/change so listeners react.
 func selectJS(selector, text, value string) string {
-	return fmt.Sprintf(`(() => {%s
+	return fmt.Sprintf(`(async () => {%s
 		const el = __findField(%s, %s);
 		if (!el || el.tagName.toLowerCase() !== "select") return __err(%s);
+		el.scrollIntoView({block: "center"});
+		await __animateTo(el);
 		const want = __norm(%s);
 		const opt = Array.from(el.options).find(o => __norm(o.label || o.text) === want || __norm(o.value) === want)
 			|| Array.from(el.options).find(o => __norm(o.label || o.text).includes(want));
@@ -683,9 +748,11 @@ func selectJS(selector, text, value string) string {
 
 // clearJS empties an input, textarea, or contenteditable, firing input/change.
 func clearJS(selector, text string) string {
-	return fmt.Sprintf(`(() => {%s
+	return fmt.Sprintf(`(async () => {%s
 		const el = __findField(%s, %s);
 		if (!el) return __err(%s);
+		el.scrollIntoView({block: "center"});
+		await __animateTo(el);
 		el.focus();
 		if (el.isContentEditable) {
 			el.textContent = "";
@@ -702,9 +769,11 @@ func clearJS(selector, text string) string {
 // getJS reads back one element's text, value, and href — a targeted
 // alternative to browser_read when the model wants a single value.
 func getJS(selector, text string) string {
-	return fmt.Sprintf(`(() => {%s
+	return fmt.Sprintf(`(async () => {%s
 		const el = __findAny(%s, %s);
 		if (!el) return __err(%s);
+		el.scrollIntoView({block: "center"});
+		await __animateTo(el);
 		const parts = [];
 		const t = (el.innerText || el.textContent || "").trim();
 		if (t) parts.push("text: " + t.replace(/\s+/g, " ").slice(0, 300));
@@ -718,7 +787,7 @@ func getJS(selector, text string) string {
 // scrollJS scrolls to an element, or the page itself for the direction words
 // top/bottom/up/down (matched before treating text as an element to find).
 func scrollJS(selector, text string) string {
-	return fmt.Sprintf(`(() => {%s
+	return fmt.Sprintf(`(async () => {%s
 		const dir = __norm(%s);
 		if (!%s && ["top","bottom","up","down"].includes(dir)) {
 			if (dir === "top") window.scrollTo({top: 0});
@@ -729,6 +798,7 @@ func scrollJS(selector, text string) string {
 		const el = __findAny(%s, %s);
 		if (!el) return __err(%s);
 		el.scrollIntoView({block: "center"});
+		await __animateTo(el);
 		return __ok("scrolled to <" + el.tagName.toLowerCase() + "> " + (__norm(el.innerText).slice(0, 60)));
 	})()`, actJSHelpers, jsStr(text), jsStr(selector),
 		jsStr(selector), jsStr(text), jsStr(notFoundHint("element", selector, text)))
@@ -745,6 +815,54 @@ func presenceJS(selector, text string) string {
 		if (!el || !__visible(el)) return __err("not present yet");
 		return __ok("found <" + el.tagName.toLowerCase() + ">");
 	})()`, actJSHelpers, jsStr(selector), jsStr(selector), jsStr(text))
+}
+
+// browserShimBody is injected into every page the browser loads (as a
+// preload script at launch, and evaluated directly into the page that is
+// already open). It does two things: capture console output, page errors,
+// and unhandled rejections into a ring buffer browser_read what="console"
+// reads back; and replace the blocking dialog functions — a native alert()
+// would otherwise hang every Eval-based tool until its timeout, with nothing
+// telling the model why. Dialogs are recorded in the same buffer.
+const browserShimBody = `
+	if (!window.__atlasLog) {
+		const buf = window.__atlasLog = [];
+		const push = (kind, msg) => {
+			buf.push({kind: kind, msg: String(msg).slice(0, 500)});
+			if (buf.length > 200) buf.shift();
+		};
+		for (const level of ["log", "info", "warn", "error", "debug"]) {
+			const orig = console[level] ? console[level].bind(console) : null;
+			console[level] = (...a) => {
+				push(level, a.map(x => {
+					try { return typeof x === "string" ? x : JSON.stringify(x); } catch (e) { return String(x); }
+				}).join(" "));
+				if (orig) orig(...a);
+			};
+		}
+		window.addEventListener("error", e => push("exception", e.message + " (" + (e.filename || "?") + ":" + (e.lineno || 0) + ")"));
+		window.addEventListener("unhandledrejection", e => push("exception", "unhandled rejection: " + ((e.reason && e.reason.message) || e.reason)));
+		window.alert = (m) => { push("dialog", "alert (dismissed): " + m); };
+		window.confirm = (m) => { push("dialog", "confirm (auto-accepted): " + m); return true; };
+		window.prompt = (m, d) => {
+			const v = d === undefined || d === null ? "" : String(d);
+			push("dialog", "prompt (auto-answered " + JSON.stringify(v) + "): " + m);
+			return v;
+		};
+	}`
+
+// browserShimJS is the shim as a runnable expression, for injecting into the
+// document that is already open — preload scripts only cover future ones.
+func browserShimJS() string { return "(() => {" + browserShimBody + "})()" }
+
+// consoleLogJS renders the shim's buffer for browser_read what="console".
+func consoleLogJS() string {
+	return `(() => {
+		const log = window.__atlasLog;
+		if (!log) return "console capture is not active on this page";
+		if (!log.length) return "nothing captured yet: no console output, page errors, or dialogs on this page";
+		return log.slice(-100).map(e => "[" + e.kind + "] " + e.msg).join("\n");
+	})()`
 }
 
 // historyJS runs a history/reload statement and reports it. Navigation

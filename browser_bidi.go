@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -122,7 +123,18 @@ func launchFirefox(useDefault bool) (*bidiSession, error) {
 		return fail(fmt.Errorf("no browsing context found"))
 	}
 	s.context = contexts.Contexts[0].Context
+	s.installShim()
 	return s, nil
+}
+
+// installShim injects browserShimBody into the current document and, via a
+// global preload script, into every future one — including tabs opened
+// later, which BiDi preloads cover automatically. Best-effort.
+func (s *bidiSession) installShim() {
+	_, _ = s.call("script.addPreloadScript", map[string]any{
+		"functionDeclaration": "() => {" + browserShimBody + "}",
+	}, 10*time.Second)
+	_, _ = s.Eval(browserShimJS())
 }
 
 // parseBiDiServerFile decodes the {"ws_host","ws_port"} file Firefox's
@@ -206,9 +218,15 @@ func (s *bidiSession) Navigate(url string) error {
 }
 
 func (s *bidiSession) Eval(js string) (string, error) {
+	return s.evalIn(s.context, js)
+}
+
+// evalIn evaluates js in one browsing context — the driven tab for Eval,
+// other tabs when listing their titles.
+func (s *bidiSession) evalIn(contextID, js string) (string, error) {
 	res, err := s.call("script.evaluate", map[string]any{
 		"expression":      js,
-		"target":          map[string]any{"context": s.context},
+		"target":          map[string]any{"context": contextID},
 		"awaitPromise":    true,
 		"resultOwnership": "none",
 	}, 20*time.Second)
@@ -232,6 +250,139 @@ func (s *bidiSession) Eval(js string) (string, error) {
 		return "", fmt.Errorf("JavaScript error: %s", out.ExceptionDetails.Text)
 	}
 	return rawJSValueToString(out.Result.Type, out.Result.Value, ""), nil
+}
+
+func (s *bidiSession) Screenshot(clip *screenshotClip) ([]byte, error) {
+	params := map[string]any{"context": s.context}
+	if clip != nil {
+		// Document origin so the clip uses the same coordinates the CDP path
+		// does (element rects measured with scroll offsets added).
+		params["origin"] = "document"
+		params["clip"] = map[string]any{
+			"type": "box", "x": clip.X, "y": clip.Y, "width": clip.Width, "height": clip.Height,
+		}
+	}
+	res, err := s.call("browsingContext.captureScreenshot", params, 20*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil {
+		return nil, err
+	}
+	return base64.StdEncoding.DecodeString(out.Data)
+}
+
+// tree fetches the top-level browsing contexts (tabs).
+func (s *bidiSession) tree() ([]browserTab, error) {
+	res, err := s.call("browsingContext.getTree", map[string]any{}, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var t struct {
+		Contexts []struct {
+			Context string `json:"context"`
+			URL     string `json:"url"`
+		} `json:"contexts"`
+	}
+	if err := json.Unmarshal(res, &t); err != nil {
+		return nil, err
+	}
+	var out []browserTab
+	for _, c := range t.Contexts {
+		out = append(out, browserTab{ID: c.Context, URL: c.URL, Active: c.Context == s.context})
+	}
+	return out, nil
+}
+
+func (s *bidiSession) Tabs() ([]browserTab, error) {
+	tabs, err := s.tree()
+	if err != nil {
+		return nil, err
+	}
+	// The tree carries no titles; fetch them per tab, best-effort.
+	for i := range tabs {
+		if title, err := s.evalIn(tabs[i].ID, "document.title"); err == nil {
+			tabs[i].Title = title
+		}
+	}
+	return tabs, nil
+}
+
+func (s *bidiSession) SwitchTab(id string) error {
+	tabs, err := s.tree()
+	if err != nil {
+		return err
+	}
+	for _, t := range tabs {
+		if t.ID == id {
+			s.context = id
+			// Bring it forward so the user sees what is being driven.
+			_, _ = s.call("browsingContext.activate", map[string]any{"context": id}, 5*time.Second)
+			return nil
+		}
+	}
+	return fmt.Errorf("tab %q no longer exists", id)
+}
+
+func (s *bidiSession) NewTab(url string) error {
+	res, err := s.call("browsingContext.create", map[string]any{"type": "tab"}, 15*time.Second)
+	if err != nil {
+		return err
+	}
+	var c struct {
+		Context string `json:"context"`
+	}
+	if err := json.Unmarshal(res, &c); err != nil || c.Context == "" {
+		return fmt.Errorf("open new tab: unexpected response")
+	}
+	s.context = c.Context
+	_, _ = s.call("browsingContext.activate", map[string]any{"context": c.Context}, 5*time.Second)
+	if url != "" && url != "about:blank" {
+		return s.Navigate(url)
+	}
+	return nil
+}
+
+func (s *bidiSession) CloseTab(id string) error {
+	if id == s.context {
+		return fmt.Errorf("cannot close the tab being driven — switch to another tab first")
+	}
+	_, err := s.call("browsingContext.close", map[string]any{"context": id}, 10*time.Second)
+	return err
+}
+
+func (s *bidiSession) SetFiles(paths []string) error {
+	// input.setFiles needs a node handle; get the marked input's sharedId.
+	res, err := s.call("script.evaluate", map[string]any{
+		"expression":      `document.querySelector("[data-atlas-upload]")`,
+		"target":          map[string]any{"context": s.context},
+		"awaitPromise":    false,
+		"resultOwnership": "root",
+	}, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	var out struct {
+		Type   string `json:"type"`
+		Result struct {
+			SharedID string `json:"sharedId"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil {
+		return err
+	}
+	if out.Result.SharedID == "" {
+		return fmt.Errorf("could not locate the marked file input")
+	}
+	_, err = s.call("input.setFiles", map[string]any{
+		"context": s.context,
+		"element": map[string]any{"sharedId": out.Result.SharedID},
+		"files":   paths,
+	}, 10*time.Second)
+	return err
 }
 
 func (s *bidiSession) Close() {

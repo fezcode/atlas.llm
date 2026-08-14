@@ -153,7 +153,12 @@ var (
 
 // mcpConnectTimeout bounds a single server handshake. Remote servers doing
 // an OAuth round-trip get their own, longer budget inside the auth flow.
-const mcpConnectTimeout = 60 * time.Second
+//
+// Sized for the worst honest case, not the usual one: an npx/uvx stdio
+// server's first connect includes downloading the package, and a slow npm
+// registry alone has been measured eating a whole minute of this budget.
+// A hung server still fails — just later; a healthy-but-cold one connects.
+const mcpConnectTimeout = 3 * time.Minute
 
 // mcpCallTimeout bounds one tool invocation.
 const mcpCallTimeout = 2 * time.Minute
