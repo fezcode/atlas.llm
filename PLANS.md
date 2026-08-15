@@ -1058,3 +1058,30 @@ terminals collapse Shift+Enter to Enter, so the portable newline keys are
 Ctrl+J (a reliable distinct key everywhere) and Alt+Enter (detected via the
 Alt bit on the Enter key). Both insert a newline via textarea.InsertRune and
 swallow the key so nothing submits. Surfaced in the welcome key list.
+
+### 35. Named config profiles — SHIPPED (v0.43.0)
+`/config` grew subcommands — save, load, list, delete — for named snapshots
+of config.json. The motivating case is a fast/quality split: one profile with
+a small model + small context + reasoning off, another with the big model and
+a long context, flipped with a single `/config load`.
+
+Design: a profile is a full copy of config.json under
+`profiles/<name>.json`, so nothing about how settings are read changes —
+config.json stays the one active config, and load/save just copy the whole
+file. loadProfile normalises the same way loadConfig does, so a hand-edited or
+older profile still comes back sane.
+
+- `matchingProfile` compares the current config to each saved one (through
+  their JSON encoding, so pointer fields match by value) and marks the one
+  that matches exactly in `/config list` and at the top of bare `/config`.
+  No "active profile" field to go stale after a manual /set — a match is
+  computed, not tracked.
+- Loading overwrites config.json, shuts the server down so the next message
+  starts one for the new model/context/tuning, and re-syncs the session state
+  that shadows config: agentEnabled, amaOn, and the remote-endpoint badge +
+  heartbeat (mirroring the /set endpoint path when the endpoint changes).
+- Names are validated as `[A-Za-z0-9_-]{1,32}` — they double as filenames, so
+  no separators or dots. Tab-completes profile names after load/delete.
+
+The load integration test backs up and restores the real config.json around
+the overwrite, since it exercises the true saveConfig path.

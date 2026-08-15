@@ -624,20 +624,50 @@ var helpTopics = []helpTopic{
 	},
 	{
 		Name:    "config",
-		Summary: "Show the whole current setup in one place.",
-		Usage:   []string{"/config"},
-		Detail: "Prints every persisted setting with its current value, the active " +
-			"model and whether it's downloaded, the installed engine build, the " +
-			"session-only state (tool-use, yesman, MCP connections), how much " +
-			"memory the model server is using, and where everything lives on " +
-			"disk.\n\n" +
-			"Read-only — `/set <key> <value>` changes settings, `/mcp` manages " +
-			"servers. This is the place to start when behaviour is surprising, " +
-			"since it shows session state that config.json doesn't record.",
+		Summary: "Show the whole setup, or save/load named profiles.",
+		Usage:   []string{"/config", "/config save <name>", "/config load <name>", "/config list", "/config delete <name>"},
+		Detail: "With no argument, prints every persisted setting with its current " +
+			"value, the active model and whether it's downloaded, the installed " +
+			"engine build, the session-only state (tool-use, yesman, ama, MCP " +
+			"connections), how much memory the model server is using, and where " +
+			"everything lives on disk. If the current settings match a saved " +
+			"profile, its name is shown at the top.\n\n" +
+			"The subcommands manage named profiles — whole snapshots of your " +
+			"settings you can switch between with one command:\n" +
+			"  /config save <name>    snapshot the current settings under a name\n" +
+			"  /config load <name>    make that profile the active config\n" +
+			"  /config list           list saved profiles (● marks the active one)\n" +
+			"  /config delete <name>  remove a profile\n\n" +
+			"A profile captures everything in config.json — model, context size, " +
+			"gpu_layers, reasoning, the engine-tuning settings, endpoint, tools " +
+			"and ama. The classic use is a `fast` profile (small model, small " +
+			"context, reasoning off) next to a `quality` one, flipped with a " +
+			"single /config load.\n\n" +
+			"Loading restarts the model server on your next message, since the " +
+			"model or context may have changed. Saving never touches the active " +
+			"config — it's a snapshot, not a switch.",
+		Subcommands: []helpSub{
+			{Name: "save", Usage: "/config save fast",
+				Detail: "Snapshot the current settings as a named profile. Names use " +
+					"letters, digits, dash, and underscore. Saving over an existing " +
+					"name overwrites it."},
+			{Name: "load", Usage: "/config load fast",
+				Detail: "Make a saved profile the active config. The model server " +
+					"restarts on your next message, and session state (tools, ama, " +
+					"remote endpoint) is re-synced to the profile."},
+			{Name: "list", Usage: "/config list",
+				Detail: "List saved profiles. A ● marks the one that matches your " +
+					"current settings exactly; no mark means you've changed " +
+					"something since loading."},
+			{Name: "delete", Usage: "/config delete fast",
+				Detail: "Remove a saved profile. The active config is untouched."},
+		},
 		Notes: []string{
 			"The memory figure is measured from the running model server, not " +
 				"predicted. It reads as \"not running\" until the first message, " +
 				"since the server starts lazily.",
+			"Profiles live in profiles/ under the data dir, one JSON file each — " +
+				"the same shape as config.json, so they're easy to inspect or edit.",
 		},
 		SeeAlso: []string{"set", "mcp", "tools"},
 	},

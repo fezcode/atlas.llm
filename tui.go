@@ -318,7 +318,7 @@ func welcomeText() string {
 			{"/reset", "drop conversation context + server KV cache"},
 			{"/compact", "summarize older turns to free up context"},
 			{"/set [k [v]]", "settings: max_tokens, ctx_size, gpu_layers, engine_variant"},
-			{"/config", "everything at once: settings, session state, memory, paths"},
+			{"/config", "everything at once; /config save|load|list <name> for named profiles"},
 			{"/tools [on|off|list]", "agentic tool-use (read/write/grep/run_cmd; off by default)"},
 			{"/ama [on|off]", "let the agent ask you questions with interactive lists"},
 			{"/mcp [connect|tools]", "connect MCP servers (Slack, Confluence, …); /mcp help for setup"},
@@ -1336,13 +1336,7 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 		return m.handleCompact()
 
 	case "/config":
-		cfg, err := loadConfig()
-		if err != nil {
-			m.pushError("load config: " + err.Error())
-			return nil
-		}
-		m.pushSystem(renderConfig(cfg, m.configState()))
-		return nil
+		return m.handleConfig(args)
 
 	case "/yesman":
 		m.handleYesman(args)
@@ -1482,12 +1476,18 @@ func (m *chatModel) tabComplete() bool {
 	head := strings.ToLower(parts[0])
 	arg := parts[1]
 	if strings.Contains(arg, " ") {
-		// `/help <cmd> <sub>` is the one two-level completion we support,
-		// so `/help mcp tr<Tab>` finishes the subcommand.
-		if head == "/help" {
-			sub := strings.SplitN(arg, " ", 2)
-			if len(sub) == 2 && !strings.Contains(sub[1], " ") {
+		// Two-level completions. `/help mcp tr<Tab>` finishes the subcommand;
+		// `/config load fa<Tab>` finishes a saved profile name.
+		sub := strings.SplitN(arg, " ", 2)
+		if len(sub) == 2 && !strings.Contains(sub[1], " ") {
+			switch head {
+			case "/help":
 				return m.completeToken(head+" "+sub[0]+" ", sub[1], helpSubNames(sub[0]))
+			case "/config":
+				if op := strings.ToLower(sub[0]); op == "load" || op == "use" || op == "delete" || op == "rm" || op == "remove" {
+					names, _ := listProfiles()
+					return m.completeToken(head+" "+sub[0]+" ", sub[1], names)
+				}
 			}
 		}
 		return false
@@ -1506,6 +1506,8 @@ func (m *chatModel) tabComplete() bool {
 		pool = []string{"on", "off", "list"}
 	case "/yesman", "/ama":
 		pool = []string{"on", "off"}
+	case "/config":
+		pool = []string{"save", "load", "list", "delete"}
 	case "/mcp":
 		pool = []string{"add", "catalog", "connect", "disconnect", "env",
 			"help", "logout", "remove", "tools", "trust"}
@@ -1554,7 +1556,7 @@ func (m *chatModel) completeToken(head, prefix string, pool []string) bool {
 
 func commandTakesArgs(cmd string) bool {
 	switch cmd {
-	case "/model", "/download", "/summarize", "/grep", "/set", "/tools":
+	case "/model", "/download", "/summarize", "/grep", "/set", "/tools", "/config":
 		return true
 	}
 	return false

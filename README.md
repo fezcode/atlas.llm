@@ -314,14 +314,34 @@ have vetted, and that one does persist.
 ### Seeing the whole setup
 
 `/config` prints every persisted setting with its current value, the active
-model and engine, session-only state (`/tools`, `/yesman`, MCP connections),
-the model server's memory use, and where everything lives on disk. It's the
-place to start when behaviour is surprising, since it shows session state
-that `config.json` doesn't record.
+model and engine, session-only state (`/tools`, `/yesman`, `/ama`, MCP
+connections), the model server's memory use, and where everything lives on
+disk. It's the place to start when behaviour is surprising, since it shows
+session state that `config.json` doesn't record.
 
 `/set` with no arguments lists the settings; `/set <key>` explains one —
 what it does, its limits for the current model, and what it costs — and
 `/help set <key>` has the long form.
+
+**Named profiles.** `/config` also saves and loads whole snapshots of your
+settings, so you can flip between complete setups with one command instead of
+re-typing a handful of `/set`s:
+
+```
+/config save fast      # snapshot the current settings under a name
+/config load quality   # make a saved profile the active config
+/config list           # ● marks the profile matching current settings
+/config delete old
+```
+
+The classic pair is a **fast** profile — a small model, small context,
+reasoning off — next to a **quality** one with the big model and a long
+context. A profile captures everything in `config.json` (model, `ctx_size`,
+`gpu_layers`, reasoning, the engine-tuning knobs, endpoint, tools, ama), so
+loading one is a complete switch; the model server restarts on your next
+message. Saving never touches the active config — it's a snapshot, not a
+switch. Profiles live as one JSON file each under
+`~/.atlas/atlas.llm.data/profiles/`, the same shape as `config.json`.
 
 `/list` and the `/model` picker show each model's estimated footprint —
 weights plus the KV cache at the current `ctx_size` — as a share of system
