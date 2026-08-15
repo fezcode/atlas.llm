@@ -186,6 +186,67 @@ func TestInstallProfiles(t *testing.T) {
 	}
 }
 
+// The preset catalog: every entry must carry a note and a valid name, point
+// at a real registry model, and be shipped by --install-profiles. Presets
+// with a machine-specific engine_variant would break portability, so the
+// catalog must leave it on auto.
+func TestPresetCatalog(t *testing.T) {
+	withTempHome(t)
+	want := []string{"lite", "tiny", "basic", "fast", "coder", "quality", "current", "tweet150k"}
+	if got := len(presetProfiles()); got != len(want) {
+		t.Fatalf("catalog has %d presets, want %d", got, len(want))
+	}
+	for _, p := range presetProfiles() {
+		if err := validProfileName(p.Name); err != nil {
+			t.Errorf("preset name %q invalid: %v", p.Name, err)
+		}
+		if p.Note == "" {
+			t.Errorf("preset %q has no note", p.Name)
+		}
+		cfg := p.Cfg()
+		if _, ok := findModel(cfg.CurrentModel); !ok {
+			t.Errorf("preset %q names unknown model %q", p.Name, cfg.CurrentModel)
+		}
+		if cfg.EngineVariant != "" {
+			t.Errorf("preset %q pins engine_variant=%q — presets must stay on auto", p.Name, cfg.EngineVariant)
+		}
+	}
+
+	var out strings.Builder
+	if err := installProfiles(&out); err != nil {
+		t.Fatalf("installProfiles: %v", err)
+	}
+	names, err := listProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed := map[string]bool{}
+	for _, n := range names {
+		installed[n] = true
+	}
+	for _, n := range want {
+		if !installed[n] {
+			t.Errorf("preset %q not installed; got %v", n, names)
+		}
+	}
+
+	// Spot-check the recovered settings survived embedding.
+	q, err := loadProfile("quality")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.CurrentModel != "qwen3.8-27b" || q.Reasoning != "on" || q.CtxSize != 32768 || !q.ToolsEnabled {
+		t.Errorf("quality preset content wrong: %+v", q)
+	}
+	cur, err := loadProfile("current")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.CtxSize != 65536 || cur.KVOffload != "off" || cur.MaxTokens != 16384 {
+		t.Errorf("current preset content wrong: %+v", cur)
+	}
+}
+
 // The reset escape hatch stays on a gemma: the point of the lite preset is
 // the lightest, most compatible model, and today that is the gemma family.
 // If a lighter non-gemma entry ever lands, this forces a conscious choice.

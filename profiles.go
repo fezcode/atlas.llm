@@ -163,11 +163,54 @@ type presetProfile struct {
 	Cfg  func() Config
 }
 
+// The catalog, lightest first. Most entries were captured from a working
+// 16GB-NVIDIA setup; they embed everything from that capture except
+// engine_variant, which stays auto so the catalog is portable — auto
+// resolves to CUDA on a machine that has it and to CPU elsewhere, while a
+// pinned "cuda" would wedge a Mac.
 func presetProfiles() []presetProfile {
 	return []presetProfile{
 		{"lite", "lightest model, everything else auto — what --reset-model loads", liteProfile},
+		{"tiny", "gemma-3-1b-it, 4K context, tools off — minimum-footprint chat", tinyProfile},
+		{"basic", "gemma-3-4b-it, 8K context, tools off — plain chat with a bit more brain", basicProfile},
+		{"fast", "qwen3.5-9b, 16K context, reasoning off — quick tool-capable daily driver", fastProfile},
+		{"coder", "qwen3-coder-30b-a3b, 16K context — MoE code model, 30B knowledge at 4B speed", coderProfile},
+		{"quality", "qwen3.8-27b, 32K context, reasoning on — the strongest tool-caller", qualityProfile},
+		{"current", "qwen3.8-27b, 64K context with CPU-side KV — big-window agentic work on 16GB", currentProfile},
 		{"tweet150k", "qwen3.8-27b-iq2 at 150K context via q4_0 KV, one slot", tweet150kProfile},
 	}
+}
+
+func tinyProfile() Config {
+	return Config{CurrentModel: "gemma-3-1b-it", MaxTokens: 2048, CtxSize: 4096}
+}
+
+func basicProfile() Config {
+	return Config{CurrentModel: "gemma-3-4b-it", MaxTokens: 2048, CtxSize: 8192}
+}
+
+func fastProfile() Config {
+	return Config{CurrentModel: "qwen3.5-9b", MaxTokens: 4096, CtxSize: 16384,
+		Reasoning: reasoningOff, ToolsEnabled: true, AMAEnabled: true}
+}
+
+func coderProfile() Config {
+	return Config{CurrentModel: "qwen3-coder-30b-a3b", MaxTokens: 8192, CtxSize: 16384,
+		Reasoning: reasoningOff, ToolsEnabled: true, AMAEnabled: true}
+}
+
+func qualityProfile() Config {
+	return Config{CurrentModel: "qwen3.8-27b", MaxTokens: 8192, CtxSize: 32768,
+		Reasoning: reasoningOn, ToolsEnabled: true, AMAEnabled: true}
+}
+
+// currentProfile keeps its capture-time name: it was the live setup the
+// catalog was snapshotted around — the dense 27B given a 64K window by
+// parking the KV cache in system RAM (kv_offload off) so every weight layer
+// stays on a 16GB GPU.
+func currentProfile() Config {
+	return Config{CurrentModel: "qwen3.8-27b", MaxTokens: 16384, CtxSize: 65536,
+		KVOffload: "off", ToolsEnabled: true, AMAEnabled: true}
 }
 
 // liteProfile is the escape-hatch preset: the lightest model in the registry

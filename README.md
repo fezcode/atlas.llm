@@ -349,23 +349,38 @@ switch. Profiles live as one piml file each (the Atlas suite's format, same
 as `recipe.piml`) under `~/.atlas/atlas.llm.data/profiles/`; the active
 `config.json` stays JSON.
 
-**Built-in presets.** Two profiles ship inside the binary and are written
-out with:
+**Built-in catalog.** A catalog of profiles ships inside the binary and is
+written out with:
 
 ```
 atlas.llm --install-profiles
 ```
 
+Lightest first:
+
 - `lite` — the lightest model, everything else on auto. What
   `--reset-model` loads.
+- `tiny` — `gemma-3-1b-it`, 4K context, tools off. Minimum footprint.
+- `basic` — `gemma-3-4b-it`, 8K context, tools off. Plain chat.
+- `fast` — `qwen3.5-9b`, 16K context, reasoning off. A quick tool-capable
+  daily driver.
+- `coder` — `qwen3-coder-30b-a3b`, 16K context. The MoE code model: 30B of
+  knowledge at roughly 4B speed.
+- `quality` — `qwen3.8-27b`, 32K context, reasoning on. The strongest
+  tool-caller in the registry.
+- `current` — `qwen3.8-27b` with a 64K window on a 16GB card, by parking
+  the KV cache in system RAM (`kv_offload off`) so every weight layer stays
+  on the GPU.
 - `tweet150k` — `qwen3.8-27b-iq2` with a 150K-token context: q4_0 KV cache,
   flash attention, a single server slot (two slots would halve the window),
   temperature 1.0, reasoning on. The whole window fits a 12GB card because
   the weights are 2-bit and the hybrid attention keeps KV in a fraction of
   the layers.
 
-Installing never overwrites an existing profile, so editing a preset and
-re-running `--install-profiles` keeps your edits.
+Every catalog entry leaves `engine_variant` on auto, so the same profile
+works on CUDA, Metal, and CPU machines alike. Installing never overwrites
+an existing profile, so editing a preset and re-running
+`--install-profiles` keeps your edits.
 
 `/list` and the `/model` picker show each model's estimated footprint —
 weights plus the KV cache at the current `ctx_size` — as a share of system

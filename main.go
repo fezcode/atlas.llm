@@ -30,10 +30,11 @@ FLAGS
                        selected setup at startup, so quitting while a heavy
                        model — or a huge context — is active can leave the next
                        launch stuck with no way to reach /model. The way out.
-  --install-profiles   Write the built-in preset profiles (lite, tweet150k)
-                       into ~/.atlas/atlas.llm.data/profiles/ as .piml files
-                       and exit. Never overwrites an existing profile. Load
-                       one inside chat with /config load <name>.
+  --install-profiles   Write the built-in profile catalog (lite, tiny, basic,
+                       fast, coder, quality, current, tweet150k) into
+                       ~/.atlas/atlas.llm.data/profiles/ as .piml files and
+                       exit. Never overwrites an existing profile. Load one
+                       inside chat with /config load <name>.
 
   -c, --chat PROMPT    Send PROMPT to the local model and print the reply
                        to stdout, then exit. Pass "-" to read PROMPT from
