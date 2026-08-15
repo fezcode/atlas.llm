@@ -318,7 +318,7 @@ func welcomeText() string {
 			{"/reset", "drop conversation context + server KV cache"},
 			{"/compact", "summarize older turns to free up context"},
 			{"/set [k [v]]", "settings: max_tokens, ctx_size, gpu_layers, engine_variant"},
-			{"/config", "everything at once; /config save|load|list <name> for named profiles"},
+			{"/config", "everything at once; /config save|load|show|list for named profiles"},
 			{"/tools [on|off|list]", "agentic tool-use (read/write/grep/run_cmd; off by default)"},
 			{"/ama [on|off]", "let the agent ask you questions with interactive lists"},
 			{"/mcp [connect|tools]", "connect MCP servers (Slack, Confluence, …); /mcp help for setup"},
@@ -1484,7 +1484,8 @@ func (m *chatModel) tabComplete() bool {
 			case "/help":
 				return m.completeToken(head+" "+sub[0]+" ", sub[1], helpSubNames(sub[0]))
 			case "/config":
-				if op := strings.ToLower(sub[0]); op == "load" || op == "use" || op == "delete" || op == "rm" || op == "remove" {
+				switch strings.ToLower(sub[0]) {
+				case "load", "use", "show", "view", "cat", "delete", "rm", "remove":
 					names, _ := listProfiles()
 					return m.completeToken(head+" "+sub[0]+" ", sub[1], names)
 				}
@@ -1507,7 +1508,7 @@ func (m *chatModel) tabComplete() bool {
 	case "/yesman", "/ama":
 		pool = []string{"on", "off"}
 	case "/config":
-		pool = []string{"save", "load", "list", "delete"}
+		pool = []string{"save", "load", "show", "list", "delete"}
 	case "/mcp":
 		pool = []string{"add", "catalog", "connect", "disconnect", "env",
 			"help", "logout", "remove", "tools", "trust"}

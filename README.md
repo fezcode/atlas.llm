@@ -330,6 +330,7 @@ re-typing a handful of `/set`s:
 ```
 /config save fast      # snapshot the current settings under a name
 /config load quality   # make a saved profile the active config
+/config show fast      # print a profile's settings without loading it
 /config list           # ● marks the profile matching current settings
 /config delete old
 ```

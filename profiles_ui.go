@@ -34,6 +34,12 @@ func (m *chatModel) handleConfig(args []string) tea.Cmd {
 			return nil
 		}
 		m.handleConfigSave(rest[0])
+	case "show", "view", "cat":
+		if len(rest) == 0 {
+			m.pushError("usage: /config show <name>")
+			return nil
+		}
+		m.handleConfigShow(rest[0])
 	case "load", "use":
 		if len(rest) == 0 {
 			m.pushError("usage: /config load <name>")
@@ -47,7 +53,7 @@ func (m *chatModel) handleConfig(args []string) tea.Cmd {
 		}
 		m.handleConfigDelete(rest[0])
 	default:
-		m.pushError(fmt.Sprintf("unknown /config arg: %s (expected save, load, list, or delete)", sub))
+		m.pushError(fmt.Sprintf("unknown /config arg: %s (expected save, load, show, list, or delete)", sub))
 	}
 	return nil
 }
@@ -107,6 +113,16 @@ func (m *chatModel) handleConfigList() {
 		b.WriteString("\n(current settings don't match any saved profile — `/config save <name>` to keep them)")
 	}
 	m.pushSystem(b.String())
+}
+
+func (m *chatModel) handleConfigShow(name string) {
+	cfg, err := loadProfile(name)
+	if err != nil {
+		m.pushError(err.Error())
+		return
+	}
+	active, _ := loadConfig()
+	m.pushSystem(renderProfile(name, cfg, configsEqual(cfg, active)))
 }
 
 func (m *chatModel) handleConfigDelete(name string) {

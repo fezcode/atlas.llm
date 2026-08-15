@@ -625,7 +625,7 @@ var helpTopics = []helpTopic{
 	{
 		Name:    "config",
 		Summary: "Show the whole setup, or save/load named profiles.",
-		Usage:   []string{"/config", "/config save <name>", "/config load <name>", "/config list", "/config delete <name>"},
+		Usage:   []string{"/config", "/config save <name>", "/config load <name>", "/config show <name>", "/config list", "/config delete <name>"},
 		Detail: "With no argument, prints every persisted setting with its current " +
 			"value, the active model and whether it's downloaded, the installed " +
 			"engine build, the session-only state (tool-use, yesman, ama, MCP " +
@@ -636,6 +636,7 @@ var helpTopics = []helpTopic{
 			"settings you can switch between with one command:\n" +
 			"  /config save <name>    snapshot the current settings under a name\n" +
 			"  /config load <name>    make that profile the active config\n" +
+			"  /config show <name>    print a profile's settings without loading it\n" +
 			"  /config list           list saved profiles (● marks the active one)\n" +
 			"  /config delete <name>  remove a profile\n\n" +
 			"A profile captures everything in config.json — model, context size, " +
@@ -655,6 +656,10 @@ var helpTopics = []helpTopic{
 				Detail: "Make a saved profile the active config. The model server " +
 					"restarts on your next message, and session state (tools, ama, " +
 					"remote endpoint) is re-synced to the profile."},
+			{Name: "show", Usage: "/config show fast",
+				Detail: "Print a profile's saved settings without switching to it — " +
+					"the model, context size, tuning, tools and ama it would apply. " +
+					"Marks the profile ● active if it matches your current config."},
 			{Name: "list", Usage: "/config list",
 				Detail: "List saved profiles. A ● marks the one that matches your " +
 					"current settings exactly; no mark means you've changed " +

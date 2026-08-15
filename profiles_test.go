@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -168,6 +169,25 @@ func TestConfigLoadAppliesProfile(t *testing.T) {
 	}
 	if amaOn.Load() {
 		t.Error("amaOn should be false after loading an ama-off profile")
+	}
+}
+
+// /config show renders a profile's settings without loading it — the values
+// must reflect the profile, and the active marker only when it matches.
+func TestRenderProfile(t *testing.T) {
+	cfg := Config{CurrentModel: "qwen3.5-9b", CtxSize: 8192, Reasoning: "off",
+		ToolsEnabled: true, AMAEnabled: false}
+	out := renderProfile("fast", cfg, false)
+	for _, want := range []string{"fast", "qwen3.5-9b", "8192", "ctx_size", "tools"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderProfile output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "active") {
+		t.Error("inactive profile should not be marked active")
+	}
+	if !strings.Contains(renderProfile("fast", cfg, true), "active") {
+		t.Error("active profile should be marked active")
 	}
 }
 

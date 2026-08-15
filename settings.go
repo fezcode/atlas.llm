@@ -268,6 +268,41 @@ type configState struct {
 }
 
 // renderConfig is `/config`: everything about the current setup in one
+// renderProfile shows a saved profile's settings without loading it — the
+// persisted values only, not live session state or memory, since those belong
+// to the running session rather than the snapshot. active marks the profile
+// that matches the current config.
+func renderProfile(name string, cfg Config, active bool) string {
+	var b strings.Builder
+	header := fmt.Sprintf("Profile %q", name)
+	if active {
+		header += "  ● active"
+	}
+	b.WriteString(header + "\n\n")
+
+	width := len("model")
+	for _, s := range settingsRegistry {
+		if len(s.Key) > width {
+			width = len(s.Key)
+		}
+	}
+	fmt.Fprintf(&b, "  %-*s  %s", width, "model", cfg.CurrentModel)
+	if m, ok := findModel(cfg.CurrentModel); ok && !isModelDownloaded(m) {
+		fmt.Fprintf(&b, "  (NOT downloaded — /download %s)", m.Name)
+	}
+	b.WriteByte('\n')
+	for _, s := range settingsRegistry {
+		fmt.Fprintf(&b, "  %-*s  %s\n", width, s.Key, s.Value(cfg))
+	}
+	// tools_enabled and ama_enabled are persisted but aren't /set keys, so
+	// they don't appear in the registry above — show them explicitly.
+	fmt.Fprintf(&b, "  %-*s  %s\n", width, "tools", onOff(cfg.ToolsEnabled))
+	fmt.Fprintf(&b, "  %-*s  %s\n", width, "ama", onOff(cfg.AMAEnabled))
+
+	b.WriteString("\n`/config load " + name + "` to switch to it")
+	return b.String()
+}
+
 // place — persisted settings, session-only state, and where things live on
 // disk.
 func renderConfig(cfg Config, st configState) string {

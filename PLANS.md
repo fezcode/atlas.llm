@@ -1085,3 +1085,10 @@ older profile still comes back sane.
 
 The load integration test backs up and restores the real config.json around
 the overwrite, since it exercises the true saveConfig path.
+
+#### Added: /config show <name> — (v0.43.1)
+Inspect a profile's settings without loading it. renderProfile prints the
+persisted values only (the settings registry plus model, tools, ama) — not
+live session state or memory, which belong to the running session, not the
+snapshot — and marks the profile ● active when it matches the current config.
+Tab-completes profile names like load/delete.
