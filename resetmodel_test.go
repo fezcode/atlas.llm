@@ -42,7 +42,7 @@ func TestLightestModelIsActuallySmallest(t *testing.T) {
 	t.Logf("lightest = %s (%s)", got.Name, got.Size)
 }
 
-func TestResetToLightestModelWritesConfig(t *testing.T) {
+func TestResetLoadsLiteProfile(t *testing.T) {
 	withTempHome(t)
 	heavy := "ministral-3-14b-instruct"
 	if _, ok := findModel(heavy); !ok {
@@ -51,8 +51,8 @@ func TestResetToLightestModelWritesConfig(t *testing.T) {
 	if err := saveConfig(Config{CurrentModel: heavy}); err != nil {
 		t.Fatal(err)
 	}
-	if err := resetToLightestModel(); err != nil {
-		t.Fatalf("resetToLightestModel: %v", err)
+	if err := resetToLiteProfile(); err != nil {
+		t.Fatalf("resetToLiteProfile: %v", err)
 	}
 	cfg, err := loadConfig()
 	if err != nil {
@@ -62,27 +62,28 @@ func TestResetToLightestModelWritesConfig(t *testing.T) {
 		t.Errorf("current model = %q, want %q", cfg.CurrentModel, lightestModel().Name)
 	}
 	// Idempotent: running it again is a no-op, not an error.
-	if err := resetToLightestModel(); err != nil {
+	if err := resetToLiteProfile(); err != nil {
 		t.Errorf("second reset errored: %v", err)
 	}
 }
 
-// Other settings must survive the reset — it changes the model, nothing else.
-func TestResetToLightestModelPreservesOtherSettings(t *testing.T) {
+// The reset is a whole-profile load now, not a model switch: a heavy config's
+// tuning must not survive it. A giant context or forced offload can be as
+// unbootable as a giant model, so the escape hatch clears everything.
+func TestResetReplacesWholeConfig(t *testing.T) {
 	withTempHome(t)
-	ctx := 32768
 	if err := saveConfig(Config{
-		CurrentModel: "qwen3.5-9b", MaxTokens: 2048, CtxSize: ctx,
-		ToolsEnabled: true, EngineVariant: "cpu",
+		CurrentModel: "qwen3.5-9b", MaxTokens: 2048, CtxSize: 150000,
+		ToolsEnabled: true, CacheTypeK: "q4_0", Parallel: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := resetToLightestModel(); err != nil {
+	if err := resetToLiteProfile(); err != nil {
 		t.Fatal(err)
 	}
 	cfg, _ := loadConfig()
-	if cfg.MaxTokens != 2048 || cfg.CtxSize != ctx || !cfg.ToolsEnabled || cfg.EngineVariant != "cpu" {
-		t.Errorf("reset clobbered other settings: %+v", cfg)
+	if !configsEqual(cfg, liteProfile()) {
+		t.Errorf("reset left settings behind:\n got %+v\nwant %+v", cfg, liteProfile())
 	}
 }
 

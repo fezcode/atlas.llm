@@ -218,9 +218,11 @@ var helpTopics = []helpTopic{
 					"no arguments shows both the value in use and the model's " +
 					"ceiling.\n\n" +
 					"The ceilings differ a lot. Qwen3.5 was trained for 262144 " +
-					"tokens; Gemma 3 for 32768. atlas.llm also imposes its own " +
-					"131072 limit, because the KV cache at the top of Qwen's range " +
-					"would be tens of gigabytes.\n\n" +
+					"tokens; Gemma 3 for 32768. atlas.llm caps the setting at " +
+					"262144 — big windows are affordable with quantized cache " +
+					"types (q4_0 KV at 150K fits beside a ~9GB model on a 12GB " +
+					"card), and the offload planner checks the real fit before " +
+					"every launch.\n\n" +
 					"Cost is memory: the KV cache grows roughly linearly with this, " +
 					"so doubling the window roughly doubles what the model server " +
 					"holds beyond the weights. Raise it when tool output or long " +

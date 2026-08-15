@@ -71,6 +71,15 @@ func TestResolveCtxSize(t *testing.T) {
 	}
 }
 
+// 150K-scale contexts are real on 12GB cards now — q4_0 KV plus hybrid
+// attention keeps the cache affordable — so the ceiling must not clamp them.
+func TestResolveCtxSizeAllows150K(t *testing.T) {
+	withTempHome(t)
+	if got := resolveCtxSize(Config{CtxSize: 150000}); got != 150000 {
+		t.Errorf("150000 ctx = %d, want 150000 (the ceiling clamps a value real hardware can serve)", got)
+	}
+}
+
 // max_tokens must track ctx_size — a fixed ceiling would either forbid legal
 // values on a big window or permit impossible ones on a small window.
 func TestMaxTokensCeilingTracksCtx(t *testing.T) {

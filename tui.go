@@ -566,7 +566,7 @@ func (m *chatModel) handleSet(args []string) {
 			}
 			if n > maxConfigurableCtx {
 				m.pushError(fmt.Sprintf("ctx_size=%d exceeds the %d ceiling atlas.llm allows — "+
-					"the KV cache for that would be tens of gigabytes", n, maxConfigurableCtx))
+					"no model here is trained past that", n, maxConfigurableCtx))
 				return
 			}
 			if trained := currentModelTrainedContext(); trained > 0 && n > trained {

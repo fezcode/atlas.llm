@@ -131,6 +131,18 @@ var availableModels = []Model{
 		URL:      "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q3_K_XL.gguf",
 		Size:     "~13.4GB",
 	},
+	{
+		// The 2-bit cut of the dense 27B above, kept for context rather
+		// than quality: at ~9GB the weights leave a 12GB card room for a
+		// ~150K-token q4_0 KV cache entirely on the GPU — affordable only
+		// because the hybrid attention holds KV in a fraction of the
+		// layers. 2-bit is audibly lossy; when 150K isn't the point, the
+		// Q3_K_XL entry above is the better model.
+		Name:     "qwen3.8-27b-iq2",
+		Filename: "Qwen3.8-27B-UD-IQ2_XXS.gguf",
+		URL:      "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-IQ2_XXS.gguf",
+		Size:     "~9.0GB",
+	},
 }
 
 const defaultModel = "gemma-3-1b-it"
@@ -477,66 +489,69 @@ func gpuLayersDisplay(cfg Config) string {
 	return fmt.Sprintf("%d (%s)", n, label)
 }
 
+// Config carries both tag sets on every field: the active config.json is
+// JSON, while named profiles are piml (the Atlas suite's format). A field
+// with one tag missing would silently vanish from one of the two files.
 type Config struct {
-	CurrentModel string `json:"current_model"`
-	MaxTokens    int    `json:"max_tokens,omitempty"`
-	ToolsEnabled bool   `json:"tools_enabled,omitempty"`
+	CurrentModel string `json:"current_model" piml:"current_model"`
+	MaxTokens    int    `json:"max_tokens,omitempty" piml:"max_tokens,omitempty"`
+	ToolsEnabled bool   `json:"tools_enabled,omitempty" piml:"tools_enabled,omitempty"`
 
 	// GPULayers is the -ngl value handed to llama-server. nil means "auto"
 	// — a pointer rather than an int so an explicit 0 (force CPU) is
 	// distinguishable from an absent setting.
-	GPULayers *int `json:"gpu_layers,omitempty"`
+	GPULayers *int `json:"gpu_layers,omitempty" piml:"gpu_layers,omitempty"`
 
 	// EngineVariant selects which llama.cpp release archive to download:
 	// "cpu" (default) or "vulkan". Empty means auto.
-	EngineVariant string `json:"engine_variant,omitempty"`
+	EngineVariant string `json:"engine_variant,omitempty" piml:"engine_variant,omitempty"`
 
 	// Reasoning controls the model's internal <think> block: "on", "off",
 	// or "" / "auto" for the default. Only affects models that have one.
-	Reasoning string `json:"reasoning,omitempty"`
+	Reasoning string `json:"reasoning,omitempty" piml:"reasoning,omitempty"`
 
 	// MaxToolRounds caps tool-call rounds per message. 0 means the default;
 	// a negative value means no cap.
-	MaxToolRounds int `json:"max_tool_rounds,omitempty"`
+	MaxToolRounds int `json:"max_tool_rounds,omitempty" piml:"max_tool_rounds,omitempty"`
 
 	// CtxSize is the context window llama-server is started with (-c).
 	// 0 means the default. The ceiling is whatever the model was trained
 	// for, which is read from its GGUF metadata.
-	CtxSize int `json:"ctx_size,omitempty"`
+	CtxSize int `json:"ctx_size,omitempty" piml:"ctx_size,omitempty"`
 
 	// Endpoint points inference at a llama-server someone else is running,
 	// typically another atlas.llm in --serve mode. When set, this install
 	// needs no engine and no model file: it becomes a client. Empty means
 	// run inference locally.
-	Endpoint string `json:"endpoint,omitempty"`
+	Endpoint string `json:"endpoint,omitempty" piml:"endpoint,omitempty"`
 
 	// EndpointKey is the bearer token for Endpoint, for a server started
 	// with --api-key. Empty is the normal case on a trusted LAN.
-	EndpointKey string `json:"endpoint_key,omitempty"`
+	EndpointKey string `json:"endpoint_key,omitempty" piml:"endpoint_key,omitempty"`
 
 	// AMAEnabled toggles /ama: whether the agent may ask the user questions
 	// through the interactive ask_user picker instead of deciding alone.
-	AMAEnabled bool `json:"ama_enabled,omitempty"`
+	AMAEnabled bool `json:"ama_enabled,omitempty" piml:"ama_enabled,omitempty"`
 
 	// Engine tuning. Each field maps onto one llama-server flag; the zero
 	// value always means "auto" — launch exactly as before the setting
 	// existed. Pointer types are for settings where an explicit zero is a
 	// real choice distinct from auto (the GPULayers lesson).
-	KVOffload      string   `json:"kv_offload,omitempty"`      // "off" → --no-kv-offload
-	FlashAttn      string   `json:"flash_attn,omitempty"`      // "on"/"off" → -fa; "" = auto
-	CacheTypeK     string   `json:"cache_type_k,omitempty"`    // --cache-type-k; "" = auto
-	CacheTypeV     string   `json:"cache_type_v,omitempty"`    // --cache-type-v; "" = auto
-	Threads        int      `json:"threads,omitempty"`         // -t; 0 = auto
-	BatchSize      int      `json:"batch_size,omitempty"`      // -b; 0 = auto
-	UBatchSize     int      `json:"ubatch_size,omitempty"`     // -ub; 0 = auto
-	Parallel       int      `json:"parallel,omitempty"`        // --parallel; 0 = auto
-	CacheReuse     *int     `json:"cache_reuse,omitempty"`     // --cache-reuse; nil = auto, 0 = off
-	Mmap           string   `json:"mmap,omitempty"`            // "off" → --no-mmap
-	Mlock          string   `json:"mlock,omitempty"`           // "on" → --mlock
-	Seed           *int     `json:"seed,omitempty"`            // --seed; nil = auto
-	Temperature    *float64 `json:"temperature,omitempty"`     // per-request; nil = 0.2
-	OverrideTensor string   `json:"override_tensor,omitempty"` // -ot
-	ContextShift   string   `json:"context_shift,omitempty"`   // "on" → --context-shift
+	KVOffload      string   `json:"kv_offload,omitempty" piml:"kv_offload,omitempty"`           // "off" → --no-kv-offload
+	FlashAttn      string   `json:"flash_attn,omitempty" piml:"flash_attn,omitempty"`           // "on"/"off" → -fa; "" = auto
+	CacheTypeK     string   `json:"cache_type_k,omitempty" piml:"cache_type_k,omitempty"`       // --cache-type-k; "" = auto
+	CacheTypeV     string   `json:"cache_type_v,omitempty" piml:"cache_type_v,omitempty"`       // --cache-type-v; "" = auto
+	Threads        int      `json:"threads,omitempty" piml:"threads,omitempty"`                 // -t; 0 = auto
+	BatchSize      int      `json:"batch_size,omitempty" piml:"batch_size,omitempty"`           // -b; 0 = auto
+	UBatchSize     int      `json:"ubatch_size,omitempty" piml:"ubatch_size,omitempty"`         // -ub; 0 = auto
+	Parallel       int      `json:"parallel,omitempty" piml:"parallel,omitempty"`               // --parallel; 0 = auto
+	CacheReuse     *int     `json:"cache_reuse,omitempty" piml:"cache_reuse,omitempty"`         // --cache-reuse; nil = auto, 0 = off
+	Mmap           string   `json:"mmap,omitempty" piml:"mmap,omitempty"`                       // "off" → --no-mmap
+	Mlock          string   `json:"mlock,omitempty" piml:"mlock,omitempty"`                     // "on" → --mlock
+	Seed           *int     `json:"seed,omitempty" piml:"seed,omitempty"`                       // --seed; nil = auto
+	Temperature    *float64 `json:"temperature,omitempty" piml:"temperature,omitempty"`         // per-request; nil = 0.2
+	OverrideTensor string   `json:"override_tensor,omitempty" piml:"override_tensor,omitempty"` // -ot
+	ContextShift   string   `json:"context_shift,omitempty" piml:"context_shift,omitempty"`     // "on" → --context-shift
 }
 
 // Reasoning settings.
@@ -626,9 +641,13 @@ func maxToolRoundsDisplay(cfg Config) string {
 const defaultCtxSize = 16384
 
 // maxConfigurableCtx caps what /set will accept even when a model claims a
-// larger trained context. Qwen3.5 advertises 262144, whose KV cache would
-// be tens of gigabytes — allowing it silently would just OOM the machine.
-const maxConfigurableCtx = 131072
+// larger trained context. Once 131072, from when a KV cache at Qwen's full
+// 262144 meant tens of gigabytes of f16; with quantized cache types and
+// hybrid-attention models that hold KV in only a fraction of their layers,
+// contexts that size are genuinely servable on consumer cards. The offload
+// planner still charges the cache against VRAM before every launch, so the
+// cap only has to reject the absurd, not police fit.
+const maxConfigurableCtx = 262144
 
 // minConfigurableCtx keeps a value from being set so small that the system
 // prompt and tool definitions alone won't fit.
@@ -966,35 +985,6 @@ func lightestModel() Model {
 		return availableModels[0]
 	}
 	return best
-}
-
-// resetToLightestModel switches the configured model to the smallest one.
-//
-// atlas.llm warms the model server at startup, so quitting while a large
-// model is selected means the next launch blocks loading it again — with no
-// chance to reach /model from inside the TUI. This is the way out, from the
-// command line, without touching config.json by hand.
-func resetToLightestModel() error {
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	target := lightestModel()
-	if cfg.CurrentModel == target.Name {
-		fmt.Printf("Already using %s (%s), the lightest model available.\n", target.Name, target.Size)
-		return nil
-	}
-	previous := cfg.CurrentModel
-	cfg.CurrentModel = target.Name
-	if err := saveConfig(cfg); err != nil {
-		return err
-	}
-	fmt.Printf("Model reset: %s -> %s (%s)\n", previous, target.Name, target.Size)
-	if !isModelDownloaded(target) {
-		fmt.Printf("Note: %s is not downloaded yet — run /download %s inside chat.\n",
-			target.Name, target.Name)
-	}
-	return nil
 }
 
 // defaultServePort matches llama-server's own default, so a user who reaches

@@ -3,19 +3,26 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+
+	piml "github.com/fezcode/go-piml"
 )
 
-// Named configs ("profiles"): full snapshots of config.json saved under a
-// name, so a user can flip between whole setups — a fast one (small model,
-// small context, no reasoning) and a quality one (big model, big context) —
-// with a single /config load. A profile is just a copy of the active config
-// file, so nothing about how settings are read changes: config.json remains
-// the one active config, and load/save copy the whole thing.
+// Named configs ("profiles"): full snapshots of the active config saved
+// under a name, so a user can flip between whole setups — a fast one (small
+// model, small context, no reasoning) and a quality one (big model, big
+// context) — with a single /config load. Nothing about how settings are
+// read changes: config.json remains the one active config, and load/save
+// copy the whole thing.
+//
+// Profiles are piml files — the Atlas suite's format, same as recipe.piml —
+// while the active config.json stays JSON. The Config struct carries both
+// tag sets to serve the two encodings.
 
 // profileNameRE is the allowed shape of a profile name. It doubles as a
 // filename, so no separators, dots, or spaces — only these, 1..32 chars.
@@ -49,17 +56,17 @@ func profilePath(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, name+".json"), nil
+	return filepath.Join(dir, name+".piml"), nil
 }
 
-// saveProfile writes cfg to profiles/<name>.json. It never touches the active
+// saveProfile writes cfg to profiles/<name>.piml. It never touches the active
 // config.json — a save is a snapshot, not a switch.
 func saveProfile(name string, cfg Config) error {
 	p, err := profilePath(name)
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	data, err := piml.Marshal(cfg)
 	if err != nil {
 		return err
 	}
@@ -82,7 +89,7 @@ func loadProfile(name string) (Config, error) {
 		}
 		return cfg, err
 	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := piml.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("profile %q is corrupt: %w", name, err)
 	}
 	if cfg.CurrentModel == "" {
@@ -124,10 +131,10 @@ func listProfiles() ([]string, error) {
 			continue
 		}
 		n := e.Name()
-		if !strings.HasSuffix(n, ".json") {
+		if !strings.HasSuffix(n, ".piml") {
 			continue
 		}
-		names = append(names, strings.TrimSuffix(n, ".json"))
+		names = append(names, strings.TrimSuffix(n, ".piml"))
 	}
 	sort.Strings(names)
 	return names, nil
@@ -143,6 +150,108 @@ func configsEqual(a, b Config) bool {
 		return false
 	}
 	return string(ab) == string(bb)
+}
+
+// --- Built-in presets ----------------------------------------------------
+
+// presetProfile is one profile shipped inside the binary, written to the
+// profiles directory by --install-profiles. Cfg is a func so presets that
+// derive from the registry (lite) can never go stale in a static table.
+type presetProfile struct {
+	Name string
+	Note string
+	Cfg  func() Config
+}
+
+func presetProfiles() []presetProfile {
+	return []presetProfile{
+		{"lite", "lightest model, everything else auto — what --reset-model loads", liteProfile},
+		{"tweet150k", "qwen3.8-27b-iq2 at 150K context via q4_0 KV, one slot", tweet150kProfile},
+	}
+}
+
+// liteProfile is the escape-hatch preset: the lightest model in the registry
+// and every other setting on auto. MaxTokens is set explicitly because
+// loadConfig would normalise 0 to the default anyway — writing it keeps a
+// loaded lite config comparable to this value with configsEqual.
+func liteProfile() Config {
+	return Config{CurrentModel: lightestModel().Name, MaxTokens: defaultMaxTokens}
+}
+
+// tweet150kProfile is the long-context setup: the 2-bit qwen3.8 with a 150K
+// window in q4_0 KV on a single slot, sampling at the model's recommended
+// temperature. One slot is load-bearing — -c is split across slots, so the
+// default two would halve the window per conversation.
+func tweet150kProfile() Config {
+	temp := 1.0
+	return Config{
+		CurrentModel: "qwen3.8-27b-iq2",
+		MaxTokens:    defaultMaxTokens,
+		Reasoning:    reasoningOn,
+		CtxSize:      150000,
+		FlashAttn:    "on",
+		CacheTypeK:   "q4_0",
+		CacheTypeV:   "q4_0",
+		Parallel:     1,
+		Temperature:  &temp,
+	}
+}
+
+// installProfiles writes the built-in presets into the profiles directory,
+// reporting one line per preset to w. Existing files are never overwritten:
+// a preset name the user has edited is their profile now, and a re-install
+// must not undo that.
+func installProfiles(w io.Writer) error {
+	for _, p := range presetProfiles() {
+		path, err := profilePath(p.Name)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(path); err == nil {
+			fmt.Fprintf(w, "%-11s skipped (already exists)\n", p.Name)
+			continue
+		}
+		if err := saveProfile(p.Name, p.Cfg()); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "%-11s installed — %s\n", p.Name, p.Note)
+	}
+	fmt.Fprintln(w, "Load one inside chat with /config load <name>.")
+	return nil
+}
+
+// resetToLiteProfile replaces the active config with the lite preset.
+//
+// atlas.llm warms the model server at startup, so quitting while a heavy
+// setup is active means the next launch blocks loading it — with no chance
+// to reach /model or /set from inside the TUI. A giant context or forced
+// offload can wedge a launch as thoroughly as a giant model, which is why
+// this loads a whole known-good profile rather than switching the model and
+// keeping the rest. It uses the embedded preset, not the on-disk profile,
+// so the escape hatch works even when the profiles directory is missing or
+// broken.
+func resetToLiteProfile() error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	lite := liteProfile()
+	if configsEqual(cfg, lite) {
+		fmt.Printf("Already on the lite profile (%s, %s).\n",
+			lite.CurrentModel, lightestModel().Size)
+		return nil
+	}
+	previous := cfg.CurrentModel
+	if err := saveConfig(lite); err != nil {
+		return err
+	}
+	fmt.Printf("Config reset to the lite profile: %s -> %s (%s)\n",
+		previous, lite.CurrentModel, lightestModel().Size)
+	if m, ok := findModel(lite.CurrentModel); ok && !isModelDownloaded(m) {
+		fmt.Printf("Note: %s is not downloaded yet — run /download %s inside chat.\n",
+			m.Name, m.Name)
+	}
+	return nil
 }
 
 // matchingProfile returns the name of the saved profile whose settings equal

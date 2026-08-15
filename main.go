@@ -25,10 +25,15 @@ FLAGS
   -h, --help           Show this help and exit.
   -v, --version        Print version and exit.
   --clear-logs         Delete the persistent TUI log file and exit.
-  --reset-model        Switch to the lightest model and exit. atlas.llm loads
-                       the selected model at startup, so quitting while a large
-                       one is active can leave the next launch stuck loading it
-                       with no way to reach /model. This is the way out.
+  --reset-model        Load the built-in "lite" profile (lightest model, every
+                       setting back on auto) and exit. atlas.llm loads the
+                       selected setup at startup, so quitting while a heavy
+                       model — or a huge context — is active can leave the next
+                       launch stuck with no way to reach /model. The way out.
+  --install-profiles   Write the built-in preset profiles (lite, tweet150k)
+                       into ~/.atlas/atlas.llm.data/profiles/ as .piml files
+                       and exit. Never overwrites an existing profile. Load
+                       one inside chat with /config load <name>.
 
   -c, --chat PROMPT    Send PROMPT to the local model and print the reply
                        to stdout, then exit. Pass "-" to read PROMPT from
@@ -102,6 +107,7 @@ DATA DIRECTORY
     config.json            current model selection
     engine/                llama.cpp prebuilt binaries (llama-cli + libs)
     models/<name>.gguf     downloaded model weights
+    profiles/<name>.piml   named config profiles (/config, --install-profiles)
 
 EXAMPLES
   atlas.llm
@@ -161,8 +167,9 @@ func main() {
 		excludeFlag       string
 		grepFlag          string
 		maxSizeFlag       int64
-		clearLogsFlag     bool
-		resetModelFlag    bool
+		clearLogsFlag       bool
+		resetModelFlag      bool
+		installProfilesFlag bool
 		chatFlag          string
 		chatFlagSet       bool
 		serveFlag         bool
@@ -186,6 +193,7 @@ func main() {
 	flag.Int64Var(&maxSizeFlag, "max-size", DefaultGrepMaxSize, "")
 	flag.BoolVar(&clearLogsFlag, "clear-logs", false, "")
 	flag.BoolVar(&resetModelFlag, "reset-model", false, "")
+	flag.BoolVar(&installProfilesFlag, "install-profiles", false, "")
 	flag.StringVar(&chatFlag, "c", "", "")
 	flag.StringVar(&chatFlag, "chat", "", "")
 	flag.BoolVar(&serveFlag, "serve", false, "")
@@ -239,8 +247,16 @@ func main() {
 	}
 
 	if resetModelFlag {
-		if err := resetToLightestModel(); err != nil {
+		if err := resetToLiteProfile(); err != nil {
 			fmt.Fprintf(os.Stderr, "reset-model: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if installProfilesFlag {
+		if err := installProfiles(os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "install-profiles: %v\n", err)
 			os.Exit(1)
 		}
 		return

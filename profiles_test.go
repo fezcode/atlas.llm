@@ -114,6 +114,87 @@ func TestListAndDeleteProfiles(t *testing.T) {
 	}
 }
 
+// Profiles are piml files — the Atlas suite's format — not JSON.
+func TestProfileFileIsPiml(t *testing.T) {
+	name := "unittest-piml"
+	t.Cleanup(func() { _ = deleteProfile(name) })
+	if err := saveProfile(name, Config{CurrentModel: "gemma-3-1b-it", CtxSize: 4096}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := profilePath(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(p, ".piml") {
+		t.Errorf("profile path %q is not a .piml file", p)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "(current_model) gemma-3-1b-it") {
+		t.Errorf("profile content is not piml:\n%s", data)
+	}
+	if strings.Contains(string(data), "{") {
+		t.Errorf("profile content looks like JSON:\n%s", data)
+	}
+}
+
+// --install-profiles ships the built-in presets; installing over an edited
+// profile must never clobber it.
+func TestInstallProfiles(t *testing.T) {
+	withTempHome(t)
+	var out strings.Builder
+	if err := installProfiles(&out); err != nil {
+		t.Fatalf("installProfiles: %v", err)
+	}
+	lite, err := loadProfile("lite")
+	if err != nil {
+		t.Fatalf("lite preset not installed: %v", err)
+	}
+	if lite.CurrentModel != lightestModel().Name {
+		t.Errorf("lite profile model = %q, want the lightest (%q)",
+			lite.CurrentModel, lightestModel().Name)
+	}
+	tweet, err := loadProfile("tweet150k")
+	if err != nil {
+		t.Fatalf("tweet150k preset not installed: %v", err)
+	}
+	if tweet.CtxSize != 150000 || tweet.CacheTypeK != "q4_0" ||
+		tweet.CacheTypeV != "q4_0" || tweet.Parallel != 1 {
+		t.Errorf("tweet150k preset content wrong: %+v", tweet)
+	}
+	if !strings.Contains(out.String(), "lite") || !strings.Contains(out.String(), "tweet150k") {
+		t.Errorf("install output does not name the presets:\n%s", out.String())
+	}
+
+	// A user's edit survives a re-install.
+	edited := lite
+	edited.CtxSize = 12345
+	if err := saveProfile("lite", edited); err != nil {
+		t.Fatal(err)
+	}
+	if err := installProfiles(&out); err != nil {
+		t.Fatal(err)
+	}
+	after, err := loadProfile("lite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.CtxSize != 12345 {
+		t.Error("re-install clobbered an edited profile")
+	}
+}
+
+// The reset escape hatch stays on a gemma: the point of the lite preset is
+// the lightest, most compatible model, and today that is the gemma family.
+// If a lighter non-gemma entry ever lands, this forces a conscious choice.
+func TestLiteProfileIsGemma(t *testing.T) {
+	if got := liteProfile().CurrentModel; !strings.HasPrefix(got, "gemma") {
+		t.Errorf("lite profile model = %q, want a gemma", got)
+	}
+}
+
 func TestConfigsEqual(t *testing.T) {
 	a := Config{CurrentModel: "x", CtxSize: 8192, Reasoning: "off"}
 	b := Config{CurrentModel: "x", CtxSize: 8192, Reasoning: "off"}

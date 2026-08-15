@@ -676,3 +676,21 @@ func TestQwen38CatalogEntry(t *testing.T) {
 			m.Size, gb)
 	}
 }
+
+// The 2-bit sibling of qwen3.8-27b, which exists only for its size: weights
+// plus a ~150K q4_0 KV cache must fit a 12GB card outright. Past ~10GB the
+// long-context pitch stops being true and the entry loses its reason to be.
+func TestQwen38IQ2CatalogEntry(t *testing.T) {
+	m, ok := findModel("qwen3.8-27b-iq2")
+	if !ok {
+		t.Fatal("qwen3.8-27b-iq2 is not in the registry")
+	}
+	if !strings.Contains(m.Filename, "UD-IQ2_XXS") {
+		t.Errorf("qwen3.8-27b-iq2: filename %q is not the UD-IQ2_XXS quant", m.Filename)
+	}
+	gb := float64(parseModelSize(m.Size)) / 1e9
+	if gb < 8 || gb > 10.5 {
+		t.Errorf("qwen3.8-27b-iq2: %s (%.1f GB) is outside the fits-12GB-with-150K-KV window",
+			m.Size, gb)
+	}
+}

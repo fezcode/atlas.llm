@@ -98,18 +98,22 @@ local model.
 | ------------ | ------- | ---------------------------------------------------- |
 | `--max-size` | `32768` | Skip files larger than this many bytes. Keeps per-file prompts under the OS command-line limit on Windows. |
 
-### `--reset-model` — unstick a heavy model
+### `--reset-model` — unstick a heavy setup
 
-atlas.llm loads the selected model at startup. Quitting while a large model
-is active means the next launch blocks loading it again, with no chance to
-reach `/model` from inside the TUI.
+atlas.llm loads the selected setup at startup. Quitting while a large model
+— or a huge context — is active means the next launch blocks loading it
+again, with no chance to reach `/model` or `/set` from inside the TUI.
 
 ```
 atlas.llm --reset-model
 ```
 
-Switches to the lightest model in the registry and exits. Other settings are
-left alone.
+Loads the built-in **lite** profile and exits: the lightest model in the
+registry with every other setting back on auto. It is a whole-profile load,
+not just a model switch — a 150K context or a forced offload can wedge a
+launch as thoroughly as a 15GB model, so the escape hatch clears everything.
+The embedded preset is used directly, so this works even when the profiles
+directory is missing or broken.
 
 `/list` and the `/model` picker show each model's weights as a share of
 system RAM, so it's visible which ones your machine can hold before you
@@ -341,8 +345,27 @@ context. A profile captures everything in `config.json` (model, `ctx_size`,
 `gpu_layers`, reasoning, the engine-tuning knobs, endpoint, tools, ama), so
 loading one is a complete switch; the model server restarts on your next
 message. Saving never touches the active config — it's a snapshot, not a
-switch. Profiles live as one JSON file each under
-`~/.atlas/atlas.llm.data/profiles/`, the same shape as `config.json`.
+switch. Profiles live as one piml file each (the Atlas suite's format, same
+as `recipe.piml`) under `~/.atlas/atlas.llm.data/profiles/`; the active
+`config.json` stays JSON.
+
+**Built-in presets.** Two profiles ship inside the binary and are written
+out with:
+
+```
+atlas.llm --install-profiles
+```
+
+- `lite` — the lightest model, everything else on auto. What
+  `--reset-model` loads.
+- `tweet150k` — `qwen3.8-27b-iq2` with a 150K-token context: q4_0 KV cache,
+  flash attention, a single server slot (two slots would halve the window),
+  temperature 1.0, reasoning on. The whole window fits a 12GB card because
+  the weights are 2-bit and the hybrid attention keeps KV in a fraction of
+  the layers.
+
+Installing never overwrites an existing profile, so editing a preset and
+re-running `--install-profiles` keeps your edits.
 
 `/list` and the `/model` picker show each model's estimated footprint —
 weights plus the KV cache at the current `ctx_size` — as a share of system
@@ -382,10 +405,12 @@ extending memory. The ceilings vary widely — Qwen3.5 was trained for 262144
 tokens, Gemma 3 for 32768. `/set` with no arguments shows the value in use
 alongside the model's ceiling.
 
-atlas.llm imposes its own 131072 limit on top, because a KV cache at the top
-of Qwen's range would be tens of gigabytes. Memory is the real cost: the KV
-cache grows roughly linearly with the window, so doubling it roughly doubles
-what the server holds beyond the weights.
+atlas.llm caps the setting at 262144 — big windows became affordable once
+the KV cache could be quantized (q4_0 KV at 150K tokens fits beside a ~9GB
+model on a 12GB card), and the offload planner checks the real fit before
+every launch. Memory is still the real cost: the KV cache grows roughly
+linearly with the window, so doubling it roughly doubles what the server
+holds beyond the weights.
 
 `max_tokens` (reply length) is capped at three quarters of `ctx_size`, so
 raising the window raises that too. Changing either restarts the model
@@ -810,6 +835,9 @@ Models in the registry (`/list` shows download status):
   strongest tool-caller in the registry; sits entirely in 16GB of VRAM.
   Text-only (vision needs an mmproj we don't fetch), and needs a llama.cpp
   build recent enough to know the architecture.
+- `qwen3.8-27b-iq2` (~9.0GB) — the same 27B at 2-bit, kept for context
+  rather than quality: with q4_0 KV it runs ~150K tokens entirely on a
+  12GB card. Noticeably lossier than the Q3_K_XL cut above.
 - `muse-glimmer-30b` (~15.9GB) — Meta's agentic 30B; wants 24GB+ RAM, and
   needs a llama.cpp build from Aug 2026 or later (`/download engine` refreshes
   an older install).
