@@ -42,10 +42,12 @@ func TestStreamDeltasAccumulateInPlace(t *testing.T) {
 }
 
 // A reasoning model can think for minutes before emitting an answer. That
-// must show progress rather than an empty pill.
+// must show progress rather than an empty pill. (Temp home: the indicator
+// versus show_thinking text decision reads the config.)
 func TestStreamShowsThinkingBeforeAnswer(t *testing.T) {
+	withTempHome(t)
 	m := streamModel()
-	m.applyDelta(assistantDeltaMsg{reasoningTokens: 1200})
+	m.applyDelta(assistantDeltaMsg{reasoning: strings.Repeat("x", 1200)})
 	line := m.rendered[m.streamIdx]
 	if !strings.Contains(line, "thinking") {
 		t.Errorf("expected a thinking indicator, got %q", line)

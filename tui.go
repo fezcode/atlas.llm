@@ -61,7 +61,10 @@ var (
 			Bold(true).
 			Padding(0, 1)
 
-	sysStyle     = lipgloss.NewStyle().Foreground(colMuted).Italic(true)
+	sysStyle = lipgloss.NewStyle().Foreground(colMuted).Italic(true)
+	// thinkStyle dims the reasoning text a show_thinking transcript carries,
+	// so the eye separates it from the reply without a border.
+	thinkStyle = lipgloss.NewStyle().Foreground(colMuted).Faint(true)
 	errTextStyle = lipgloss.NewStyle().Foreground(colErr)
 
 	// Top bar: accent-colored brand + muted meta, with a thin underline rule.
@@ -90,12 +93,13 @@ type (
 		result string
 		err    error
 	}
-	// assistantDeltaMsg carries one streamed increment. reasoningTokens is
-	// non-zero while the model is still thinking and has produced no answer
-	// yet, which is what the "thinking" indicator reports.
+	// assistantDeltaMsg carries one streamed increment. reasoning is
+	// non-empty while the model is still thinking and has produced no
+	// answer yet; the transcript shows it as text or as a byte counter
+	// depending on show_thinking.
 	assistantDeltaMsg struct {
-		content         string
-		reasoningTokens int
+		content   string
+		reasoning string
 	}
 	sysMsg           struct{ content string }
 	summarizeDoneMsg struct {
@@ -201,13 +205,18 @@ type chatModel struct {
 
 	// streaming holds the reply assembled so far. streamIdx is where it
 	// lives in m.rendered so each delta can rewrite that line in place
-	// rather than appending. streamThinking counts reasoning bytes seen
-	// before any answer text, so a long think shows progress instead of a
-	// frozen screen.
-	streaming      bool
-	streamBuf      string
-	streamIdx      int
-	streamThinking int
+	// rather than appending. streamThink accumulates the reasoning text
+	// seen before any answer, shown verbatim (show_thinking on, decided
+	// once per stream in streamShowThink) or as a byte counter so a long
+	// think shows progress instead of a frozen screen. streamThinkShown
+	// marks that the think block has been sealed into its own transcript
+	// line so the answer can stream below it.
+	streaming        bool
+	streamBuf        string
+	streamIdx        int
+	streamThink      string
+	streamShowThink  bool
+	streamThinkShown bool
 
 	// cancelInflight aborts the running generation when Esc is pressed.
 	// canceled marks that the abort was deliberate, so the resulting
@@ -2536,8 +2545,8 @@ func runChatStreamCmd(ctx context.Context, history []ChatMessage, input string) 
 				return
 			}
 			program.Send(assistantDeltaMsg{
-				content:         d.Content,
-				reasoningTokens: len(d.Reasoning),
+				content:   d.Content,
+				reasoning: d.Reasoning,
 			})
 		})
 		if err != nil {
@@ -2559,26 +2568,48 @@ func (m *chatModel) applyDelta(msg assistantDeltaMsg) {
 	if !m.streaming {
 		m.streaming = true
 		m.streamBuf = ""
-		m.streamThinking = 0
+		m.streamThink = ""
+		m.streamThinkShown = false
+		cfg, _ := loadConfig()
+		m.streamShowThink = cfg.ShowThinking
 		m.pushBlank()
 		m.rendered = append(m.rendered, assistantPillStyle.Render("ATLAS"))
 		m.rendered = append(m.rendered, "")
 		m.streamIdx = len(m.rendered) - 1
 	}
-	if msg.content == "" && msg.reasoningTokens > 0 {
-		// Still thinking. Show that something is happening rather than
-		// leaving an empty pill for what can be minutes.
-		m.streamThinking += msg.reasoningTokens
+	if msg.content == "" && msg.reasoning != "" {
+		// Still thinking. Show the thinking itself, or at least that
+		// something is happening, rather than an empty pill for minutes.
+		m.streamThink += msg.reasoning
 		if m.streamBuf == "" {
-			m.rendered[m.streamIdx] = sysStyle.Render(
-				fmt.Sprintf("thinking… (%s of reasoning so far)", formatBytes(int64(m.streamThinking))))
+			if m.streamShowThink {
+				m.rendered[m.streamIdx] = thinkStyle.Render(m.streamThink) + streamCursor
+			} else {
+				m.rendered[m.streamIdx] = sysStyle.Render(
+					fmt.Sprintf("thinking… (%s of reasoning so far)", formatBytes(int64(len(m.streamThink)))))
+			}
 			m.refresh()
 		}
 		return
 	}
+	m.sealThinkBlock()
 	m.streamBuf += msg.content
 	m.rendered[m.streamIdx] = m.streamBuf + streamCursor
 	m.refresh()
+}
+
+// sealThinkBlock freezes the streamed think text into its own transcript
+// line so the answer can stream (and later render as markdown) below it
+// rather than overwrite it. No-op unless show_thinking is on and unsealed
+// think text exists.
+func (m *chatModel) sealThinkBlock() {
+	if !m.streamShowThink || m.streamThinkShown || strings.TrimSpace(m.streamThink) == "" {
+		return
+	}
+	m.streamThinkShown = true
+	m.rendered[m.streamIdx] = thinkStyle.Render(m.streamThink)
+	m.rendered = append(m.rendered, "", "")
+	m.streamIdx = len(m.rendered) - 1
 }
 
 // streamCursor marks the tail of an in-flight reply.
@@ -2594,12 +2625,16 @@ func (m *chatModel) finishStream(final string) bool {
 	if strings.TrimSpace(final) == "" {
 		final = m.streamBuf
 	}
+	// An all-thinking turn (token cap, stop) must keep its think block on
+	// screen — that is exactly the turn worth inspecting.
+	m.sealThinkBlock()
 	if m.streamIdx >= 0 && m.streamIdx < len(m.rendered) {
 		m.rendered[m.streamIdx] = m.renderMarkdown(final)
 	}
 	m.pushRule()
 	m.streamBuf = ""
-	m.streamThinking = 0
+	m.streamThink = ""
+	m.streamThinkShown = false
 	m.refresh()
 	return true
 }

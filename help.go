@@ -195,6 +195,17 @@ var helpTopics = []helpTopic{
 					"regardless, because a think there is pure latency. On qwen3.5-4b " +
 					"it once consumed the whole token budget and returned nothing.\n\n" +
 					"Models without a reasoning mode, such as Gemma, are unaffected."},
+			{Name: "show_thinking", Usage: "/set show_thinking on|off",
+				Detail: "Stream the <think> block's actual text into the transcript, " +
+					"dimmed, above each reply — instead of the byte counter shown " +
+					"by default while a model thinks.\n\n" +
+					"Display-only: the thinking never joins the history sent back " +
+					"to the model, and ^Y copies only the reply. A turn that burns " +
+					"its whole token budget thinking keeps its think block on " +
+					"screen, which is exactly the turn worth reading.\n\n" +
+					"Nothing appears unless the model thinks at all — that is " +
+					"`/set reasoning`'s job. Tool-driven turns show the tool trace " +
+					"instead of their thinking."},
 			{Name: "max_tool_rounds", Usage: "/set max_tool_rounds N|off",
 				Detail: "How many times the model may call tools while answering a " +
 					"single message. Default 40; `off` removes the cap entirely.\n\n" +

@@ -410,6 +410,13 @@ chat, on for tool-driven turns where thinking measurably improves which tool
 gets called. `/compact`, `/summarize` and `/grep` never think either way.
 Models without a reasoning mode, such as Gemma, are unaffected.
 
+**Seeing the thinking.** By default the transcript shows only a byte counter
+while a model thinks. `/set show_thinking on` streams the `<think>` block's
+actual text instead, dimmed, above each reply — useful for seeing why the
+model chose an answer, or what a minute of silence was spent on. Display-only:
+the thinking is never sent back to the model on later turns, and a turn that
+burns its whole token budget thinking keeps its think block on screen.
+
 ### Context size
 
 The context window — how much conversation, tool output, and file content

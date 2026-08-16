@@ -94,6 +94,39 @@ var settingsRegistry = []setting{
 		},
 	},
 	{
+		Key:     "show_thinking",
+		Usage:   "/set show_thinking on|off",
+		Summary: "Show the model's think block in the transcript.",
+		Value: func(c Config) string {
+			if c.ShowThinking {
+				return "on"
+			}
+			return "off"
+		},
+		Detail: func(c Config) string {
+			return "Streams the <think> block's actual text into the transcript, " +
+				"dimmed, above the reply — instead of the byte counter shown by " +
+				"default. Useful for seeing why the model chose an answer, or " +
+				"what it spent a minute of silence on.\n" +
+				"Display-only: the thinking is never sent back to the model on " +
+				"later turns, and ^Y copies only the reply.\n" +
+				"Nothing appears unless the model is thinking at all — that is " +
+				"/set reasoning's job. Tool-driven turns show the tool trace " +
+				"instead of their thinking."
+		},
+		Apply: func(c *Config, v string) error {
+			switch strings.ToLower(v) {
+			case "on", "true", "yes":
+				c.ShowThinking = true
+			case "off", "false", "no":
+				c.ShowThinking = false
+			default:
+				return fmt.Errorf("invalid show_thinking=%q (expected on or off)", v)
+			}
+			return nil
+		},
+	},
+	{
 		Key:     "max_tool_rounds",
 		Usage:   "/set max_tool_rounds N|off",
 		Summary: "Tool-call rounds allowed for a single message.",

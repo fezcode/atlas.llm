@@ -534,6 +534,11 @@ type Config struct {
 	// or "" / "auto" for the default. Only affects models that have one.
 	Reasoning string `json:"reasoning,omitempty" piml:"reasoning,omitempty"`
 
+	// ShowThinking streams the think block's text into the transcript,
+	// dimmed, instead of the byte counter. Display-only: the think text
+	// never joins the history sent back to the model.
+	ShowThinking bool `json:"show_thinking,omitempty" piml:"show_thinking,omitempty"`
+
 	// MaxToolRounds caps tool-call rounds per message. 0 means the default;
 	// a negative value means no cap.
 	MaxToolRounds int `json:"max_tool_rounds,omitempty" piml:"max_tool_rounds,omitempty"`
