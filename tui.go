@@ -140,6 +140,7 @@ type chatModel struct {
 	dlName    string
 	dlWritten int64
 	dlTotal   int64
+	dlMeter   downloadMeter
 
 	// Model picker state. When picking != "", key events route to the
 	// picker instead of the textarea; ↑/↓ move, Enter selects, Esc cancels.
@@ -1240,12 +1241,8 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case downloadProgressMsg:
-		m.dlName = msg.name
-		m.dlWritten = msg.written
-		m.dlTotal = msg.total
-		if msg.total > 0 {
-			pct := float64(msg.written) / float64(msg.total)
-			cmds = append(cmds, m.progress.SetPercent(pct))
+		if cmd := m.applyDownloadProgress(msg); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 
 	case remoteStatusMsg:
@@ -1259,6 +1256,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dlName = ""
 		m.dlWritten = 0
 		m.dlTotal = 0
+		m.dlMeter = downloadMeter{}
 		if msg.err != nil {
 			m.pushError(msg.err.Error())
 		} else {
@@ -1704,13 +1702,20 @@ func (m chatModel) renderInput(width int) string {
 func (m chatModel) renderFooter(width int) string {
 	_ = width
 	if m.busy && m.busyReason == "downloading" {
+		var stats string
+		if s := m.dlMeter.speed(); s > 0 {
+			stats += "  " + formatSpeed(s)
+		}
+		if e := m.dlMeter.elapsed(time.Now()); e > 0 {
+			stats += "  " + formatElapsed(e)
+		}
 		if m.dlTotal > 0 {
 			return footerStyle.Render(fmt.Sprintf(
-				"  %s  %s  %s / %s",
-				m.dlName, m.progress.View(), formatBytes(m.dlWritten), formatBytes(m.dlTotal),
+				"  %s  %s  %s / %s%s",
+				m.dlName, m.progress.View(), formatBytes(m.dlWritten), formatBytes(m.dlTotal), stats,
 			))
 		}
-		return footerStyle.Render(fmt.Sprintf("  %s  %s", m.dlName, formatBytes(m.dlWritten)))
+		return footerStyle.Render(fmt.Sprintf("  %s  %s%s", m.dlName, formatBytes(m.dlWritten), stats))
 	}
 
 	// While generating, esc is the only thing most people want, so lead
@@ -2189,6 +2194,24 @@ func resolveDownloadTargets(args []string) (downloadTargets, error) {
 		}
 		return downloadTargets{engine: true, models: []Model{m}}, nil
 	}
+}
+
+// applyDownloadProgress records a progress message into the download state
+// the footer renders. A message for a different file restarts the meter —
+// chained downloads (engine, then a model) must not inherit the previous
+// file's start time or rate. Returns the progress-bar animation cmd, or nil.
+func (m *chatModel) applyDownloadProgress(msg downloadProgressMsg) tea.Cmd {
+	if msg.name != m.dlName {
+		m.dlMeter = downloadMeter{}
+	}
+	m.dlMeter.observe(time.Now(), msg.written)
+	m.dlName = msg.name
+	m.dlWritten = msg.written
+	m.dlTotal = msg.total
+	if msg.total > 0 {
+		return m.progress.SetPercent(float64(msg.written) / float64(msg.total))
+	}
+	return nil
 }
 
 // throttledProgress returns a ProgressFn that forwards updates to the bubbletea

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // ProgressFn is called as bytes stream in. total may be -1 if unknown.
@@ -623,6 +624,66 @@ func formatBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// downloadMeter turns raw progress callbacks into a display-worthy transfer
+// speed and elapsed time. The speed is exponentially smoothed with a ~1.5s
+// time constant: raw 100ms deltas flicker, while an average over the whole
+// download would keep showing the old rate long after the link slows down.
+// Timestamps come in as arguments so tests never have to sleep.
+type downloadMeter struct {
+	start time.Time
+	prevT time.Time
+	prevB int64
+	rate  float64 // bytes/sec, smoothed
+}
+
+func (d *downloadMeter) observe(now time.Time, written int64) {
+	if d.start.IsZero() {
+		d.start, d.prevT, d.prevB = now, now, written
+		return
+	}
+	dt := now.Sub(d.prevT).Seconds()
+	if dt <= 0 {
+		return
+	}
+	inst := float64(written-d.prevB) / dt
+	if inst < 0 {
+		inst = 0 // the stream restarted from an earlier offset
+	}
+	const tau = 1.5
+	if d.rate == 0 {
+		d.rate = inst // adopt the first measurement instead of warming up from 0
+	} else {
+		alpha := dt / (dt + tau)
+		d.rate += alpha * (inst - d.rate)
+	}
+	d.prevT, d.prevB = now, written
+}
+
+// speed returns the smoothed transfer rate in bytes per second, 0 until two
+// samples have arrived.
+func (d *downloadMeter) speed() float64 { return d.rate }
+
+func (d *downloadMeter) elapsed(now time.Time) time.Duration {
+	if d.start.IsZero() {
+		return 0
+	}
+	return now.Sub(d.start)
+}
+
+func formatSpeed(bytesPerSec float64) string {
+	return formatBytes(int64(bytesPerSec)) + "/s"
+}
+
+// formatElapsed renders a wall-clock style duration: m:ss, or h:mm:ss once
+// a download has run for over an hour.
+func formatElapsed(d time.Duration) string {
+	s := int(d.Seconds())
+	if s < 3600 {
+		return fmt.Sprintf("%d:%02d", s/60, s%60)
+	}
+	return fmt.Sprintf("%d:%02d:%02d", s/3600, s%3600/60, s%60)
 }
 
 // runChatStream is the streaming counterpart to runChat: it forwards each

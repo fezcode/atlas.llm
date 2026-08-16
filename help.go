@@ -115,7 +115,8 @@ var helpTopics = []helpTopic{
 				Detail: "The engine plus every model in the registry. Tens of gigabytes."},
 		},
 		Notes: []string{
-			"Downloads run in the background with a progress bar; the TUI stays usable.",
+			"Downloads run in the background with a progress bar, transfer " +
+				"speed, and elapsed time; the TUI stays usable.",
 			"CUDA is a two-archive install — the engine plus a ~372MB CUDA runtime — " +
 				"so it's markedly larger than the other variants.",
 			"On a first install with no engine present, an NVIDIA GPU is detected " +
