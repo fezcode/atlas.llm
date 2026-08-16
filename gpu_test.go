@@ -677,6 +677,44 @@ func TestQwen38CatalogEntry(t *testing.T) {
 	}
 }
 
+// The abliterated qwen3.8 pair: the Heretic ARA build of the dense 27B
+// (community pick — near-zero KL divergence against the base, unlike the
+// crude first-party abliteration). Same sizing rules as the stock entries:
+// the primary quant must sit entirely in 16GB, the q4 is the bigger-card
+// cut. Both come from the same repo — a mixed-lineage pair would make the
+// two entries subtly different models.
+func TestQwen38HereticCatalogEntries(t *testing.T) {
+	m, ok := findModel("qwen3.8-27b-heretic")
+	if !ok {
+		t.Fatal("qwen3.8-27b-heretic is not in the registry")
+	}
+	if !strings.Contains(m.Filename, "Q3_K_M") {
+		t.Errorf("qwen3.8-27b-heretic: filename %q is not the Q3_K_M quant", m.Filename)
+	}
+	gb := float64(parseModelSize(m.Size)) / 1e9
+	if gb < 12 || gb > 15 {
+		t.Errorf("qwen3.8-27b-heretic: %s (%.1f GB) is outside the fits-16GB-fully window",
+			m.Size, gb)
+	}
+
+	q4, ok := findModel("qwen3.8-27b-heretic-q4")
+	if !ok {
+		t.Fatal("qwen3.8-27b-heretic-q4 is not in the registry")
+	}
+	if !strings.Contains(q4.Filename, "Q4_K_M") {
+		t.Errorf("qwen3.8-27b-heretic-q4: filename %q is not the Q4_K_M quant", q4.Filename)
+	}
+	gb = float64(parseModelSize(q4.Size)) / 1e9
+	if gb < 15.5 || gb > 17.5 {
+		t.Errorf("qwen3.8-27b-heretic-q4: %s (%.1f GB) is not a Q4-class 27B", q4.Size, gb)
+	}
+
+	repo := func(u string) string { return u[:strings.LastIndex(u, "/resolve/")] }
+	if repo(m.URL) != repo(q4.URL) {
+		t.Errorf("heretic pair comes from different repos:\n  %s\n  %s", m.URL, q4.URL)
+	}
+}
+
 // The 2-bit sibling of qwen3.8-27b, which exists only for its size: weights
 // plus a ~150K q4_0 KV cache must fit a 12GB card outright. Past ~10GB the
 // long-context pitch stops being true and the entry loses its reason to be.

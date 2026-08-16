@@ -853,6 +853,13 @@ Models in the registry (`/list` shows download status):
 - `qwen3.8-27b-iq2` (~9.0GB) — the same 27B at 2-bit, kept for context
   rather than quality: with q4_0 KV it runs ~150K tokens entirely on a
   12GB card. Noticeably lossier than the Q3_K_XL cut above.
+- `qwen3.8-27b-heretic` (~13.3GB) — abliterated (uncensored) cut of the
+  27B, the Heretic ARA build: near-zero measured divergence from the base
+  model, so it keeps the stock entry's quality while dropping refusals.
+  Q3_K_M, sits entirely in 16GB. Text-only.
+- `qwen3.8-27b-heretic-q4` (~16.5GB) — the Q4_K_M cut of the same
+  abliteration, for 24GB cards; on 16GB the Q3 entry above is the right
+  pick (a dense model pays for every spilled layer on every token).
 - `muse-glimmer-30b` (~15.9GB) — Meta's agentic 30B; wants 24GB+ RAM, and
   needs a llama.cpp build from Aug 2026 or later (`/download engine` refreshes
   an older install).

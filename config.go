@@ -143,6 +143,30 @@ var availableModels = []Model{
 		URL:      "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-IQ2_XXS.gguf",
 		Size:     "~9.0GB",
 	},
+	{
+		// Abliterated cut of the dense 27B above — refusal directions ablated
+		// so it answers where the stock model declines. Of the abliterations
+		// published for qwen3.8, this Heretic ARA build is the one that
+		// hardly costs quality: KL divergence 0.0085 against the base
+		// (huihui's first-party attempt measures 6x worse) with refusals at
+		// ~0/100. Q3_K_M so it sits entirely in 16GB like the stock entry;
+		// the RVN- filename is the quantizer's own prefix, which the URL
+		// must match. Text-only — this abliteration drops the vision stack.
+		Name:     "qwen3.8-27b-heretic",
+		Filename: "RVN-Q3_K_M.gguf",
+		URL:      "https://huggingface.co/0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF/resolve/main/RVN-Q3_K_M.gguf",
+		Size:     "~13.3GB",
+	},
+	{
+		// The Q4_K_M cut of the Heretic abliteration above, for 24GB cards —
+		// on 16GB a dense model pays for every spilled layer on every token,
+		// so the Q3_K_M entry is the right pick there. Same repo, same
+		// weights, one quant step nicer.
+		Name:     "qwen3.8-27b-heretic-q4",
+		Filename: "Qwen3.8-27B-Heretic-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF/resolve/main/Qwen3.8-27B-Heretic-Q4_K_M.gguf",
+		Size:     "~16.5GB",
+	},
 }
 
 const defaultModel = "gemma-3-1b-it"
