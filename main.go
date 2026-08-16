@@ -31,7 +31,7 @@ FLAGS
                        model — or a huge context — is active can leave the next
                        launch stuck with no way to reach /model. The way out.
   --install-profiles   Write the built-in profile catalog (lite, tiny, basic,
-                       fast, coder, quality, current, tweet150k) into
+                       fast, coder, quality, heretic, current, tweet150k) into
                        ~/.atlas/atlas.llm.data/profiles/ as .piml files and
                        exit. Never overwrites an existing profile. Load one
                        inside chat with /config load <name>.

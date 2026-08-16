@@ -176,6 +176,7 @@ func presetProfiles() []presetProfile {
 		{"fast", "qwen3.5-9b, 16K context, reasoning off — quick tool-capable daily driver", fastProfile},
 		{"coder", "qwen3-coder-30b-a3b, 16K context — MoE code model, 30B knowledge at 4B speed", coderProfile},
 		{"quality", "qwen3.8-27b, 32K context, reasoning on — the strongest tool-caller", qualityProfile},
+		{"heretic", "qwen3.8-27b-heretic, 32K context — quality's abliterated (uncensored) twin", hereticProfile},
 		{"current", "qwen3.8-27b, 64K context with CPU-side KV — big-window agentic work on 16GB", currentProfile},
 		{"tweet150k", "qwen3.8-27b-iq2 at 150K context via q4_0 KV, one slot", tweet150kProfile},
 	}
@@ -202,6 +203,17 @@ func coderProfile() Config {
 func qualityProfile() Config {
 	return Config{CurrentModel: "qwen3.8-27b", MaxTokens: 8192, CtxSize: 32768,
 		Reasoning: reasoningOn, ToolsEnabled: true, AMAEnabled: true}
+}
+
+// hereticProfile is qualityProfile pointed at the abliterated cut of the
+// same 27B — the Heretic ARA build barely diverges from the base model, so
+// every quality setting carries over unchanged. Kept as a separate preset
+// rather than a /model switch because loading it is a statement of intent
+// the profile name makes visible.
+func hereticProfile() Config {
+	cfg := qualityProfile()
+	cfg.CurrentModel = "qwen3.8-27b-heretic"
+	return cfg
 }
 
 // currentProfile keeps its capture-time name: it was the live setup the

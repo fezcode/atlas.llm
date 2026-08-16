@@ -368,6 +368,9 @@ Lightest first:
   knowledge at roughly 4B speed.
 - `quality` — `qwen3.8-27b`, 32K context, reasoning on. The strongest
   tool-caller in the registry.
+- `heretic` — `quality`'s abliterated twin: the same 32K window, reasoning,
+  and tools on the `qwen3.8-27b-heretic` weights, which answer where the
+  stock model declines.
 - `current` — `qwen3.8-27b` with a 64K window on a 16GB card, by parking
   the KV cache in system RAM (`kv_offload off`) so every weight layer stays
   on the GPU.

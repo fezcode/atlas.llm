@@ -192,7 +192,7 @@ func TestInstallProfiles(t *testing.T) {
 // catalog must leave it on auto.
 func TestPresetCatalog(t *testing.T) {
 	withTempHome(t)
-	want := []string{"lite", "tiny", "basic", "fast", "coder", "quality", "current", "tweet150k"}
+	want := []string{"lite", "tiny", "basic", "fast", "coder", "quality", "heretic", "current", "tweet150k"}
 	if got := len(presetProfiles()); got != len(want) {
 		t.Fatalf("catalog has %d presets, want %d", got, len(want))
 	}
@@ -244,6 +244,17 @@ func TestPresetCatalog(t *testing.T) {
 	}
 	if cur.CtxSize != 65536 || cur.KVOffload != "off" || cur.MaxTokens != 16384 {
 		t.Errorf("current preset content wrong: %+v", cur)
+	}
+
+	// The abliterated preset is quality's twin on the heretic model — same
+	// window, reasoning, and tools, differing only in which weights answer.
+	h, err := loadProfile("heretic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.CurrentModel != "qwen3.8-27b-heretic" || h.Reasoning != "on" ||
+		h.CtxSize != 32768 || !h.ToolsEnabled {
+		t.Errorf("heretic preset content wrong: %+v", h)
 	}
 }
 
