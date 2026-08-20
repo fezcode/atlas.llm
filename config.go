@@ -71,6 +71,19 @@ var availableModels = []Model{
 		Size:     "~5.2GB",
 	},
 	{
+		// Ornith-1.5's dense 9B (Aug 2026, MIT) — the self-improvement-trained
+		// family, pitched at reasoning and agentic work. Tool-calling chat
+		// template (<tool_call> blocks), 256K native context. First-party
+		// GGUF — no unsloth repo yet. Text-only: vision needs the separate
+		// mmproj GGUF, which we don't download. New arch, so it needs a
+		// recent llama.cpp build (`/download engine` refreshes an older
+		// install).
+		Name:     "ornith-1.5-9b",
+		Filename: "Ornith-1.5-9B-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF/resolve/main/Ornith-1.5-9B-Q4_K_M.gguf",
+		Size:     "~5.6GB",
+	},
+	{
 		Name:     "qwen3.5-9b",
 		Filename: "Qwen3.5-9B-Q4_K_M.gguf",
 		URL:      "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",
@@ -104,6 +117,19 @@ var availableModels = []Model{
 		Filename: "gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf",
 		URL:      "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf",
 		Size:     "~12.9GB",
+	},
+	{
+		// The MoE of the Ornith-1.5 family above: 35B of weights, 3B active
+		// per token, so it generates at small-model speed like the coder
+		// entry. First-party quants start at Q4_K_M (21.7GB) — too big for
+		// the reference card — so this is bartowski's IQ3_XXS, the largest
+		// cut that stays under 16GB. At 15.3GB more expert layers spill to
+		// system RAM than the coder's, which MoE routing keeps affordable;
+		// a dense model this size would not survive the same spill.
+		Name:     "ornith-1.5-35b-a3b",
+		Filename: "Ornith-1.5-35B-A3B-IQ3_XXS.gguf",
+		URL:      "https://huggingface.co/bartowski/Ornith-1.5-35B-A3B-GGUF/resolve/main/Ornith-1.5-35B-A3B-IQ3_XXS.gguf",
+		Size:     "~15.3GB",
 	},
 	{
 		// Meta's local-agent model (Aug 2026), built around tool calling.

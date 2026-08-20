@@ -732,3 +732,42 @@ func TestQwen38IQ2CatalogEntry(t *testing.T) {
 			m.Size, gb)
 	}
 }
+
+// The Ornith-1.5 pair (Aug 2026, MIT): a dense 9B and a 35B-A3B MoE. The 9B
+// is the first-party Q4_K_M and must stay in qwen3.5-9b territory — small
+// enough to fit 16GB with a roomy KV cache. The 35B MoE only earns its slot
+// through the community IQ3_XXS: first-party quants start above 16GB, so the
+// entry's reason to be is a quant that keeps expert spill in --n-cpu-moe
+// range on the reference card.
+func TestOrnithCatalogEntries(t *testing.T) {
+	m, ok := findModel("ornith-1.5-9b")
+	if !ok {
+		t.Fatal("ornith-1.5-9b is not in the registry")
+	}
+	if !strings.Contains(m.Filename, "Q4_K_M") {
+		t.Errorf("ornith-1.5-9b: filename %q is not the Q4_K_M quant", m.Filename)
+	}
+	if !strings.Contains(m.URL, m.Filename) {
+		t.Errorf("ornith-1.5-9b: URL does not point at %s", m.Filename)
+	}
+	gb := float64(parseModelSize(m.Size)) / 1e9
+	if gb < 5 || gb > 6.5 {
+		t.Errorf("ornith-1.5-9b: %s (%.1f GB) is outside the 9B-class window", m.Size, gb)
+	}
+
+	moe, ok := findModel("ornith-1.5-35b-a3b")
+	if !ok {
+		t.Fatal("ornith-1.5-35b-a3b is not in the registry")
+	}
+	if !strings.Contains(moe.Filename, "IQ3_XXS") {
+		t.Errorf("ornith-1.5-35b-a3b: filename %q is not the IQ3_XXS quant", moe.Filename)
+	}
+	if !strings.Contains(moe.URL, moe.Filename) {
+		t.Errorf("ornith-1.5-35b-a3b: URL does not point at %s", moe.Filename)
+	}
+	gb = float64(parseModelSize(moe.Size)) / 1e9
+	if gb < 14 || gb > 16 {
+		t.Errorf("ornith-1.5-35b-a3b: %s (%.1f GB) is outside the under-16GB window the quant was picked for",
+			moe.Size, gb)
+	}
+}

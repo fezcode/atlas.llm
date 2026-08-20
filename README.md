@@ -851,11 +851,19 @@ Models in the registry (`/list` shows download status):
 - `gemma-3-4b-it` (~2.5GB) — middle ground between 1B and 9B+.
 - `gemma-4-e2b-it` (~2.9GB) — newer architecture; may crash on some llama.cpp builds.
 - `qwen3.5-9b` (~5.7GB)
+- `ornith-1.5-9b` (~5.6GB) — Ornith-1.5's dense 9B (Aug 2026, MIT), trained
+  with self-improvement RL and pitched at reasoning and agentic work.
+  Tool-calling chat template, 256K native context. Text-only, and needs a
+  llama.cpp build recent enough to know the architecture.
 - `ministral-3-14b-instruct` (~8.2GB)
 - `qwen3-coder-30b-a3b` (~12.8GB) — mixture-of-experts, 30B of weights with
   3B active per token, so it generates at roughly 4B speed. Aimed at code.
 - `gemma-4-26b-a4b-it` (~12.9GB) — the general-purpose MoE counterpart, 26B
   with 4B active.
+- `ornith-1.5-35b-a3b` (~15.3GB) — the MoE of the Ornith-1.5 family, 35B
+  with 3B active. Community IQ3_XXS quant — first-party quants start above
+  16GB — so on a 16GB card more expert layers spill to system RAM than the
+  coder's, which MoE routing keeps affordable.
 - `qwen3.8-27b` (~13.4GB) — Qwen's dense agentic 27B (Aug 2026), the
   strongest tool-caller in the registry; sits entirely in 16GB of VRAM.
   Text-only (vision needs an mmproj we don't fetch), and needs a llama.cpp
