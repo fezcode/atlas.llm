@@ -38,6 +38,14 @@ var availableModels = []Model{
 		Size:     "~2.9GB",
 	},
 	{
+		// Qwen's dense 7B coding specialist: fast, light, and reliable code
+		// generation and tool calling for laptops and 8GB VRAM cards.
+		Name:     "qwen2.5-coder-7b",
+		Filename: "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/unsloth/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+		Size:     "~4.7GB",
+	},
+	{
 		// Gemma 4, unlike Gemma 3, ships a tool-calling chat template, so
 		// this family can drive /tools and /mcp.
 		Name:     "gemma-4-e4b-it",
@@ -85,6 +93,23 @@ var availableModels = []Model{
 		Size:     "~8.2GB",
 	},
 	{
+		// Mid-tier dense coding workhorse: high-precision code refactoring
+		// and tool calling, sized to fit comfortably in 12GB-16GB VRAM.
+		Name:     "qwen2.5-coder-14b",
+		Filename: "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/unsloth/Qwen2.5-Coder-14B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+		Size:     "~9.0GB",
+	},
+	{
+		// Reasoning model distilled from DeepSeek-R1 into Qwen 2.5 14B.
+		// Emits thinking traces for complex architectural planning and
+		// tricky debugging before generating code.
+		Name:     "deepseek-r1-distill-qwen-14b",
+		Filename: "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf",
+		Size:     "~9.0GB",
+	},
+	{
 		// First mixture-of-experts entry, and the first model aimed at code.
 		// 30B of weights with 3B active per token, so it generates at roughly
 		// 4B speed while knowing what a 30B knows — which is the trade a
@@ -106,6 +131,23 @@ var availableModels = []Model{
 		Filename: "gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf",
 		URL:      "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf",
 		Size:     "~12.9GB",
+	},
+	{
+		// Mistral's dedicated 22B code model: 32K context with native
+		// fill-in-the-middle support, well-suited for repository search
+		// (/grep) and summarization.
+		Name:     "codestral-22b",
+		Filename: "Codestral-22B-v0.1-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/bartowski/Codestral-22B-v0.1-GGUF/resolve/main/Codestral-22B-v0.1-Q4_K_M.gguf",
+		Size:     "~13.3GB",
+	},
+	{
+		// Built jointly by Mistral AI and All Hands AI (OpenHands) specifically
+		// for agentic software engineering, file editing, and tool execution.
+		Name:     "devstral-small-24b",
+		Filename: "Devstral-Small-2507-Q4_K_M.gguf",
+		URL:      "https://huggingface.co/unsloth/Devstral-Small-2507-GGUF/resolve/main/Devstral-Small-2507-Q4_K_M.gguf",
+		Size:     "~14.3GB",
 	},
 	{
 		// The MoE of the Ornith-1.5 family above: 35B of weights, 3B active

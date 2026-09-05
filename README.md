@@ -850,16 +850,21 @@ Models in the registry (`/list` shows download status):
 - `gemma-3-1b-it` (~700MB, default) — small, widely compatible.
 - `gemma-3-4b-it` (~2.5GB) — middle ground between 1B and 9B+.
 - `gemma-4-e2b-it` (~2.9GB) — newer architecture; may crash on some llama.cpp builds.
+- `qwen2.5-coder-7b` (~4.7GB) — Qwen's dense 7B coding model; fast, light, reliable tool-calling for laptops and 8GB VRAM.
 - `qwen3.5-9b` (~5.7GB)
 - `ornith-1.5-9b` (~5.6GB) — Ornith-1.5's dense 9B (Aug 2026, MIT), trained
   with self-improvement RL and pitched at reasoning and agentic work.
   Tool-calling chat template, 256K native context. Text-only, and needs a
   llama.cpp build recent enough to know the architecture.
 - `ministral-3-14b-instruct` (~8.2GB)
+- `qwen2.5-coder-14b` (~9.0GB) — mid-tier dense coding workhorse; high-precision refactoring and tool calling for 12GB–16GB VRAM.
+- `deepseek-r1-distill-qwen-14b` (~9.0GB) — reasoning model distilled from DeepSeek-R1; emits thinking traces for complex planning and subtle debugging.
 - `qwen3-coder-30b-a3b` (~12.8GB) — mixture-of-experts, 30B of weights with
   3B active per token, so it generates at roughly 4B speed. Aimed at code.
 - `gemma-4-26b-a4b-it` (~12.9GB) — the general-purpose MoE counterpart, 26B
   with 4B active.
+- `codestral-22b` (~13.3GB) — Mistral's dedicated 22B code model; 32K context with native fill-in-the-middle support, ideal for `/grep` and `/summarize`.
+- `devstral-small-24b` (~14.3GB) — Mistral AI + All Hands AI (OpenHands) agentic specialist for repository navigation, file edits, and tool use.
 - `ornith-1.5-35b-a3b` (~15.3GB) — the MoE of the Ornith-1.5 family, 35B
   with 3B active. Community IQ3_XXS quant — first-party quants start above
   16GB — so on a 16GB card more expert layers spill to system RAM than the
