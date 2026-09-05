@@ -52,6 +52,10 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 	case "/mcp":
 		return m.handleMCP(args)
 
+	case "/browser":
+		m.handleBrowser(args)
+		return nil
+
 	case "/compact":
 		return m.handleCompact()
 
@@ -175,7 +179,7 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 
 // slashCommands is the canonical list of completable command names.
 var slashCommands = []string{
-	"/ama", "/clear", "/download", "/exit", "/grep", "/help", "/list",
+	"/ama", "/browser", "/clear", "/download", "/exit", "/grep", "/help", "/list",
 	"/compact", "/config", "/mcp", "/model", "/quit", "/reset", "/set",
 	"/summarize", "/tools", "/yesman",
 }
@@ -232,6 +236,8 @@ func (m *chatModel) tabComplete() bool {
 	case "/mcp":
 		pool = []string{"add", "catalog", "connect", "disconnect", "env",
 			"help", "logout", "remove", "tools", "trust"}
+	case "/browser":
+		pool = []string{"clear"}
 	case "/download":
 		pool = []string{"all", "engine"}
 		for _, mm := range catalog.AvailableModels {

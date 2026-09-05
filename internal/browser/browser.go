@@ -120,9 +120,10 @@ func init() {
 			"The user watches the window. By default it uses a fresh temporary profile with none of their logins. " +
 			"Set profile=\"default\" only when the user explicitly asks to use their own/logged-in profile: that copies " +
 			"their real browser profile so their existing logins are available. " +
-			"Set profile=\"persist\" to reuse a dedicated atlas.llm profile that is kept across runs — cookies and " +
-			"signed-in sessions survive to the next launch; good for a site the user visits repeatedly and wants to " +
-			"stay logged in to. If a browser is already open this just navigates it. Confirmation required.",
+			"Set profile=\"persist\" to reuse a dedicated atlas.llm profile that is kept across runs — it starts as a " +
+			"copy of their real profile and then keeps whatever is signed in afterwards; good for a site the user " +
+			"visits repeatedly and wants to stay logged in to. If a browser is already open this just navigates it. " +
+			"Confirmation required.",
 		Destructive: true,
 		Parameters: map[string]any{
 			"type": "object",
@@ -142,8 +143,9 @@ func init() {
 					"description": "Which profile to launch on. 'fresh' (default) is an empty throwaway profile with no logins. " +
 						"'default' copies the user's real browser profile so their existing logins and cookies are available — " +
 						"use it only when the user explicitly asks to browse as themselves / signed in. " +
-						"'persist' is a dedicated atlas.llm profile kept across runs, so cookies and signed-in sessions " +
-						"survive to the next launch — use it for a site the user returns to and wants to stay logged in to.",
+						"'persist' is a dedicated atlas.llm profile kept across runs: seeded from the user's real profile on " +
+						"its first launch, and from then on it keeps whatever is signed in — use it for a site the user " +
+						"returns to and wants to stay logged in to.",
 				},
 			},
 		},
@@ -294,7 +296,7 @@ func toolBrowserOpen(args map[string]any) (string, error) {
 			"but changes are not written back to your real profile"
 	case profilePersist:
 		profileNote = "a persistent atlas.llm profile — cookies and logins are kept for next time, " +
-			"so a site you sign in to stays signed in on the next launch"
+			"so a site you sign in to stays signed in on the next launch (`/browser` to inspect or clear it)"
 	default:
 		profileNote = "a fresh temporary profile"
 	}
@@ -503,9 +505,11 @@ func toolBrowserClose(map[string]any) (string, error) {
 		return "No browser is running.", nil
 	}
 	kind := activeBrowser.Kind()
+	profile := activeBrowserProfile
 	activeBrowser.Close()
 	activeBrowser = nil
-	return fmt.Sprintf("Closed the %s window and discarded its temporary profile.", kind), nil
+	activeBrowserProfile = ""
+	return closeMessage(kind, profile), nil
 }
 
 // normalizeURL turns the bare domains models like to emit ("example.com")
@@ -1022,15 +1026,25 @@ func (m profileMode) String() string {
 	return "fresh"
 }
 
-// persistentBrowserProfileDir is the stable per-family profile directory under
-// the atlas data dir. family is "chrome" or "firefox" — the two profile
-// formats are incompatible, so they can't share one. Created if absent.
-func persistentBrowserProfileDir(family string) (string, error) {
+// persistentBrowserProfilePath is where a family's stable profile lives,
+// without creating anything — for reporting on a profile that may never have
+// been launched. family is "chrome" or "firefox": the two profile formats are
+// incompatible, so they can't share one directory.
+func persistentBrowserProfilePath(family string) (string, error) {
 	base, err := config.AtlasDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(base, "browser-profiles", family)
+	return filepath.Join(base, "browser-profiles", family), nil
+}
+
+// persistentBrowserProfileDir is persistentBrowserProfilePath, created if
+// absent — the launch path, which needs the directory to exist.
+func persistentBrowserProfileDir(family string) (string, error) {
+	dir, err := persistentBrowserProfilePath(family)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", fmt.Errorf("create persistent profile dir: %w", err)
 	}
@@ -1045,6 +1059,12 @@ func resolveBrowserProfile(mode profileMode, tempPrefix, family string) (dir str
 	if mode == profilePersist {
 		dir, err = persistentBrowserProfileDir(family)
 		if err != nil {
+			return "", false, err
+		}
+		// One session at a time: the fixed directory is the one profile two
+		// atlas.llm runs can collide on, and two browsers sharing a cookie
+		// store corrupt it.
+		if err := claimPersistentProfile(dir); err != nil {
 			return "", false, err
 		}
 		prepPersistentProfile(dir)
@@ -1086,14 +1106,32 @@ func killAndCleanup(cmd *exec.Cmd, exited <-chan struct{}, profile string, remov
 			<-exited
 		}
 	}
-	if profile != "" && remove {
-		// The browser may still be flushing the profile as it exits; retry
-		// briefly rather than leaving the directory behind.
-		for i := 0; i < 5; i++ {
-			if err := os.RemoveAll(profile); err == nil {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
+	if profile == "" {
+		return
 	}
+	if !remove {
+		// A persistent profile survives, but our claim on it must not — the
+		// next session has to be able to open it.
+		releasePersistentProfile(profile)
+		return
+	}
+	// The browser may still be flushing the profile as it exits; retry
+	// briefly rather than leaving the directory behind.
+	for i := 0; i < 5; i++ {
+		if err := os.RemoveAll(profile); err == nil {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// closeMessage describes what happened to the profile a closed window ran on.
+// A persistent one is deliberately kept, and that is exactly the moment the
+// user wants to hear it — saying "discarded" there is simply untrue.
+func closeMessage(kind, profile string) string {
+	if profile == profilePersist.String() {
+		return fmt.Sprintf("Closed the %s window. Its persistent profile is kept, "+
+			"so the sites you signed into are still signed in next launch.", kind)
+	}
+	return fmt.Sprintf("Closed the %s window and discarded its temporary profile.", kind)
 }

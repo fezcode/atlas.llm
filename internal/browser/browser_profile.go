@@ -72,6 +72,12 @@ func seedFirefoxDefaultProfile(dst string) error {
 // Everything else is deliberately preserved — that data is the feature.
 // Best-effort: a file that can't be removed is left for the browser to sort
 // out, which it usually does.
+//
+// Two more things only a reused profile needs: the caches it has accumulated
+// since last time are dropped (nothing else ever prunes them, so they would
+// grow without bound), and Chrome's crash flag is reset, since we always kill
+// the browser and would otherwise show a "didn't shut down correctly" bubble
+// on every single launch.
 func prepPersistentProfile(dir string) {
 	transient := []string{
 		"DevToolsActivePort",                                  // Chrome debug port
@@ -82,6 +88,8 @@ func prepPersistentProfile(dir string) {
 	for _, name := range transient {
 		_ = os.Remove(filepath.Join(dir, name))
 	}
+	pruneProfileCaches(dir)
+	clearChromeCrashFlag(dir)
 }
 
 // chromeUserDataDir returns the user-data directory for the Chromium-family

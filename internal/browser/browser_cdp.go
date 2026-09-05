@@ -59,8 +59,13 @@ func launchChrome(mode profileMode) (*cdpSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	if mode == profileDefault {
-		if err := seedChromeDefaultProfile(exe, profile); err != nil {
+	// A persistent profile is seeded on its first launch only: that is what
+	// makes "use my logins and remember them" reachable, and re-seeding later
+	// would overwrite the sessions it exists to accumulate. Having no real
+	// profile to copy is fatal for default (it was the whole request) but not
+	// for persist, which just starts empty.
+	if mode == profileDefault || (mode == profilePersist && persistNeedsSeed(profile)) {
+		if err := seedChromeDefaultProfile(exe, profile); err != nil && mode == profileDefault {
 			killAndCleanup(nil, nil, profile, !persist)
 			return nil, err
 		}

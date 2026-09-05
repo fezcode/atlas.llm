@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"atlas.llm/internal/browser"
 	"atlas.llm/internal/config"
 	"atlas.llm/internal/engine"
 	mcpx "atlas.llm/internal/mcp"
@@ -417,6 +418,12 @@ func renderConfig(cfg config.Config, st configState) string {
 	}
 	if p, err := engine.EngineDir(); err == nil {
 		fmt.Fprintf(&b, "  %-14s  %s\n", "engine", p)
+	}
+	// Only profiles that exist: an unused one is a path, not a file on disk.
+	for _, prof := range browser.PersistentProfiles() {
+		if prof.Exists {
+			fmt.Fprintf(&b, "  %-14s  %s\n", "browser "+prof.Family, prof.Dir)
+		}
 	}
 
 	return strings.TrimRight(b.String(), "\n")

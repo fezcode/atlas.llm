@@ -60,14 +60,29 @@ func launchFirefox(mode profileMode) (*bidiSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	if mode == profileDefault {
+	// A persistent profile is seeded on its first launch only — re-seeding
+	// would overwrite the sessions it exists to accumulate — and having no
+	// real profile to copy is fatal for default but not for persist, which
+	// just starts empty. user.js goes only into a profile that is still new:
+	// Firefox re-applies it to prefs.js at every startup, so writing it each
+	// time would silently revert whatever the user changed in that window.
+	newProfile := mode != profilePersist || persistNeedsSeed(profile)
+	seeded := false
+	if mode == profileDefault || (mode == profilePersist && newProfile) {
 		if err := seedFirefoxDefaultProfile(profile); err != nil {
+			if mode == profileDefault {
+				killAndCleanup(nil, nil, profile, !persist)
+				return nil, err
+			}
+		} else {
+			seeded = true
+		}
+	}
+	if !seeded && newProfile {
+		if err := os.WriteFile(filepath.Join(profile, "user.js"), []byte(firefoxPrefs), 0644); err != nil {
 			killAndCleanup(nil, nil, profile, !persist)
 			return nil, err
 		}
-	} else if err := os.WriteFile(filepath.Join(profile, "user.js"), []byte(firefoxPrefs), 0644); err != nil {
-		killAndCleanup(nil, nil, profile, !persist)
-		return nil, err
 	}
 	cmd := exec.Command(exe,
 		// Port 0: the remote agent picks a free port and writes it to

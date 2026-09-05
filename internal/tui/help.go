@@ -483,6 +483,42 @@ var helpTopics = []helpTopic{
 		SeeAlso: []string{"download"},
 	},
 	{
+		Name:    "browser",
+		Summary: "Inspect and clear the persistent browser profile.",
+		Usage:   []string{"/browser", "/browser clear", "/browser clear chrome"},
+		Detail: "The model can open a browser on three kinds of profile. Two of them " +
+			"are throwaway temp directories deleted the moment the window " +
+			"closes, and there is nothing to manage. The third — the one it uses " +
+			"when you ask it to remember a session — is a directory atlas.llm " +
+			"keeps under the data dir, one per browser family, and that one " +
+			"survives on purpose.\n\n" +
+			"That means cookies and logins accumulate there indefinitely. " +
+			"/browser with no argument shows where each profile lives, how much " +
+			"disk it has grown to, when it was last used, and whether a window " +
+			"has it open right now.\n\n" +
+			"Only one session may use a persistent profile at a time. A second " +
+			"atlas.llm asking for it is refused rather than allowed to share it, " +
+			"because two browsers writing one cookie store corrupt it. A profile " +
+			"left locked by a run that crashed is taken over automatically.\n\n" +
+			"Caches inside it are dropped on each relaunch, so it grows with " +
+			"what you sign into rather than with what you browse.",
+		Subcommands: []helpSub{
+			{Name: "clear", Usage: "/browser clear [chrome|firefox]",
+				Detail: "Delete the profile, signing out of every site in it. " +
+					"With no family, clears both. Refused while a window has it open."},
+		},
+		Examples: [][2]string{
+			{"/browser", "where the profiles are and how big they have grown"},
+			{"/browser clear chrome", "sign out of everything in the Chrome profile"},
+		},
+		Notes: []string{
+			"The persistent profile is separate from your real browser profile, " +
+				"which atlas.llm never opens or writes to.",
+			"It is listed in /config's FILES section once it exists.",
+		},
+		SeeAlso: []string{"tools"},
+	},
+	{
 		Name:    "tools",
 		Summary: "Let the model read, edit, and run things in your project.",
 		Usage:   []string{"/tools", "/tools on", "/tools off", "/tools list"},
@@ -533,9 +569,9 @@ var helpTopics = []helpTopic{
 			"a persistent profile atlas.llm owns (under the data dir, one per " +
 			"browser family). Unlike the throwaway, this one is not deleted on " +
 			"close, so cookies and signed-in sessions survive — sign in once and " +
-			"the next launch is still logged in. It is separate from your real " +
-			"profile; the stale debug-port and lock files from the last run are " +
-			"cleared before each relaunch so a crash can't wedge it.\n\n" +
+			"the next launch is still logged in. Its first launch copies your " +
+			"real profile, so you start out already signed in where you were. " +
+			"See /help browser for where it lives and how to clear it.\n\n" +
 			"This switch also governs MCP tools. /mcp manages connections; /tools " +
 			"decides whether the model may call anything at all.",
 		Subcommands: []helpSub{

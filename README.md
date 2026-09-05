@@ -48,6 +48,7 @@ they are missing returns an error with the command to run.
 | `/config`         | Everything at once: settings, session state, memory, paths.         |
 | `/tools [on\|off\|list]` | Toggle agentic tool-use (off by default). See below.         |
 | `/mcp [...]`      | Connect MCP servers (Slack, Confluence, …). See below.              |
+| `/browser [clear]`| Inspect or clear the persistent browser profile. See below.         |
 | `/compact`        | Summarize older turns to free up the context window.                |
 | `/yesman [on\|off]` | Auto-approve destructive tools — session only. See below.          |
 | `/clear`          | Clear on-screen chat history (keeps conversation context).          |
@@ -261,10 +262,32 @@ a nuisance for a site you come back to repeatedly and want to stay logged in
 to. Ask to keep the session — "open Chrome and remember this" — and the model
 passes `profile="persist"`. That launches on a dedicated profile atlas.llm
 owns, under `~/.atlas/atlas.llm.data/browser-profiles/<chrome|firefox>/`,
-which is **not deleted on close**. Cookies and signed-in sessions accumulate,
-so signing in once carries over to the next launch. It's still separate from
-your real browser profile, and the previous run's stale debug-port and lock
-files are cleared before each relaunch so an earlier crash can't wedge it.
+which is **not deleted on close**. Its first launch is seeded from your real
+profile, so you start out signed in where you already were; from then on it
+keeps whatever the window signs into. It's still separate from your real
+browser profile, which is never opened or written to.
+
+Because it outlives the session, it's the one browser profile worth managing,
+and `/browser` does that — where each one lives, how much disk it has grown
+to, when it was last used, and whether a window has it open:
+
+```
+/browser                  where the profiles are and how big they've grown
+/browser clear            sign out of everything, both families
+/browser clear chrome     just the Chrome one
+```
+
+Three things happen before each relaunch, none of which a throwaway profile
+ever needs. The previous run's stale debug-port and lock files are cleared, so
+an earlier crash can't wedge it. Caches are pruned, so the directory grows with
+what you sign into rather than with everything you browse. And Chrome's crash
+flag is reset — atlas.llm always kills the browser on exit, which Chrome would
+otherwise report as "didn't shut down correctly" on every single launch.
+
+Only one session may hold a persistent profile at a time. A second atlas.llm
+asking for it is refused rather than allowed to share it, because two browsers
+writing one cookie store corrupt it; a profile left locked by a run that
+crashed is taken over automatically.
 
 The agent is told the project root and its top-level layout at the start of
 each turn, so it doesn't guess directory names. `run_cmd` also lifts a

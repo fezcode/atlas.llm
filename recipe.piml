@@ -1,4 +1,4 @@
 (name) atlas.llm
-(version) 0.54.1
+(version) 0.55.0
 (description) Local AI chat with GPU offload, agentic tools, and MCP servers. Serves a model over the LAN for other machines; also one-shot --summarize, --grep, and --dump.
 (license) MIT
