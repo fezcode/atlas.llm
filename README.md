@@ -1,7 +1,7 @@
 
 # atlas.llm
 
-![Banner](banner-image.png)
+![Banner](assets/banner-image.png)
 
 A local AI coding companion in a single Go binary. Opens an interactive chat
 TUI by default — or, in one shot, summarizes a directory, runs semantic grep
@@ -887,7 +887,7 @@ Models in the registry (`/list` shows download status):
   needs a llama.cpp build from Aug 2026 or later (`/download engine` refreshes
   an older install).
 
-More can be added by extending `availableModels` in `models.go`.
+More can be added by extending `AvailableModels` in `internal/catalog/models.go`.
 
 ### Mixture-of-experts models
 
@@ -928,7 +928,26 @@ gobake build
 Plain `go build` also works if you'd rather not install gobake:
 
 ```powershell
-go build -o build/atlas.llm.exe .
+go build -o build/atlas.llm.exe ./cmd/atlas.llm
+```
+
+
+### Repository layout
+
+```
+cmd/atlas.llm/        main() — flag parsing, one-shot modes, TUI launch
+internal/tui/         Bubble Tea model: rendering, slash commands, agent loop
+internal/engine/      llama.cpp lifecycle, GPU/VRAM planning, chat transport
+internal/tools/       the built-in tool registry and the filesystem jail
+internal/browser/     browser automation tools (CDP + WebDriver BiDi)
+internal/mcp/         MCP client, catalog, OAuth (package mcpx)
+internal/config/      settings file, profiles, model resolution
+internal/catalog/     the model registry
+internal/cmdops/      --dump / --grep / --summarize
+internal/ui/          lipgloss styles shared by every renderer
+internal/logging/     the persistent TUI log file
+internal/buildinfo/   the version string, so non-main packages can read it
+docs/                 design notes
 ```
 
 ## License

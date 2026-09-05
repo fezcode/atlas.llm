@@ -4,6 +4,7 @@ package bake_recipe
 
 import (
 	"fmt"
+
 	"github.com/fezcode/gobake"
 )
 
@@ -46,7 +47,7 @@ func Run(bake *gobake.Engine) error {
 				"GOARCH=" + t.arch,
 			}
 
-			err := ctx.Run("go", "build", "-ldflags", ldflags, "-o", output, ".")
+			err := ctx.Run("go", "build", "-ldflags", ldflags, "-o", output, "./cmd/atlas.llm")
 			if err != nil {
 				return err
 			}
