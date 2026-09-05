@@ -4,3 +4,5 @@ SUMMARY.md
 *.exe
 # `go build ./...` drops the compiled main package here as a bare binary.
 /atlas.llm
+# Cygwin/MSYS drops these in the cwd when a shell child crashes.
+*.stackdump

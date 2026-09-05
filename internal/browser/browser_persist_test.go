@@ -129,15 +129,15 @@ func TestKillAndCleanupRespectsRemoveFlag(t *testing.T) {
 func TestPrepPersistentProfileClearsStaleState(t *testing.T) {
 	dir := t.TempDir()
 	stale := map[string]bool{ // filename -> should be removed
-		"DevToolsActivePort":     true,
-		"SingletonLock":          true,
-		"SingletonCookie":        true,
-		"SingletonSocket":        true,
+		"DevToolsActivePort":       true,
+		"SingletonLock":            true,
+		"SingletonCookie":          true,
+		"SingletonSocket":          true,
 		"WebDriverBiDiServer.json": true,
-		"lock":                   true,
-		".parentlock":            true,
-		"Cookies":                false, // real profile data must survive
-		"Local State":            false,
+		"lock":                     true,
+		".parentlock":              true,
+		"Cookies":                  false, // real profile data must survive
+		"Local State":              false,
 	}
 	for name := range stale {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0644); err != nil {

@@ -1,0 +1,6 @@
+# core.autocrlf=true checks Go files out with CRLF, and gofmt treats a CR as
+# part of the line — so every file comes back dirty under `gofmt -l` on a
+# fresh clone. Go source is LF in the repo and stays LF in the working tree.
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf

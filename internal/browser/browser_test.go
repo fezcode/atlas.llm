@@ -648,9 +648,9 @@ func TestBrowserUploadCallsSetFiles(t *testing.T) {
 
 func TestBrowserTabsValidation(t *testing.T) {
 	for _, args := range []map[string]any{
-		{},                       // no action
-		{"action": "levitate"},   // unknown action
-		{"action": "switch"},     // switch needs a tab number
+		{},                     // no action
+		{"action": "levitate"}, // unknown action
+		{"action": "switch"},   // switch needs a tab number
 	} {
 		if _, err := toolBrowserTabs(args); err == nil {
 			t.Errorf("toolBrowserTabs(%v) should error", args)

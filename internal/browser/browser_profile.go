@@ -74,8 +74,8 @@ func seedFirefoxDefaultProfile(dst string) error {
 // out, which it usually does.
 func prepPersistentProfile(dir string) {
 	transient := []string{
-		"DevToolsActivePort",       // Chrome debug port
-		"WebDriverBiDiServer.json", // Firefox remote agent
+		"DevToolsActivePort",                                  // Chrome debug port
+		"WebDriverBiDiServer.json",                            // Firefox remote agent
 		"SingletonLock", "SingletonCookie", "SingletonSocket", // Chrome
 		"lock", ".parentlock", "parent.lock", // Firefox
 	}

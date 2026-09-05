@@ -40,7 +40,7 @@ var (
 	SysStyle = lipgloss.NewStyle().Foreground(ColMuted).Italic(true)
 	// thinkStyle dims the reasoning text a show_thinking transcript carries,
 	// so the eye separates it from the reply without a border.
-	ThinkStyle = lipgloss.NewStyle().Foreground(ColMuted).Faint(true)
+	ThinkStyle   = lipgloss.NewStyle().Foreground(ColMuted).Faint(true)
 	ErrTextStyle = lipgloss.NewStyle().Foreground(ColErr)
 
 	// Top bar: accent-colored brand + muted meta, with a thin underline rule.

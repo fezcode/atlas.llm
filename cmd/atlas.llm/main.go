@@ -171,25 +171,25 @@ func main() {
 	// Same story for a browser the agent launched: never orphan it.
 	defer browser.CloseActiveBrowser()
 	var (
-		versionFlag       bool
-		helpFlag          bool
-		summarizeFlag     bool
-		dumpFlag          bool
-		withSummariesFlag bool
-		outputFlag        string
-		excludeFlag       string
-		grepFlag          string
-		maxSizeFlag       int64
+		versionFlag         bool
+		helpFlag            bool
+		summarizeFlag       bool
+		dumpFlag            bool
+		withSummariesFlag   bool
+		outputFlag          string
+		excludeFlag         string
+		grepFlag            string
+		maxSizeFlag         int64
 		clearLogsFlag       bool
 		resetModelFlag      bool
 		installProfilesFlag bool
-		chatFlag          string
-		chatFlagSet       bool
-		serveFlag         bool
-		bindFlag          string
-		portFlag          int
-		slotsFlag         int
-		apiKeyFlag        string
+		chatFlag            string
+		chatFlagSet         bool
+		serveFlag           bool
+		bindFlag            string
+		portFlag            int
+		slotsFlag           int
+		apiKeyFlag          string
 	)
 
 	flag.BoolVar(&versionFlag, "v", false, "")

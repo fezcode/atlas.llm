@@ -46,11 +46,11 @@ type llamaServer struct {
 	gpuSetting int
 	// tuning is the tuningFingerprint the server was launched with, so a
 	// changed tuning setting restarts it on the next message.
-	tuning string
-	apiKey     string
-	client     *http.Client
-	waitOnce   sync.Once
-	waitErr    chan error
+	tuning   string
+	apiKey   string
+	client   *http.Client
+	waitOnce sync.Once
+	waitErr  chan error
 }
 
 // isRemote reports whether this server is someone else's process. Remote
