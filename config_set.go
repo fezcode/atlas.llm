@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -426,4 +427,282 @@ func onOff(b bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+// handleSet implements `/set`, `/set <key>`, and `/set <key> <value>`. With
+// no args it lists current settings; with a key alone it prints that
+// setting; with key+value it validates and persists.
+func (m *chatModel) handleSet(args []string) {
+	cfg, err := loadConfig()
+	if err != nil {
+		m.pushError("load config: " + err.Error())
+		return
+	}
+	if len(args) == 0 {
+		m.pushSystem(renderSettingsList(cfg))
+		return
+	}
+	key := strings.ToLower(args[0])
+	// `/set <key>` with no value explains the setting rather than just
+	// echoing it — choosing a value needs the limits and the tradeoff.
+	if len(args) < 2 {
+		if s, ok := findSetting(key); ok {
+			m.pushSystem(renderSettingDetail(s, cfg))
+			return
+		}
+	}
+	// Some settings configure a llama-server this install isn't running.
+	// Saving them is still right — they apply again on `/set endpoint local`
+	// — but silently accepting one that changes nothing is the failure mode
+	// this whole session has been about.
+	if ep, _ := remoteEndpoint(); ep != "" && remoteDecidesSetting(key) {
+		m.pushSystem(fmt.Sprintf(
+			"Note: %s is decided by the server at %s. This saves the value locally, "+
+				"but nothing changes until `/set endpoint local`.", key, ep))
+	}
+	switch key {
+	case "ctx_size":
+		val := strings.ToLower(args[1])
+		if val == "auto" || val == "default" {
+			cfg.CtxSize = 0
+		} else {
+			n, err := strconv.Atoi(val)
+			if err != nil || n <= 0 {
+				m.pushError(fmt.Sprintf("invalid ctx_size=%q (expected `auto` or a token count)", args[1]))
+				return
+			}
+			if n < minConfigurableCtx {
+				m.pushError(fmt.Sprintf("ctx_size=%d is too small — the system prompt and tool "+
+					"definitions alone need more than that (minimum %d)", n, minConfigurableCtx))
+				return
+			}
+			if n > maxConfigurableCtx {
+				m.pushError(fmt.Sprintf("ctx_size=%d exceeds the %d ceiling atlas.llm allows — "+
+					"no model here is trained past that", n, maxConfigurableCtx))
+				return
+			}
+			if trained := currentModelTrainedContext(); trained > 0 && n > trained {
+				m.pushError(fmt.Sprintf("ctx_size=%d exceeds what %s was trained for (%d). "+
+					"Going beyond it degrades quality rather than extending memory.",
+					n, cfg.CurrentModel, trained))
+				return
+			}
+			cfg.CtxSize = n
+		}
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		m.pushSystem(fmt.Sprintf("ctx_size = %s\nTakes effect on the next message (the model server restarts). "+
+			"A larger window uses proportionally more memory for the KV cache.",
+			ctxSizeDisplay(cfg)))
+
+	case "reasoning":
+		switch strings.ToLower(args[1]) {
+		case reasoningOn, "true", "yes":
+			cfg.Reasoning = reasoningOn
+		case reasoningOff, "false", "no":
+			cfg.Reasoning = reasoningOff
+		case reasoningAuto, "default":
+			cfg.Reasoning = ""
+		default:
+			m.pushError(fmt.Sprintf("invalid reasoning=%q (expected on, off, or auto)", args[1]))
+			return
+		}
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		msg := fmt.Sprintf("reasoning = %s", reasoningDisplay(cfg))
+		if !reasoningEnabled(cfg) {
+			msg += "\n\nReplies will be markedly faster. Tool-use and multi-step " +
+				"reasoning may get less reliable — turn it back on with `/set reasoning on`."
+		}
+		m.pushSystem(msg)
+
+	case "max_tool_rounds":
+		val := strings.ToLower(args[1])
+		switch val {
+		case "off", "none", "unlimited":
+			cfg.MaxToolRounds = -1
+		case "auto", "default":
+			cfg.MaxToolRounds = 0
+		default:
+			n, err := strconv.Atoi(val)
+			if err != nil || n <= 0 {
+				m.pushError(fmt.Sprintf(
+					"invalid max_tool_rounds=%q (expected a positive number, `off`, or `default`)", args[1]))
+				return
+			}
+			cfg.MaxToolRounds = n
+		}
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		msg := fmt.Sprintf("max_tool_rounds = %s", maxToolRoundsDisplay(cfg))
+		if resolveMaxToolRounds(cfg) == unlimitedToolRounds {
+			msg += fmt.Sprintf("\n\nNo round limit. A stuck model is still caught: identical "+
+				"repeated calls stop the turn after %d attempts, and esc stops it at any time.",
+				maxIdenticalCalls+1)
+		}
+		m.pushSystem(msg)
+
+	case "gpu_layers":
+		val := strings.ToLower(args[1])
+		if val == "auto" {
+			cfg.GPULayers = nil
+		} else {
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 0 {
+				m.pushError(fmt.Sprintf("invalid gpu_layers=%q (expected `auto`, 0 for CPU-only, or a layer count)", args[1]))
+				return
+			}
+			cfg.GPULayers = &n
+		}
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		msg := fmt.Sprintf("gpu_layers = %s", gpuLayersDisplay(cfg))
+		if resolveGPULayers(cfg) > 0 && runtime.GOOS != "darwin" &&
+			!engineVariantIsGPU(installedEngineVariant()) {
+			msg += "\n\nNote: the installed engine is a CPU-only build, so this will have no effect.\n" +
+				"Run `/set engine_variant <" + strings.Join(engineVariantNames()[2:], "|") +
+				">` then `/download engine` for GPU support."
+		}
+		msg += "\nTakes effect on the next message (the model server restarts)."
+		m.pushSystem(msg)
+
+	case "engine_variant":
+		val := strings.ToLower(args[1])
+		switch val {
+		case engineVariantAuto, "":
+			cfg.EngineVariant = ""
+		case engineVariantCPU, engineVariantVulkan, engineVariantCUDA, engineVariantHIP:
+			cfg.EngineVariant = val
+		default:
+			m.pushError(fmt.Sprintf("invalid engine_variant=%q (expected %s)",
+				args[1], strings.Join(engineVariantNames(), ", ")))
+			return
+		}
+		want := resolveEngineVariant(cfg.EngineVariant)
+		if val != engineVariantAuto && val != "" && want != val {
+			m.pushError(fmt.Sprintf("no %s llama.cpp build for %s/%s (available here: %s)",
+				val, runtime.GOOS, runtime.GOARCH, strings.Join(engineVariantNames(), ", ")))
+			return
+		}
+		asset, err := engineAssetSuffix(want)
+		if err != nil {
+			m.pushError(err.Error())
+			return
+		}
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		msg := fmt.Sprintf("engine_variant = %s", engineVariantDisplay(cfg))
+		if installedEngineVariant() != want {
+			msg += fmt.Sprintf("\n\nInstalled engine is %q — run `/download engine` to replace it with the %s build (%s).",
+				installedEngineVariant(), want, asset.Size)
+		}
+		m.pushSystem(msg)
+
+	case "max_tokens":
+		n, err := strconv.Atoi(args[1])
+		if err != nil || n <= 0 {
+			m.pushError(fmt.Sprintf("invalid max_tokens=%q (expected positive integer)", args[1]))
+			return
+		}
+		// A reply longer than most of the context window would leave no room
+		// for the prompt and history, so the ceiling tracks ctx_size.
+		if ceiling := maxTokensCeiling(cfg); n > ceiling {
+			m.pushError(fmt.Sprintf(
+				"max_tokens=%d exceeds the ceiling of %d for a %d-token context "+
+					"(the rest is needed for the prompt and history). "+
+					"Raise it with `/set ctx_size N` first.",
+				n, ceiling, resolveCtxSize(cfg)))
+			return
+		}
+		cfg.MaxTokens = n
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		m.pushSystem(fmt.Sprintf("max_tokens = %d", n))
+
+	case "endpoint":
+		ep, err := normalizeEndpoint(args[1])
+		if err != nil {
+			m.pushError(err.Error())
+			return
+		}
+		was, _ := remoteEndpoint()
+		cfg.Endpoint = ep
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		// The old server is now the wrong one either way: switching to a
+		// remote makes the local subprocess dead weight, and switching back
+		// leaves a remote attachment pointing nowhere.
+		if was != ep {
+			shutdownServer()
+		}
+		if ep == "" {
+			clearRemoteStatus()
+			m.pushSystem("endpoint = local\nInference moves back to this machine on your next message.")
+			return
+		}
+		// Check it now rather than letting a typo look fine until the first
+		// message fails. A LAN probe is milliseconds; the alternative is the
+		// user discovering the mistake three commands later.
+		_, key := remoteEndpoint()
+		st := probeRemote(ep, key)
+		setRemoteStatus(st)
+		startHeartbeat()
+		m.pushSystem(renderEndpointProbe(ep, st))
+
+	case "endpoint_key":
+		cfg.EndpointKey = strings.TrimSpace(args[1])
+		if strings.EqualFold(cfg.EndpointKey, "none") || strings.EqualFold(cfg.EndpointKey, "off") {
+			cfg.EndpointKey = ""
+		}
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		shutdownServer() // reattach so the new key is used
+		if cfg.EndpointKey == "" {
+			m.pushSystem("endpoint_key cleared.")
+			return
+		}
+		m.pushSystem("endpoint_key set.\nTakes effect on your next message.")
+
+	default:
+		// Settings that registered an Apply are handled generically: the
+		// registry validates and writes, this branch persists and confirms.
+		// The older settings keep bespoke cases above for their side
+		// effects (probes, server shutdowns).
+		s, ok := findSetting(key)
+		if !ok || s.Apply == nil {
+			m.pushError(fmt.Sprintf("unknown setting: %s (supported: %s)", key, strings.Join(settingKeys(), ", ")))
+			return
+		}
+		if err := s.Apply(&cfg, args[1]); err != nil {
+			m.pushError(err.Error())
+			return
+		}
+		if err := saveConfig(cfg); err != nil {
+			m.pushError("save config: " + err.Error())
+			return
+		}
+		msg := fmt.Sprintf("%s = %s", s.Key, s.Value(cfg))
+		if s.Restart {
+			msg += "\nTakes effect on the next message (the model server restarts)."
+		} else {
+			msg += "\nApplies to your next message."
+		}
+		m.pushSystem(msg)
+	}
 }

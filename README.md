@@ -882,7 +882,7 @@ Models in the registry (`/list` shows download status):
   needs a llama.cpp build from Aug 2026 or later (`/download engine` refreshes
   an older install).
 
-More can be added by extending `availableModels` in `config.go`.
+More can be added by extending `availableModels` in `models.go`.
 
 ### Mixture-of-experts models
 

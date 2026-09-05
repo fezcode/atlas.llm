@@ -82,7 +82,7 @@ Plan:
 - Add `stream: true` to `chatRequest`. llama-server returns a
   Server-Sent Events stream of `data: {...}\n\n` frames terminated by
   `data: [DONE]\n\n`.
-- New `server.go` method `ChatCompleteStream(msgs, maxTokens, onDelta)
+- New `engine_server.go` method `ChatCompleteStream(msgs, maxTokens, onDelta)
   (UsageStats, error)`. `onDelta(partial string)` fires per frame.
 - `engine.go` gets a streaming variant of `runChat`; `chat()` still
   returns the final string (aggregated), but the tea.Cmd for chat
@@ -255,7 +255,7 @@ Closes the three items that were open above, plus a bug that made the
 documented two-step variant switch impossible to perform.
 
 - `nvidia-smi --query-gpu=name,compute_cap,memory.total` is the probe
-  (gpu.go). Cached behind a `sync.Once`: `resolveEngineVariant` feeds the
+  (engine_gpu.go). Cached behind a `sync.Once`: `resolveEngineVariant` feeds the
   header and settings rendering, which repaint per keystroke, so spawning a
   process per frame would cost more than the feature saves. On Windows it
   reuses the engine's `CREATE_NO_WINDOW` flags so no console flashes.
@@ -412,7 +412,7 @@ wheel, resize) still reach it. No vim mode.
 `-c` was hardcoded at 16384. `/set ctx_size auto|N` now sets it.
 
 The ceiling is the model's own trained context length, read from the GGUF
-header by a minimal metadata parser in gguf.go — so the limit is the real
+header by a minimal metadata parser in engine_gguf.go — so the limit is the real
 one rather than a guess. Measured on the shipped models: Qwen3.5 (4B and 9B)
 report 262144, Gemma 3 1B reports 32768, meaning the old hardcoded 16384 was
 using 6% of what Qwen supports.
@@ -429,7 +429,7 @@ llama-server rather than silently taking effect on the next model switch.
 
 ### 19. /config and per-setting help  — SHIPPED (v0.19.0)
 Settings information lived in three places — handleSet, help.go, and the
-README — and kept drifting. settings.go is now the single source: each entry
+README — and kept drifting. config_set.go is now the single source: each entry
 carries its key, usage, how to render the current value, and its guidance,
 and /set, /config, and the /help cross-check test all read from it.
 
@@ -463,7 +463,7 @@ picked up automatically.
 system RAM (read from sysctl / /proc/meminfo / wmic) with a verdict.
 
 Only the weights are counted, deliberately. Predicting the KV cache from
-model shape overestimates ~4x on these models (see memory.go), so the figure
+model shape overestimates ~4x on these models (see engine_memory.go), so the figure
 is an honest floor rather than a wrong total, and the listing says the
 context window adds more on top.
 
@@ -472,7 +472,7 @@ Tools resolved paths against the process working directory with no root
 concept, so the model could reach anywhere on the filesystem, and a wrong
 relative path produced a bare "no such file or directory".
 
-jail.go now resolves every tool path against the directory atlas.llm was
+tool_jail.go now resolves every tool path against the directory atlas.llm was
 started in. At or below the root is allowed; anything above is refused with
 an error that names the root, so the model can correct rather than guess.
 Symlinks are resolved on the deepest existing ancestor, which catches a link
@@ -883,7 +883,7 @@ oversized quant only spills cheap expert tensors, a dense model pays for
 every spilled layer on every token — so Q4_K_M (17.1GB) on a 16GB card would
 be a permanent slowdown. UD-Q3_K_XL (13.4GB) fits outright with room for the
 KV cache, which the hybrid attention keeps small: only a minority of layers
-carry a real KV cache, a layout the estimator in gguf.go already models for
+carry a real KV cache, a layout the estimator in engine_gguf.go already models for
 Qwen3.5.
 
 Known limitations:
@@ -907,7 +907,7 @@ these defaults are measured and documented, and silent drift here changes
 every user's launch.
 
 **One registry entry per setting.** The `setting` struct gained `Apply` and
-`Restart`; new settings live entirely in tuning.go and handleSet gained one
+`Restart`; new settings live entirely in config_tuning.go and handleSet gained one
 generic branch, instead of fifteen more bespoke switch cases. The older
 settings keep theirs for their side effects (probes, shutdowns).
 
