@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -70,17 +71,28 @@ func launchChrome(mode profileMode) (*cdpSession, error) {
 			return nil, err
 		}
 	}
-	cmd := exec.Command(exe,
+	args := []string{
 		// Port 0: Chrome picks a free port and writes it to
 		// DevToolsActivePort inside the profile dir.
 		"--remote-debugging-port=0",
-		"--user-data-dir="+profile,
+		"--user-data-dir=" + profile,
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--disable-search-engine-choice-screen",
-		"--new-window",
-		"about:blank",
-	)
+		// Chrome sets the AutomationControlled blink feature when it believes
+		// it is being driven, and a page can read the result. We never pass
+		// --enable-automation, so navigator.webdriver is already false; this
+		// closes the other half.
+		"--disable-blink-features=AutomationControlled",
+	}
+	// Chrome picks up the OS language on its own, so passing nothing is
+	// correct rather than a fallback — guessing en-US on a machine that is not
+	// en-US would make the profile look stranger, not less strange.
+	if lang := uiLanguage(); lang != "" {
+		args = append(args, "--lang="+lang, "--accept-lang="+lang)
+	}
+	args = append(args, "--new-window", "about:blank")
+	cmd := exec.Command(exe, args...)
 	if err := cmd.Start(); err != nil {
 		killAndCleanup(nil, nil, profile, !persist)
 		return nil, fmt.Errorf("start %s: %w", filepath.Base(exe), err)
@@ -477,4 +489,22 @@ func (s *cdpSession) Close() {
 	_, _ = s.call("Browser.close", map[string]any{}, 3*time.Second)
 	_ = s.conn.Close(websocket.StatusNormalClosure, "")
 	killAndCleanup(s.cmd, s.exited, s.profile, !s.persist)
+}
+
+// uiLanguage returns the OS UI language as a BCP-47 tag, or "" when the
+// environment does not say. Windows leaves these unset and Chrome reads the
+// system setting itself, so an empty answer is the common and correct one.
+func uiLanguage() string {
+	for _, key := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		v := os.Getenv(key)
+		// The C/POSIX locales mean "no locale", not a language.
+		if v == "" || v == "C" || v == "POSIX" || strings.HasPrefix(v, "C.") {
+			continue
+		}
+		if i := strings.IndexAny(v, ".@"); i >= 0 {
+			v = v[:i]
+		}
+		return strings.ReplaceAll(v, "_", "-")
+	}
+	return ""
 }

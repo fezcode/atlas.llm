@@ -548,7 +548,7 @@ var helpTopics = []helpTopic{
 			"(including JavaScript errors, and any alert/confirm/prompt dialogs, " +
 			"which are auto-answered so they can never hang the session), " +
 			"browser_act drives the page (click, type, hover, select, clear, get, " +
-			"scroll, wait, back/forward/reload, or raw eval), browser_screenshot " +
+			"scroll, wait, wait_human, back/forward/reload, or raw eval), browser_screenshot " +
 			"saves a PNG of the page or of one element, browser_tabs lists, " +
 			"switches, opens, and closes tabs, browser_upload attaches a local " +
 			"file to a file-upload field (confirmed first, since it hands the " +
@@ -572,6 +572,15 @@ var helpTopics = []helpTopic{
 			"the next launch is still logged in. Its first launch copies your " +
 			"real profile, so you start out already signed in where you were. " +
 			"See /help browser for where it lives and how to clear it.\n\n" +
+			"Loads of one site are spaced out automatically, with the gap widening " +
+			"for a host that starts pushing back, so a long session is less likely " +
+			"to be throttled — the persistent profile makes that more likely, not " +
+			"less, since every visit arrives as the same signed-in identity. When a " +
+			"site answers with a captcha or a \"verify you are human\" page, the model " +
+			"is told what it is looking at instead of reading the interstitial as if " +
+			"it were the page: solve the check yourself in the window, and " +
+			"browser_act wait_human picks up where it left off. A rate-limit notice " +
+			"says so plainly instead, since no amount of clicking gets past one.\n\n" +
 			"This switch also governs MCP tools. /mcp manages connections; /tools " +
 			"decides whether the model may call anything at all.",
 		Subcommands: []helpSub{

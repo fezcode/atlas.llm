@@ -1,12 +1,15 @@
 package browser
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -194,6 +197,7 @@ func init() {
 			"- get: return the text, value, and link of an element (text or selector).\n" +
 			"- scroll: scroll to an element (text or selector), or text=\"top\"/\"bottom\"/\"up\"/\"down\".\n" +
 			"- wait: wait until text appears on the page, or a selector matches (up to ~10s) — use after a click that loads content.\n" +
+			"- wait_human: the page is a captcha or human-verification check — ask the user to solve it in the visible window, then call this to wait (up to 3 min) for the real page.\n" +
 			"- back / forward / reload: browser history and refresh.\n" +
 			"- eval: run a JavaScript expression and return its result.\n" +
 			"Prefer text over CSS selectors — it matches what the user sees. After an action that loads a new page, call browser_read to see it.",
@@ -204,7 +208,7 @@ func init() {
 					"type": "string",
 					"enum": []string{
 						"click", "type", "press", "hover", "select", "clear",
-						"get", "scroll", "wait", "back", "forward", "reload", "eval",
+						"get", "scroll", "wait", "wait_human", "back", "forward", "reload", "eval",
 					},
 				},
 				"text": map[string]any{
@@ -267,12 +271,17 @@ func toolBrowserOpen(args map[string]any) (string, error) {
 			activeBrowser = nil
 			activeBrowserProfile = ""
 		} else {
+			var note string
 			if url != "" {
-				if err := activeBrowser.Navigate(url); err != nil {
+				c, err := navigateWithCare(activeBrowser, url)
+				if err != nil {
 					return "", err
 				}
+				if c != nil {
+					note = "\n\n" + c.message(hostOf(url))
+				}
 			}
-			return fmt.Sprintf("Browser (%s) is already open. %s", activeBrowser.Kind(), pageSummary(activeBrowser)), nil
+			return fmt.Sprintf("Browser (%s) is already open. %s%s", activeBrowser.Kind(), pageSummary(activeBrowser), note), nil
 		}
 	}
 
@@ -280,10 +289,15 @@ func toolBrowserOpen(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	var challengeNote string
 	if url != "" {
-		if err := sess.Navigate(url); err != nil {
+		c, err := navigateWithCare(sess, url)
+		if err != nil {
 			sess.Close()
 			return "", err
+		}
+		if c != nil {
+			challengeNote = "\n\n" + c.message(hostOf(url))
 		}
 	}
 	activeBrowser = sess
@@ -300,7 +314,8 @@ func toolBrowserOpen(args map[string]any) (string, error) {
 	default:
 		profileNote = "a fresh temporary profile"
 	}
-	return fmt.Sprintf("Launched %s in a visible window with %s. %s", sess.Kind(), profileNote, pageSummary(sess)), nil
+	return fmt.Sprintf("Launched %s in a visible window with %s. %s%s",
+		sess.Kind(), profileNote, pageSummary(sess), challengeNote), nil
 }
 
 // launchBrowser starts the requested browser, or picks one: chrome first,
@@ -333,10 +348,18 @@ func toolBrowserNavigate(args map[string]any) (string, error) {
 	}
 	url = normalizeURL(url)
 	return withBrowser(func(s browserSession) (string, error) {
-		if err := s.Navigate(url); err != nil {
+		c, err := navigateWithCare(s, url)
+		if err != nil {
 			return "", err
 		}
-		return readPage(s, "text")
+		page, err := readPage(s, "text")
+		if err != nil {
+			return "", err
+		}
+		if c != nil {
+			return c.message(hostOf(url)) + "\n\n" + page, nil
+		}
+		return page, nil
 	})
 }
 
@@ -349,7 +372,19 @@ func toolBrowserRead(args map[string]any) (string, error) {
 		return "", fmt.Errorf("unknown what %q (expected text, links, html, or console)", what)
 	}
 	return withBrowser(func(s browserSession) (string, error) {
-		return readPage(s, what)
+		page, err := readPage(s, what)
+		if err != nil {
+			return "", err
+		}
+		// The console buffer is ours and is never an interstitial; the other
+		// three read whatever the site served, which may be a challenge the
+		// model would otherwise mistake for the page.
+		if what != "console" {
+			if c := pageChallenge(s); c != nil {
+				return c.message(browserPacer.lastHost()) + "\n\n" + page, nil
+			}
+		}
+		return page, nil
 	})
 }
 
@@ -378,6 +413,12 @@ func toolBrowserAct(args map[string]any) (string, error) {
 			}
 			return tools.TruncateForModel(out), nil
 		})
+	}
+
+	// The handoff for a verification challenge: the user solves the check in
+	// the window they are already watching, and this waits for them.
+	if action == "wait_human" {
+		return withBrowser(waitForHuman)
 	}
 
 	// wait polls the page rather than running once, so give it its own path.
@@ -443,6 +484,13 @@ func toolBrowserAct(args map[string]any) (string, error) {
 		js = historyJS("location.reload()", "reloaded the page")
 	default:
 		return "", fmt.Errorf("unknown action %q", action)
+	}
+	// These three ask the page's own server for something. The rest are
+	// local — moving the mouse or reading a node costs the site nothing, so
+	// pacing them would only slow the model down.
+	switch action {
+	case "click", "press", "reload":
+		browserPacer.pace(browserPacer.lastHost())
 	}
 	return withBrowser(func(s browserSession) (string, error) {
 		out, err := s.Eval(js)
@@ -832,6 +880,25 @@ func presenceJS(selector, text string) string {
 	})()`, actJSHelpers, jsStr(selector), jsStr(selector), jsStr(text))
 }
 
+// browserLogKey is the property the shim hangs its buffer off window. It is
+// random per process and defined non-enumerable, so a page cannot find it by
+// name or by walking Object.keys(window). The buffer used to live on a fixed
+// window.__atlasLog, which was a one-line automation check for any site that
+// cared to look. Object.getOwnPropertyNames still reveals it — hiding from
+// that would mean storing nothing on the page at all, which a console buffer
+// that has to survive between evaluations cannot do.
+var browserLogKey = randomShimKey()
+
+func randomShimKey() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		// A predictable key is still better than a published one, and this
+		// only fails if the OS entropy source is gone.
+		return "_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return "_" + hex.EncodeToString(b)
+}
+
 // browserShimBody is injected into every page the browser loads (as a
 // preload script at launch, and evaluated directly into the page that is
 // already open). It does two things: capture console output, page errors,
@@ -839,41 +906,94 @@ func presenceJS(selector, text string) string {
 // reads back; and replace the blocking dialog functions — a native alert()
 // would otherwise hang every Eval-based tool until its timeout, with nothing
 // telling the model why. Dialogs are recorded in the same buffer.
-const browserShimBody = `
-	if (!window.__atlasLog) {
-		const buf = window.__atlasLog = [];
+//
+// Everything it replaces has to keep answering toString() the way the native
+// function did. "console.log.toString() does not end in [native code]" is the
+// standard test for a patched page, and failing it told every site we visited
+// that the browser was driven — which is exactly what we were not trying to
+// announce.
+func browserShimBody() string {
+	key := jsStr(browserLogKey)
+	return `
+	if (!window[` + key + `]) {
+		const buf = [];
+		Object.defineProperty(window, ` + key + `, {value: buf, enumerable: false, configurable: false, writable: false});
 		const push = (kind, msg) => {
 			buf.push({kind: kind, msg: String(msg).slice(0, 500)});
 			if (buf.length > 200) buf.shift();
 		};
+		// A WeakMap of function -> the source it should claim, consulted by a
+		// patched Function.prototype.toString. Own toString properties are
+		// not enough: the usual check is Function.prototype.toString.call(fn),
+		// which walks straight past them.
+		const nativeSrc = new WeakMap();
+		const origToString = Function.prototype.toString;
+		// Engines render a native function's source differently — Chrome puts it
+		// on one line, Firefox spreads it over three — so the source a patched
+		// function claims is cut from a real native one rather than written out
+		// here. Guessing the format wrong just trades one tell for another.
+		const nativeSample = origToString.call(Object.prototype.hasOwnProperty);
+		const asNative = (fn, name) => {
+			try {
+				Object.defineProperty(fn, "name", {value: name, configurable: true});
+				nativeSrc.set(fn, nativeSample.replace("hasOwnProperty", name));
+			} catch (e) {}
+			return fn;
+		};
+		const shimToString = function toString() {
+			const src = nativeSrc.get(this);
+			return src === undefined ? origToString.call(this) : src;
+		};
+		// The replacement has to cover for itself too, or it is the tell.
+		asNative(shimToString, "toString");
+		Function.prototype.toString = shimToString;
 		for (const level of ["log", "info", "warn", "error", "debug"]) {
 			const orig = console[level] ? console[level].bind(console) : null;
-			console[level] = (...a) => {
+			console[level] = asNative((...a) => {
 				push(level, a.map(x => {
 					try { return typeof x === "string" ? x : JSON.stringify(x); } catch (e) { return String(x); }
 				}).join(" "));
 				if (orig) orig(...a);
-			};
+			}, level);
 		}
 		window.addEventListener("error", e => push("exception", e.message + " (" + (e.filename || "?") + ":" + (e.lineno || 0) + ")"));
 		window.addEventListener("unhandledrejection", e => push("exception", "unhandled rejection: " + ((e.reason && e.reason.message) || e.reason)));
-		window.alert = (m) => { push("dialog", "alert (dismissed): " + m); };
-		window.confirm = (m) => { push("dialog", "confirm (auto-accepted): " + m); return true; };
-		window.prompt = (m, d) => {
+		// Firefox reports navigator.webdriver true for as long as the remote
+		// agent is running, and no parent-process pref turns it off any more.
+		// Chrome already reports false, so this only runs on the browser that
+		// needs it: rewriting a property that is already correct would be a
+		// tell of its own.
+		if (navigator.webdriver) {
+			try {
+				const proto = Object.getPrototypeOf(navigator);
+				const desc = Object.getOwnPropertyDescriptor(proto, "webdriver");
+				if (desc && desc.get) {
+					const spoof = function () { return false; };
+					// Wear the real getter's name and source, not a guess at them.
+					Object.defineProperty(spoof, "name", {value: desc.get.name, configurable: true});
+					nativeSrc.set(spoof, origToString.call(desc.get));
+					Object.defineProperty(proto, "webdriver", {get: spoof, configurable: true, enumerable: desc.enumerable});
+				}
+			} catch (e) {}
+		}
+		window.alert = asNative((m) => { push("dialog", "alert (dismissed): " + m); }, "alert");
+		window.confirm = asNative((m) => { push("dialog", "confirm (auto-accepted): " + m); return true; }, "confirm");
+		window.prompt = asNative((m, d) => {
 			const v = d === undefined || d === null ? "" : String(d);
 			push("dialog", "prompt (auto-answered " + JSON.stringify(v) + "): " + m);
 			return v;
-		};
+		}, "prompt");
 	}`
+}
 
 // browserShimJS is the shim as a runnable expression, for injecting into the
 // document that is already open — preload scripts only cover future ones.
-func browserShimJS() string { return "(() => {" + browserShimBody + "})()" }
+func browserShimJS() string { return "(() => {" + browserShimBody() + "})()" }
 
 // consoleLogJS renders the shim's buffer for browser_read what="console".
 func consoleLogJS() string {
 	return `(() => {
-		const log = window.__atlasLog;
+		const log = window[` + jsStr(browserLogKey) + `];
 		if (!log) return "console capture is not active on this page";
 		if (!log.length) return "nothing captured yet: no console output, page errors, or dialogs on this page";
 		return log.slice(-100).map(e => "[" + e.kind + "] " + e.msg).join("\n");

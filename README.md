@@ -144,7 +144,7 @@ whole file.
 | `browser_open` | ✓         | Launch a visible Chrome or Firefox window the model can drive.  |
 | `browser_navigate` |       | Load a URL in that window and return the page's title + text.   |
 | `browser_read` |           | Read the current page: visible text, links, raw HTML, or console output. |
-| `browser_act`  |           | Click, type, hover, select, scroll, wait, go back/forward, run JS — target by visible text or CSS. |
+| `browser_act`  |           | Click, type, hover, select, scroll, wait, hand a captcha to you, go back/forward, run JS — target by visible text or CSS. |
 | `browser_screenshot` |     | Save a PNG of the page — or one element — to a file.            |
 | `browser_tabs` |           | List, switch, open, and close tabs.                             |
 | `browser_upload` | ✓       | Attach a local file to a page's file-upload field.              |
@@ -218,8 +218,8 @@ what it wants far more reliably than it can hand-write a selector. Its actions
 cover the usual browsing verbs: `click`, `type`, `press`, `hover`, `select`
 (dropdowns), `clear`, `get` (read one element's text/value/link), `scroll`,
 `wait` (block until text or a selector appears — useful for pages that load
-content after the first paint), `back`/`forward`/`reload`, and `eval` for raw
-page JavaScript. When a target isn't found the call comes back as an **error**
+content after the first paint), `wait_human` (hand a verification challenge
+back to you), `back`/`forward`/`reload`, and `eval` for raw page JavaScript. When a target isn't found the call comes back as an **error**
 naming what was searched for and telling the model to read the page rather
 than repeat the same call — so a wrong guess self-corrects instead of looping.
 
@@ -288,6 +288,41 @@ Only one session may hold a persistent profile at a time. A second atlas.llm
 asking for it is refused rather than allowed to share it, because two browsers
 writing one cookie store corrupt it; a profile left locked by a run that
 crashed is taken over automatically.
+
+**Paced, and honest about being blocked.** Driven hard, a browser trips
+defences a person never notices. Two of them are handled here.
+
+Loads of one host are spaced out — a short jittered gap, never applied to the
+first visit — and a host that starts pushing back earns a wider one, which
+decays again once it stops. The persistent profile makes this matter *more*,
+not less: every visit arrives as the same signed-in identity, so a site's
+per-account counters accumulate where a throwaway profile's would have reset.
+
+When a site answers with a captcha, a "verify you are human" interstitial, or
+a rate-limit notice, the model is told what it is looking at rather than being
+handed the challenge page as though it were the content it asked for — which
+is what turns one block into a retry loop that deepens it. For a human check
+the recovery is a human: you are already watching the window, so you solve the
+check in it and `browser_act wait_human` waits (up to three minutes) for the
+real page to come through. For a rate limit there is no such move — the model
+is told to stop and ask you, because no amount of clicking gets past one.
+
+What atlas.llm does **not** do is evade any of this: no captcha-solving
+services, no proxy or IP rotation, no spoofed user-agent (a UA that disagrees
+with the actual binary makes a fingerprint *more* distinctive, not less). What
+it does do is stop announcing itself for no reason.
+
+Chrome is launched without `--enable-automation`, so `navigator.webdriver` is
+already false and nothing touches it. Firefox sets it for as long as the
+WebDriver BiDi agent is up — no parent-process pref turns that off any more —
+so the injected script clears the property there, wearing the real getter's
+own name and source. And that script, which is there to capture console output
+for `browser_read what="console"`, no longer announces *itself*: the buffer
+hangs off a random non-enumerable key instead of a fixed `window.__atlasLog`,
+and every function it replaces still reports its native source, cut from a
+real native function so the wording matches the engine — Chrome writes
+`[native code]` on one line where Firefox spreads it over three. Both were
+one-line checks that the page was being driven.
 
 The agent is told the project root and its top-level layout at the start of
 each turn, so it doesn't guess directory names. `run_cmd` also lifts a

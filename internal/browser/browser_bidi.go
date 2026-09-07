@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,16 +32,65 @@ type bidiSession struct {
 
 func (s *bidiSession) Kind() string { return "firefox" }
 
-// firefoxPrefs is written as user.js into the throwaway profile so a fresh
-// Firefox comes up as a plain blank window instead of onboarding tabs and
-// default-browser nags.
-const firefoxPrefs = `user_pref("browser.shell.checkDefaultBrowser", false);
+// firefoxOnboardingPrefs bring a brand-new profile up as a plain blank window
+// instead of onboarding tabs and default-browser nags. They are written once,
+// when the profile is created: Firefox re-applies user.js to prefs.js at every
+// startup, so writing them again later would silently revert whatever the user
+// changed in that window.
+const firefoxOnboardingPrefs = `user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("browser.aboutwelcome.enabled", false);
 user_pref("browser.startup.homepage", "about:blank");
 user_pref("browser.startup.firstrunSkipsHomepage", true);
 user_pref("datareporting.policy.dataSubmissionEnabled", false);
 user_pref("app.update.auto", false);
 `
+
+// firefoxHygienePrefs are written to every profile on every launch — a seeded
+// or persistent profile received no user.js at all before, so nothing set here
+// would have reached one. Nothing here is a pref a person sets by hand, so
+// unlike the onboarding prefs there is nothing to revert by re-applying them.
+//
+// dom.webdriver.enabled does not, on its own, do the job any more: current
+// Firefox derives navigator.webdriver from the remote agent being up and
+// ignores the pref (measured, not assumed). The shim clears the property
+// page-side instead. The pref stays because ESR and the Firefox forks still
+// honour it and it costs one line.
+const firefoxHygienePrefs = `user_pref("dom.webdriver.enabled", false);
+`
+
+// The prefs atlas.llm manages are fenced off inside user.js. A seeded profile
+// arrives carrying a copy of the user's own user.js, so the block is rewritten
+// in place rather than the file being replaced wholesale.
+const (
+	prefBlockStart = "// --- atlas.llm (managed, rewritten each launch) ---"
+	prefBlockEnd   = "// --- end atlas.llm ---"
+)
+
+// writeFirefoxPrefs puts prefs into the profile's user.js, replacing only the
+// block we own and leaving anything else in the file untouched.
+func writeFirefoxPrefs(profile, prefs string) error {
+	path := filepath.Join(profile, "user.js")
+	existing, _ := os.ReadFile(path) // absent is the normal case, not an error
+	kept := strings.TrimSpace(stripPrefBlock(string(existing)))
+	if kept != "" {
+		kept += "\n\n"
+	}
+	return os.WriteFile(path, []byte(kept+prefBlockStart+"\n"+prefs+prefBlockEnd+"\n"), 0644)
+}
+
+// stripPrefBlock removes a block written by an earlier launch, so relaunching
+// rewrites it instead of stacking copies.
+func stripPrefBlock(s string) string {
+	start := strings.Index(s, prefBlockStart)
+	if start < 0 {
+		return s
+	}
+	end := strings.Index(s[start:], prefBlockEnd)
+	if end < 0 {
+		return s[:start] // truncated block: drop the tail with it
+	}
+	return s[:start] + s[start+end+len(prefBlockEnd):]
+}
 
 // launchFirefox starts a visible Firefox window with the remote agent on an
 // ephemeral port, and opens a BiDi session to it.
@@ -50,7 +100,8 @@ user_pref("app.update.auto", false);
 // so a still-open Firefox keeps its lock and the real profile is untouched);
 // persist is a stable dir atlas.llm reuses so cookies survive across runs. The
 // blank-window prefs go in for fresh and persist alike — a persistent profile
-// is empty on its first launch.
+// is empty on its first launch — and the automation-hygiene prefs go into all
+// three, every time.
 func launchFirefox(mode profileMode) (*bidiSession, error) {
 	exe, err := firefoxExecutable()
 	if err != nil {
@@ -63,9 +114,7 @@ func launchFirefox(mode profileMode) (*bidiSession, error) {
 	// A persistent profile is seeded on its first launch only — re-seeding
 	// would overwrite the sessions it exists to accumulate — and having no
 	// real profile to copy is fatal for default but not for persist, which
-	// just starts empty. user.js goes only into a profile that is still new:
-	// Firefox re-applies it to prefs.js at every startup, so writing it each
-	// time would silently revert whatever the user changed in that window.
+	// just starts empty.
 	newProfile := mode != profilePersist || persistNeedsSeed(profile)
 	seeded := false
 	if mode == profileDefault || (mode == profilePersist && newProfile) {
@@ -78,11 +127,15 @@ func launchFirefox(mode profileMode) (*bidiSession, error) {
 			seeded = true
 		}
 	}
+	// Onboarding prefs only make sense for a profile we are creating from
+	// nothing; the hygiene prefs go in regardless of how the profile got here.
+	prefs := firefoxHygienePrefs
 	if !seeded && newProfile {
-		if err := os.WriteFile(filepath.Join(profile, "user.js"), []byte(firefoxPrefs), 0644); err != nil {
-			killAndCleanup(nil, nil, profile, !persist)
-			return nil, err
-		}
+		prefs = firefoxOnboardingPrefs + firefoxHygienePrefs
+	}
+	if err := writeFirefoxPrefs(profile, prefs); err != nil {
+		killAndCleanup(nil, nil, profile, !persist)
+		return nil, err
 	}
 	cmd := exec.Command(exe,
 		// Port 0: the remote agent picks a free port and writes it to
@@ -151,7 +204,7 @@ func launchFirefox(mode profileMode) (*bidiSession, error) {
 // later, which BiDi preloads cover automatically. Best-effort.
 func (s *bidiSession) installShim() {
 	_, _ = s.call("script.addPreloadScript", map[string]any{
-		"functionDeclaration": "() => {" + browserShimBody + "}",
+		"functionDeclaration": "() => {" + browserShimBody() + "}",
 	}, 10*time.Second)
 	_, _ = s.Eval(browserShimJS())
 }

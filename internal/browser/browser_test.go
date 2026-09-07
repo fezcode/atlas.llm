@@ -34,6 +34,22 @@ func TestBrowserToolsRegistered(t *testing.T) {
 	}
 }
 
+// The handoff is only reachable if the model is told the action exists.
+func TestBrowserActAdvertisesWaitHuman(t *testing.T) {
+	tool := tools.ToolRegistry["browser_act"]
+	if !strings.Contains(tool.Description, "wait_human") {
+		t.Error("browser_act's description should explain wait_human")
+	}
+	props := tool.Parameters["properties"].(map[string]any)
+	enum := props["action"].(map[string]any)["enum"].([]string)
+	for _, a := range enum {
+		if a == "wait_human" {
+			return
+		}
+	}
+	t.Errorf("wait_human missing from the action enum: %v", enum)
+}
+
 func TestNormalizeURL(t *testing.T) {
 	cases := map[string]string{
 		"example.com":          "https://example.com",
@@ -840,12 +856,125 @@ func TestMarkUploadTargetJS(t *testing.T) {
 // The shim is injected into every page: it must capture console output and
 // errors, and neuter blocking dialogs so an alert() can never hang Eval.
 func TestBrowserShim(t *testing.T) {
-	for _, want := range []string{"__atlasLog", "window.alert", "window.confirm", "window.prompt", "unhandledrejection"} {
-		if !strings.Contains(browserShimBody, want) {
+	body := browserShimBody()
+	for _, want := range []string{"window.alert", "window.confirm", "window.prompt", "unhandledrejection"} {
+		if !strings.Contains(body, want) {
 			t.Errorf("browserShimBody should contain %q", want)
 		}
 	}
-	if !strings.Contains(consoleLogJS(), "__atlasLog") {
+	if !strings.Contains(body, browserLogKey) {
+		t.Error("the shim should hang its buffer off the per-process key")
+	}
+	if !strings.Contains(consoleLogJS(), browserLogKey) {
 		t.Error("consoleLogJS should read the shim's buffer")
+	}
+}
+
+// The shim used to announce itself twice over: a fixed window.__atlasLog any
+// page could read, and patched functions whose toString() no longer said
+// [native code]. Both are the standard tests for a driven browser.
+func TestBrowserShimLeavesNoFixedMarker(t *testing.T) {
+	body := browserShimBody()
+	if strings.Contains(body, "__atlasLog") {
+		t.Error("the shim must not use a fixed, guessable property name")
+	}
+	if !strings.HasPrefix(browserLogKey, "_") || len(browserLogKey) < 8 {
+		t.Errorf("browserLogKey = %q, want a long random-looking name", browserLogKey)
+	}
+	if browserLogKey == randomShimKey() {
+		t.Error("randomShimKey should not repeat itself")
+	}
+	if !strings.Contains(body, "enumerable: false") {
+		t.Error("the buffer should be non-enumerable so Object.keys(window) misses it")
+	}
+	for _, want := range []string{"Function.prototype.toString", "Object.prototype.hasOwnProperty"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the shim should keep patched functions reporting as native, via %q", want)
+		}
+	}
+	// Hard-coding the native-source wording would be wrong on Firefox, which
+	// spreads it over three lines where Chrome uses one.
+	if strings.Contains(body, "[native code]") {
+		t.Error("the native-source string should be cut from a real function, not written out")
+	}
+	if !strings.Contains(body, "navigator.webdriver") {
+		t.Error("the shim should clear navigator.webdriver where the browser sets it")
+	}
+}
+
+// A seeded profile arrives carrying the user's own user.js. Our prefs have to
+// land in it without eating what was already there, and without stacking a new
+// copy of themselves on every launch.
+func TestWriteFirefoxPrefsRewritesOnlyOurBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "user.js")
+	theirs := `user_pref("browser.tabs.warnOnClose", true);`
+	if err := os.WriteFile(path, []byte(theirs), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeFirefoxPrefs(dir, firefoxHygienePrefs); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, path)
+	if !strings.Contains(got, theirs) {
+		t.Error("the user's own prefs should survive")
+	}
+	if !strings.Contains(got, "dom.webdriver.enabled") {
+		t.Error("our prefs should be written")
+	}
+
+	// A second launch rewrites the block rather than appending another.
+	if err := writeFirefoxPrefs(dir, firefoxHygienePrefs); err != nil {
+		t.Fatal(err)
+	}
+	got = readFile(t, path)
+	if n := strings.Count(got, prefBlockStart); n != 1 {
+		t.Errorf("found %d managed blocks after two launches, want 1", n)
+	}
+	if !strings.Contains(got, theirs) {
+		t.Error("the user's own prefs should still survive the rewrite")
+	}
+
+	// A profile with no user.js at all is the ordinary case.
+	fresh := t.TempDir()
+	if err := writeFirefoxPrefs(fresh, firefoxOnboardingPrefs+firefoxHygienePrefs); err != nil {
+		t.Fatal(err)
+	}
+	got = readFile(t, filepath.Join(fresh, "user.js"))
+	if !strings.Contains(got, "aboutwelcome") || !strings.Contains(got, "dom.webdriver.enabled") {
+		t.Errorf("a new profile should get both sets of prefs, got:\n%s", got)
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestUILanguage(t *testing.T) {
+	for _, key := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		t.Setenv(key, "")
+	}
+	if got := uiLanguage(); got != "" {
+		t.Errorf("uiLanguage with nothing set = %q, want empty so Chrome uses the OS setting", got)
+	}
+	t.Setenv("LANG", "de_DE.UTF-8")
+	if got := uiLanguage(); got != "de-DE" {
+		t.Errorf("uiLanguage = %q, want de-DE", got)
+	}
+	// C and POSIX name no language, so they must not be passed on as one.
+	t.Setenv("LANG", "C.UTF-8")
+	if got := uiLanguage(); got != "" {
+		t.Errorf("uiLanguage for C.UTF-8 = %q, want empty", got)
+	}
+	t.Setenv("LC_ALL", "fr_FR")
+	t.Setenv("LANG", "de_DE.UTF-8")
+	if got := uiLanguage(); got != "fr-FR" {
+		t.Errorf("uiLanguage = %q, want LC_ALL to win", got)
 	}
 }
