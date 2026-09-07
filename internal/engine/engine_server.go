@@ -174,6 +174,29 @@ func ShutdownServer() {
 	}
 }
 
+// DropKVCacheIfRunning erases the cached prefix, but only when a server is
+// already up.
+//
+// /reset and compaction both invalidate the prefix, and both used to reach for
+// EnsureServer to get at it. EnsureServer does not mean "the server that is
+// running": with none running it starts one. So resetting an empty
+// conversation booted the engine and loaded a model purely to erase a cache
+// that did not exist — and under `go test`, where nothing calls
+// ShutdownServer, it left a llama-server holding a model behind after the test
+// binary exited.
+//
+// The pointer is taken under the lock and the HTTP work done outside it, so a
+// slow erase cannot block EnsureServer.
+func DropKVCacheIfRunning() {
+	serverMu.Lock()
+	s := activeServer
+	serverMu.Unlock()
+	if s == nil {
+		return
+	}
+	_ = s.DropKVCache()
+}
+
 // kvCacheSlots is how many server slots the optimized launch runs. Two
 // slots keep one-shot utility calls (/summarize, /grep, compact's
 // summarizer) from evicting the conversation's cached prefix: llama-server

@@ -26,3 +26,18 @@ func TestLaunchClassifiesEarlyExit(t *testing.T) {
 		t.Fatalf("early exit not classified as errServerExitedEarly: %v", err)
 	}
 }
+
+// Dropping the KV cache only means something when a server is already up.
+// EnsureServer does not mean "the server that is running" — it starts one —
+// so /reset and compaction go through this instead. Getting that wrong booted
+// the engine and loaded a model purely to erase a cache that did not exist,
+// and under `go test` left the subprocess behind with nothing to stop it.
+func TestDropKVCacheIfRunningStartsNothing(t *testing.T) {
+	ShutdownServer() // whatever an earlier test may have left behind
+	DropKVCacheIfRunning()
+	serverMu.Lock()
+	defer serverMu.Unlock()
+	if activeServer != nil {
+		t.Fatal("DropKVCacheIfRunning started a server; with none running it must do nothing")
+	}
+}

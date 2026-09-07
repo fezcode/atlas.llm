@@ -39,9 +39,7 @@ func (m *chatModel) handleSlash(input string) tea.Cmd {
 		m.stepCount = 0
 		m.rendered = nil
 		engine.ResetUsage()
-		if s, err := engine.EnsureServer(); err == nil {
-			_ = s.DropKVCache()
-		}
+		engine.DropKVCacheIfRunning()
 		m.pushSystem("Conversation reset. Context and KV cache cleared.")
 		return nil
 

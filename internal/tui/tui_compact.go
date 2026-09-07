@@ -174,10 +174,9 @@ func (m *chatModel) applyCompaction(msg compactDoneMsg) {
 		m.history = append(rebuilt, tail...)
 	}
 
-	// The cached prefix no longer matches the rewritten history.
-	if s, err := engine.EnsureServer(); err == nil {
-		_ = s.DropKVCache()
-	}
+	// The cached prefix no longer matches the rewritten history. Only worth
+	// erasing if a server is up — never worth starting one for.
+	engine.DropKVCacheIfRunning()
 	engine.ResetUsage()
 
 	m.pushSystem(fmt.Sprintf(
